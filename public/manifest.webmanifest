@@ -1,0 +1,16 @@
+{
+  "name": "After Hours",
+  "short_name": "After Hours",
+  "description": "Жги токены на живые issue и PR стека, которым ты пользуешься.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0606",
+  "theme_color": "#0a0606",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

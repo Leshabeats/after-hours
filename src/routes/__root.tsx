@@ -4,12 +4,12 @@ import {
   Outlet,
   Scripts,
 } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
-import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "After Hours";
+const APP_DESCRIPTION =
+  "Жги токены. Чини опенсорс. After Hours выбирает баг, ревью или ишью из стека, которым ты пользуешься.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -17,18 +17,17 @@ export const Route = createRootRoute({
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: APP_NAME },
-      {
-        name: "description",
-        content:
-          "Жги токены. Чини опенсорс. After Hours выбирает баг, ревью или ишью из стека, которым ты пользуешься.",
-      },
+      { name: "description", content: APP_DESCRIPTION },
       { name: "theme-color", content: "#0a0606" },
+      { property: "og:title", content: APP_NAME },
+      { property: "og:description", content: APP_DESCRIPTION },
+      { property: "og:image", content: "/og.jpg" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
       { rel: "stylesheet", href: appCss },
-      { rel: "manifest", href: "/__grok/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       {
         rel: "preconnect",
@@ -51,16 +50,12 @@ function RootDocument() {
         <HeadContent />
       </head>
       <body className="bg-bg text-fg">
-        <PreviewHostBridge />
-        <AuthProvider>
-          <Outlet />
-        </AuthProvider>
+        <Outlet />
         <Toaster
           theme="dark"
           position="bottom-center"
           toastOptions={{
-            className:
-              "bg-elevated text-fg border-border font-sans text-sm",
+            className: "bg-elevated text-fg border-border font-sans text-sm",
           }}
         />
         <Scripts />

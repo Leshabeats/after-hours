@@ -1,1 +1,0 @@
-import{l as e,t}from"./utils-DTSb5tog.js";var n=e();function r({className:e,...r}){return(0,n.jsx)(`span`,{className:t(`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium tracking-wide text-muted shadow-border`,e),...r})}export{r as t};

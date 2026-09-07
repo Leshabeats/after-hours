@@ -20,7 +20,7 @@ export function NightShell({ children }: { children: ReactNode }) {
     <div className="relative min-h-dvh bg-bg text-fg">
       <div className="grain" aria-hidden="true" />
       <header className="sticky top-0 z-30 border-b border-border/80 bg-bg/80 backdrop-blur-md">
-        <div className="chrome-safe mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
           <Link
             to="/"
             className="shrink-0 font-display text-2xl italic tracking-tight text-fg"

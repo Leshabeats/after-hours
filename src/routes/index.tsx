@@ -18,7 +18,7 @@ function Home() {
       />
       <div className="hero-veil" aria-hidden="true" />
 
-      <header className="chrome-safe relative z-10 flex items-center justify-between px-4 py-4 sm:px-8">
+      <header className="relative z-10 flex items-center justify-between px-4 py-4 sm:px-8">
         <p className="font-display text-2xl italic tracking-tight">After Hours</p>
         <Clock />
       </header>

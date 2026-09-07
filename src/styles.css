@@ -167,16 +167,6 @@
   display: none;
 }
 
-.chrome-safe {
-  padding-right: 8rem;
-}
-
-@media (min-width: 640px) {
-  .chrome-safe {
-    padding-right: 15rem;
-  }
-}
-
 .body-scroll {
   max-height: min(28rem, 55vh);
 }
