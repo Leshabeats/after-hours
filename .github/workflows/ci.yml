@@ -28,6 +28,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # Node 22's bundled npm 10 rejects this lockfile; local install uses npm 11.
+      - name: Use npm 11
+        run: npm install -g npm@11
+
       - name: Install
         run: npm ci
 
