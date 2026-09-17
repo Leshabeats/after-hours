@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/lib/kinds.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/lib/journal/*.test.ts src/lib/auth/*.test.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

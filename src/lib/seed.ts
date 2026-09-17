@@ -1,8 +1,9 @@
 import type { Mission } from "@/lib/kinds";
 import { classifyKind, excerptOf, missionId } from "@/lib/kinds";
 
-type Seed = Omit<Mission, "id" | "kind" | "excerpt" | "live"> & {
+type Seed = Omit<Mission, "id" | "kind" | "excerpt" | "live" | "language"> & {
   kind?: Mission["kind"];
+  language?: string;
 };
 
 const RAW: Seed[] = [
@@ -362,6 +363,7 @@ export const SEED_MISSIONS: Mission[] = RAW.map((item) => ({
   id: missionId(item.owner, item.repo, item.number),
   kind: item.kind ?? classifyKind(item),
   excerpt: excerptOf(item.body),
+  language: item.language ?? "TypeScript",
   live: false,
 }));
 

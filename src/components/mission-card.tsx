@@ -40,6 +40,9 @@ export function MissionCard({
           {mission.isPr ? "PR" : "#"}
           {mission.number}
         </span>
+        {mission.language ? (
+          <span className="text-faint"> · {mission.language}</span>
+        ) : null}
       </p>
       <h3 className="mt-2 font-display text-xl leading-snug text-fg group-hover:text-paper">
         {mission.title}

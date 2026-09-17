@@ -5,6 +5,8 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { Toaster } from "sonner";
+import { AccountProvider } from "@/components/account-session";
+import { getAuthSnapshot } from "@/lib/journal/api";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "After Hours";
@@ -12,6 +14,7 @@ const APP_DESCRIPTION =
   "Жги токены. Чини опенсорс. After Hours выбирает баг, ревью или ишью из стека, которым ты пользуешься.";
 
 export const Route = createRootRoute({
+  loader: () => getAuthSnapshot(),
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -44,13 +47,16 @@ export const Route = createRootRoute({
 });
 
 function RootDocument() {
+  const snapshot = Route.useLoaderData();
   return (
     <html lang="ru" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
       <body className="bg-bg text-fg">
-        <Outlet />
+        <AccountProvider initial={snapshot}>
+          <Outlet />
+        </AccountProvider>
         <Toaster
           theme="dark"
           position="bottom-center"

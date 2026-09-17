@@ -1,8 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { AccountControl } from "@/components/account-session";
 import { Clock } from "@/components/clock";
 import { UrlIntake } from "@/components/url-intake";
 import { Button } from "@/components/ui/button";
-import { KIND_META, KINDS } from "@/lib/kinds";
+import { CATEGORIES } from "@/lib/catalog";
 
 export const Route = createFileRoute("/")({ component: Home });
 
@@ -20,7 +21,10 @@ function Home() {
 
       <header className="relative z-10 flex items-center justify-between px-4 py-4 sm:px-8">
         <p className="font-display text-2xl italic tracking-tight">After Hours</p>
-        <Clock />
+        <div className="flex items-center gap-3">
+          <AccountControl />
+          <Clock />
+        </div>
       </header>
 
       <main className="hero-main relative z-10 mx-auto w-full max-w-5xl px-4 pb-8 sm:px-8 sm:pb-14">
@@ -34,16 +38,20 @@ function Home() {
             Hours
           </h1>
           <p className="mt-4 max-w-lg text-sm leading-relaxed text-fg/90 sm:mt-6 sm:text-lg">
-            Жги токены на ишьюсы стека, которым ты пользуешься. Баг Vite, ревью
-            PR, ночь выбирает цель — или ты берёшь список.
+            Жги токены на живой опенсорс. Веб на виду сразу. Дальше — Go, ядро,
+            что угодно.
           </p>
 
           <div className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row">
             <Button asChild variant="primary" size="lg" className="w-full sm:w-auto">
-              <Link to="/fate">Как повезёт</Link>
+              <Link to="/fate" search={{ cat: "web" }}>
+                Как повезёт
+              </Link>
             </Button>
             <Button asChild variant="ghost" size="lg" className="w-full sm:w-auto">
-              <Link to="/list">Список ночи</Link>
+              <Link to="/list" search={{ cat: "web" }}>
+                Список ночи
+              </Link>
             </Button>
           </div>
 
@@ -55,13 +63,19 @@ function Home() {
           </div>
         </div>
 
-        <ul className="no-scrollbar mt-8 flex gap-6 overflow-x-auto pb-1 sm:mt-12 sm:grid sm:grid-cols-4 sm:gap-x-6 sm:gap-y-3 sm:overflow-visible">
-          {KINDS.map((kind) => (
-            <li key={kind} className="min-w-36 shrink-0 sm:min-w-0">
-              <p className="font-display text-lg italic leading-tight text-fg">
-                {KIND_META[kind].track}
-              </p>
-              <p className="mt-0.5 text-xs text-muted">{KIND_META[kind].label}</p>
+        <ul className="no-scrollbar mt-8 flex gap-6 overflow-x-auto pb-1 sm:mt-12 sm:grid sm:grid-cols-5 sm:gap-x-6 sm:gap-y-4 sm:overflow-visible">
+          {CATEGORIES.map((item) => (
+            <li key={item.id} className="min-w-36 shrink-0 sm:min-w-0">
+              <Link
+                to="/list"
+                search={{ cat: item.id }}
+                className="block hover:text-paper"
+              >
+                <p className="font-display text-lg italic leading-tight text-fg">
+                  {item.label}
+                </p>
+                <p className="mt-0.5 text-xs text-muted">{item.hint}</p>
+              </Link>
             </li>
           ))}
         </ul>

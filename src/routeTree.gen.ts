@@ -13,6 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as FateRouteImport } from './routes/fate'
 import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
+import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
+import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as MOwnerRepoNumberRouteImport } from './routes/m.$owner.$repo.$number'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +37,16 @@ const LogRoute = LogRouteImport.update({
   path: '/log',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
+  id: '/api/auth/callback',
+  path: '/api/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthGithubRoute = ApiAuthGithubRouteImport.update({
+  id: '/api/auth/github',
+  path: '/api/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const MOwnerRepoNumberRoute = MOwnerRepoNumberRouteImport.update({
   id: '/m/$owner/$repo/$number',
   path: '/m/$owner/$repo/$number',
@@ -46,6 +58,8 @@ export interface FileRoutesByFullPath {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +67,8 @@ export interface FileRoutesByTo {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
 }
 export interface FileRoutesById {
@@ -61,14 +77,38 @@ export interface FileRoutesById {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/fate' | '/list' | '/log' | '/m/$owner/$repo/$number'
+  fullPaths:
+    | '/'
+    | '/fate'
+    | '/list'
+    | '/log'
+    | '/api/auth/callback'
+    | '/api/auth/github'
+    | '/m/$owner/$repo/$number'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/fate' | '/list' | '/log' | '/m/$owner/$repo/$number'
-  id: '__root__' | '/' | '/fate' | '/list' | '/log' | '/m/$owner/$repo/$number'
+  to:
+    | '/'
+    | '/fate'
+    | '/list'
+    | '/log'
+    | '/api/auth/callback'
+    | '/api/auth/github'
+    | '/m/$owner/$repo/$number'
+  id:
+    | '__root__'
+    | '/'
+    | '/fate'
+    | '/list'
+    | '/log'
+    | '/api/auth/callback'
+    | '/api/auth/github'
+    | '/m/$owner/$repo/$number'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +116,8 @@ export interface RootRouteChildren {
   FateRoute: typeof FateRoute
   ListRoute: typeof ListRoute
   LogRoute: typeof LogRoute
+  ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
+  ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   MOwnerRepoNumberRoute: typeof MOwnerRepoNumberRoute
 }
 
@@ -109,6 +151,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/auth/callback': {
+      id: '/api/auth/callback'
+      path: '/api/auth/callback'
+      fullPath: '/api/auth/callback'
+      preLoaderRoute: typeof ApiAuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/github': {
+      id: '/api/auth/github'
+      path: '/api/auth/github'
+      fullPath: '/api/auth/github'
+      preLoaderRoute: typeof ApiAuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/m/$owner/$repo/$number': {
       id: '/m/$owner/$repo/$number'
       path: '/m/$owner/$repo/$number'
@@ -124,6 +180,8 @@ const rootRouteChildren: RootRouteChildren = {
   FateRoute: FateRoute,
   ListRoute: ListRoute,
   LogRoute: LogRoute,
+  ApiAuthCallbackRoute: ApiAuthCallbackRoute,
+  ApiAuthGithubRoute: ApiAuthGithubRoute,
   MOwnerRepoNumberRoute: MOwnerRepoNumberRoute,
 }
 export const routeTree = rootRouteImport

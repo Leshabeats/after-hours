@@ -1,5 +1,15 @@
 import { SEED_MISSIONS, findSeed } from "@/lib/seed";
 import {
+  CATALOG_REPO_LIMIT,
+  curatedRepos,
+  hintLanguage,
+  issueSearchQuery,
+  repoSearchQuery,
+  seedFits,
+  type CategoryId,
+  type LanguageId,
+} from "@/lib/catalog";
+import {
   classifyKind,
   decodeEntities,
   excerptOf,
@@ -7,17 +17,11 @@ import {
   type Mission,
 } from "@/lib/kinds";
 
-const STACK = [
-  "vitejs/vite",
-  "TanStack/query",
-  "TanStack/router",
-  "tailwindlabs/tailwindcss",
-  "facebook/react",
-  "colinhacks/zod",
-] as const;
-
 const CACHE_MS = 12 * 60 * 1000;
-let cache: { at: number; missions: Mission[]; live: boolean } | null = null;
+const cache = new Map<
+  string,
+  { at: number; missions: Mission[]; live: boolean }
+>();
 
 type GhUser = { login?: string } | null;
 type GhLabel = string | { name?: string };
@@ -34,6 +38,15 @@ type GhItem = {
   user?: GhUser;
   repository_url?: string;
 };
+
+export type CatalogQuery = {
+  category: CategoryId;
+  language?: LanguageId;
+};
+
+function cacheKey(query: CatalogQuery) {
+  return `${query.category}|${query.language ?? ""}`;
+}
 
 function headers(): HeadersInit {
   const h: Record<string, string> = {
@@ -66,7 +79,10 @@ function isNoise(item: GhItem): boolean {
   return false;
 }
 
-function parseRepo(item: GhItem, fallbackUrl: string): { owner: string; repo: string } {
+function parseRepo(
+  item: GhItem,
+  fallbackUrl: string,
+): { owner: string; repo: string } {
   const fromApi = item.repository_url?.match(/repos\/([^/]+)\/([^/]+)$/);
   if (fromApi) return { owner: fromApi[1], repo: fromApi[2] };
   const fromHtml = fallbackUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
@@ -74,9 +90,14 @@ function parseRepo(item: GhItem, fallbackUrl: string): { owner: string; repo: st
   return { owner: "unknown", repo: "unknown" };
 }
 
-function toMission(item: GhItem, live: boolean): Mission | null {
+function toMission(
+  item: GhItem,
+  live: boolean,
+  language: string,
+): Mission | null {
   if (isNoise(item) || !item.number || !item.title) return null;
-  const isPr = Boolean(item.pull_request) || (item.html_url ?? "").includes("/pull/");
+  const isPr =
+    Boolean(item.pull_request) || (item.html_url ?? "").includes("/pull/");
   const url =
     item.html_url ??
     `https://github.com/unknown/unknown/${isPr ? "pull" : "issues"}/${item.number}`;
@@ -100,32 +121,51 @@ function toMission(item: GhItem, live: boolean): Mission | null {
     isPr,
     author: item.user?.login ?? "unknown",
     kind: classifyKind({ title: item.title, labels, isPr, createdAt }),
+    language,
     live,
   };
 }
 
-async function search(q: string, perPage: number): Promise<GhItem[]> {
+async function searchIssues(q: string, perPage: number): Promise<GhItem[]> {
   const url = `https://api.github.com/search/issues?per_page=${perPage}&sort=updated&order=desc&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
-    throw new Error(`GitHub search ${res.status}`);
+    throw new Error(`GitHub issue search ${res.status}`);
   }
   const json = (await res.json()) as { items?: GhItem[] };
   return json.items ?? [];
 }
 
-function repoQuery(): string {
-  return STACK.map((r) => `repo:${r}`).join(" ");
+async function searchStarredRepos(q: string): Promise<string[]> {
+  const url = `https://api.github.com/search/repositories?per_page=${CATALOG_REPO_LIMIT}&sort=stars&order=desc&q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) {
+    throw new Error(`GitHub repo search ${res.status}`);
+  }
+  const json = (await res.json()) as { items?: { full_name?: string }[] };
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const item of json.items ?? []) {
+    const name = item.full_name ?? "";
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
 }
 
-async function fetchLive(): Promise<Mission[]> {
-  const base = repoQuery();
-  const [issues, prs] = await Promise.all([
-    search(`${base} is:open is:issue`, 30),
-    search(`${base} is:open is:pr -is:draft`, 16),
-  ]);
-  const mapped = [...issues, ...prs]
-    .map((item) => toMission(item, true))
+async function fetchLive(query: CatalogQuery): Promise<Mission[]> {
+  const curated = curatedRepos(query.category);
+  const repos = curated
+    ? [...curated]
+    : await searchStarredRepos(repoSearchQuery(query.category, query.language));
+  if (repos.length === 0) return [];
+
+  const issueLang = curated ? query.language : undefined;
+  const items = await searchIssues(issueSearchQuery(repos, issueLang), 40);
+  const language = hintLanguage(query.category, query.language);
+  const mapped = items
+    .map((item) => toMission(item, true, language))
     .filter((m): m is Mission => Boolean(m));
 
   const seen = new Set<string>();
@@ -135,30 +175,42 @@ async function fetchLive(): Promise<Mission[]> {
     seen.add(m.id);
     unique.push(m);
   }
-  unique.sort(
-    (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
-  );
+  unique.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return unique;
 }
 
-export async function loadMissions(): Promise<{
+function fallback(query: CatalogQuery): {
+  missions: Mission[];
+  live: boolean;
+} {
+  if (seedFits(query.category, query.language)) {
+    return { missions: SEED_MISSIONS, live: false };
+  }
+  return { missions: [], live: false };
+}
+
+export async function loadMissions(query: CatalogQuery): Promise<{
   missions: Mission[];
   live: boolean;
 }> {
-  if (cache && Date.now() - cache.at < CACHE_MS) {
-    return { missions: cache.missions, live: cache.live };
+  const key = cacheKey(query);
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) {
+    return { missions: hit.missions, live: hit.live };
   }
   try {
-    const live = await fetchLive();
-    if (live.length >= 8) {
-      cache = { at: Date.now(), missions: live, live: true };
+    const live = await fetchLive(query);
+    if (live.length >= 4) {
+      const packed = { at: Date.now(), missions: live, live: true };
+      cache.set(key, packed);
       return { missions: live, live: true };
     }
   } catch {
-    // fall through to seed
+    // fall through
   }
-  cache = { at: Date.now(), missions: SEED_MISSIONS, live: false };
-  return { missions: SEED_MISSIONS, live: false };
+  const packed = { at: Date.now(), ...fallback(query) };
+  cache.set(key, packed);
+  return packed;
 }
 
 export async function loadMission(
@@ -166,14 +218,6 @@ export async function loadMission(
   repo: string,
   number: number,
 ): Promise<Mission> {
-  const catalog = await loadMissions();
-  const fromCatalog = catalog.missions.find(
-    (m) =>
-      m.owner.toLowerCase() === owner.toLowerCase() &&
-      m.repo.toLowerCase() === repo.toLowerCase() &&
-      m.number === number,
-  );
-
   try {
     const res = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/issues/${number}`,
@@ -181,18 +225,16 @@ export async function loadMission(
     );
     if (res.ok) {
       const item = (await res.json()) as GhItem;
-      const mapped = toMission(item, true);
+      const mapped = toMission(item, true, "");
       if (mapped) return mapped;
     }
   } catch {
     // fall through
   }
 
-  if (fromCatalog) return fromCatalog;
   const seeded = findSeed(owner, repo, number);
   if (seeded) return seeded;
 
-  const isPrGuess = false;
   return {
     id: missionId(owner, repo, number),
     owner,
@@ -206,9 +248,10 @@ export async function loadMission(
     comments: 0,
     updatedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
-    isPr: isPrGuess,
+    isPr: false,
     author: "",
     kind: "blinding",
+    language: "",
     live: false,
   };
 }

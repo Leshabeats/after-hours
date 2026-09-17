@@ -2,11 +2,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useAccount } from "@/components/account-session";
 import { KIND_META } from "@/lib/kinds";
-import { useNightLog, type LogStatus } from "@/lib/night-log";
-import { useHydrated } from "@/lib/use-hydrated";
+import type { LogStatus } from "@/lib/journal/types";
 
 export const Route = createFileRoute("/log")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    auth: search.auth === "error" ? ("error" as const) : undefined,
+  }),
   component: LogPage,
 });
 
@@ -17,11 +20,9 @@ const STATUSES: { id: LogStatus; label: string }[] = [
 ];
 
 function LogPage() {
-  const entries = useNightLog((s) => s.entries);
-  const setStatus = useNightLog((s) => s.setStatus);
-  const drop = useNightLog((s) => s.drop);
-  const hydrated = useHydrated();
-  const shown = hydrated ? entries : [];
+  const { entries, setStatus, drop, user } = useAccount();
+  const authError = Route.useSearch().auth === "error";
+  const shown = entries;
 
   return (
     <NightShell>
@@ -32,14 +33,17 @@ function LogPage() {
         Журнал
       </h1>
       <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted">
-        То, что ты взял этой и прошлыми ночами. Только на этом устройстве.
+        {user
+          ? `Ночи аккаунта ${user.login}: взято, в работе, закрыто.`
+          : "То, что ты взял этой и прошлыми ночами. Без входа — только на этом устройстве."}
       </p>
-
-      {!hydrated ? (
-        <p className="mt-16 font-mono text-xs uppercase tracking-caps text-muted">
-          Загрузка эфира
+      {authError ? (
+        <p className="mt-3 text-sm text-accent" role="alert">
+          GitHub не пустил. Проверь OAuth-приложение и попробуй ещё раз.
         </p>
-      ) : shown.length === 0 ? (
+      ) : null}
+
+      {shown.length === 0 ? (
         <div className="mt-16 max-w-md">
           <p className="font-display text-3xl italic">Пока тихо.</p>
           <p className="mt-3 text-sm text-muted">
@@ -92,7 +96,7 @@ function LogPage() {
                     type="button"
                     size="sm"
                     variant={entry.status === s.id ? "paper" : "ghost"}
-                    onClick={() => setStatus(entry.id, s.id)}
+                    onClick={() => void setStatus(entry.id, s.id)}
                   >
                     {s.label}
                   </Button>
@@ -101,7 +105,7 @@ function LogPage() {
                   type="button"
                   size="sm"
                   variant="quiet"
-                  onClick={() => drop(entry.id)}
+                  onClick={() => void drop(entry.id)}
                 >
                   Убрать
                 </Button>

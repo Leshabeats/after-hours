@@ -27,6 +27,7 @@ export type Mission = {
   createdAt: string;
   isPr: boolean;
   author: string;
+  language: string;
   live: boolean;
 };
 
