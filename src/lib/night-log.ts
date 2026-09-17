@@ -1,21 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Kind, Mission } from "@/lib/kinds";
+import type { Mission } from "@/lib/kinds";
+import { entryFromMission, type LogEntry, type LogStatus } from "@/lib/journal/types";
 
-export type LogStatus = "taken" | "shipping" | "shipped";
-
-export type LogEntry = {
-  id: string;
-  owner: string;
-  repo: string;
-  number: number;
-  title: string;
-  kind: Kind;
-  url: string;
-  isPr: boolean;
-  status: LogStatus;
-  takenAt: number;
-};
+export type { LogEntry, LogStatus };
 
 type NightLogState = {
   entries: LogEntry[];
@@ -32,21 +20,7 @@ export const useNightLog = create<NightLogState>()(
         const existing = get().entries.find((e) => e.id === mission.id);
         if (existing) return;
         set({
-          entries: [
-            {
-              id: mission.id,
-              owner: mission.owner,
-              repo: mission.repo,
-              number: mission.number,
-              title: mission.title,
-              kind: mission.kind,
-              url: mission.url,
-              isPr: mission.isPr,
-              status: "taken",
-              takenAt: Date.now(),
-            },
-            ...get().entries,
-          ],
+          entries: [entryFromMission(mission), ...get().entries],
         });
       },
       setStatus: (id, status) =>

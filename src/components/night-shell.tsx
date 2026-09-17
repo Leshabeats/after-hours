@@ -1,20 +1,19 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useNightLog } from "@/lib/night-log";
-import { useHydrated } from "@/lib/use-hydrated";
+import { AccountControl, useAccount } from "@/components/account-session";
+import { keepCatalogSearch } from "@/lib/catalog";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
 const NAV = [
-  { to: "/fate" as const, label: "Как повезёт", short: "Удача" },
-  { to: "/list" as const, label: "Список", short: "Список" },
-  { to: "/log" as const, label: "Журнал", short: "Журнал" },
+  { to: "/fate" as const, label: "Как повезёт", short: "Удача", catalog: true },
+  { to: "/list" as const, label: "Список", short: "Список", catalog: true },
+  { to: "/log" as const, label: "Журнал", short: "Журнал", catalog: false },
 ];
 
 export function NightShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const count = useNightLog((s) => s.entries.length);
-  const hydrated = useHydrated();
-  const shown = hydrated ? count : 0;
+  const { entries } = useAccount();
+  const shown = entries.length;
 
   return (
     <div className="relative min-h-dvh bg-bg text-fg">
@@ -35,6 +34,7 @@ export function NightShell({ children }: { children: ReactNode }) {
                 <Link
                   key={item.to}
                   to={item.to}
+                  search={item.catalog ? keepCatalogSearch : undefined}
                   className={cn(
                     "relative flex h-11 items-center px-2 text-xs tracking-wide sm:px-3 sm:text-sm",
                     active ? "text-fg" : "text-muted hover:text-fg",
@@ -51,6 +51,7 @@ export function NightShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
+          <AccountControl />
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-8 sm:px-6">{children}</main>

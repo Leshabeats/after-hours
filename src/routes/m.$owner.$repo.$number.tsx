@@ -7,8 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { briefMission, getMission, type Brief } from "@/lib/api";
 import { defaultAgentPrompt } from "@/lib/agent-prompt";
 import { KIND_META, relativeTime } from "@/lib/kinds";
-import { useNightLog } from "@/lib/night-log";
-import { useHydrated } from "@/lib/use-hydrated";
+import { notifyTaken, useAccount } from "@/components/account-session";
 import { ExternalLink } from "lucide-react";
 
 export const Route = createFileRoute("/m/$owner/$repo/$number")({
@@ -42,10 +41,8 @@ function MissionPending() {
 function MissionPage() {
   const mission = Route.useLoaderData();
   const meta = KIND_META[mission.kind];
-  const take = useNightLog((s) => s.take);
-  const entries = useNightLog((s) => s.entries);
-  const hydrated = useHydrated();
-  const taken = hydrated && entries.some((e) => e.id === mission.id);
+  const { take, entries } = useAccount();
+  const taken = entries.some((e) => e.id === mission.id);
   const [brief, setBrief] = useState<Brief | null>(null);
   const [briefing, setBriefing] = useState(false);
   const [briefError, setBriefError] = useState("");
@@ -99,6 +96,9 @@ function MissionPage() {
         {mission.author ? (
           <span className="text-faint"> · {mission.author}</span>
         ) : null}
+        {mission.language ? (
+          <span className="text-faint"> · {mission.language}</span>
+        ) : null}
         <span className="text-faint"> · {relativeTime(mission.updatedAt)}</span>
         {mission.comments > 0 ? (
           <span className="text-faint"> · {mission.comments} комм.</span>
@@ -121,8 +121,7 @@ function MissionPage() {
           type="button"
           size="lg"
           onClick={() => {
-            take(mission);
-            toast("Ночь записана в журнал");
+            void take(mission).then(() => notifyTaken());
           }}
           disabled={taken}
         >

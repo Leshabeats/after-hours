@@ -1,12 +1,21 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { parseCategoryId, parseLanguageId } from "@/lib/catalog";
 
-export const getMissions = createServerFn({ method: "GET" }).handler(
-  async () => {
+export const getMissions = createServerFn({ method: "GET" })
+  .validator(
+    z.object({
+      category: z.string().max(40).optional(),
+      language: z.string().max(40).optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
     const { loadMissions } = await import("./github-live");
-    return loadMissions();
-  },
-);
+    return loadMissions({
+      category: parseCategoryId(data.category),
+      language: parseLanguageId(data.language),
+    });
+  });
 
 export const getMission = createServerFn({ method: "POST" })
   .validator(

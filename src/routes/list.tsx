@@ -3,12 +3,27 @@ import { useMemo, useState } from "react";
 import { NightShell } from "@/components/night-shell";
 import { MissionCard } from "@/components/mission-card";
 import { UrlIntake } from "@/components/url-intake";
+import { FilterChip } from "@/components/filter-chip";
+import { CatalogFilters } from "@/components/catalog-filters";
 import { getMissions } from "@/lib/api";
+import {
+  MIN_STARS,
+  getCategory,
+  parseCatalogSearch,
+  parseCategoryId,
+} from "@/lib/catalog";
 import { KIND_META, KINDS, type Kind } from "@/lib/kinds";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/list")({
-  loader: () => getMissions(),
+  validateSearch: parseCatalogSearch,
+  loaderDeps: ({ search }) => ({ cat: search.cat, lang: search.lang }),
+  loader: ({ deps }) =>
+    getMissions({
+      data: {
+        category: deps.cat,
+        language: deps.lang,
+      },
+    }),
   pendingComponent: function ListPending() {
     return (
       <NightShell>
@@ -23,6 +38,10 @@ export const Route = createFileRoute("/list")({
 
 function ListPage() {
   const { missions, live } = Route.useLoaderData();
+  const search = Route.useSearch();
+  const cat = parseCategoryId(search.cat);
+  const lang = search.lang;
+  const category = getCategory(cat);
   const [kind, setKind] = useState<Kind | "all">("all");
   const [q, setQ] = useState("");
 
@@ -34,7 +53,8 @@ function ListPage() {
       return (
         m.title.toLowerCase().includes(query) ||
         m.repo.toLowerCase().includes(query) ||
-        m.owner.toLowerCase().includes(query)
+        m.owner.toLowerCase().includes(query) ||
+        m.language.toLowerCase().includes(query)
       );
     });
   }, [missions, kind, q]);
@@ -49,9 +69,8 @@ function ListPage() {
           Список ночи
         </h1>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
-          Реальные открытые ишьюсы и PR из стека, на котором крутится этот
-          сайт: Vite, TanStack, Tailwind, React, Zod. Не учебные задачи —
-          живой опенсорс.
+          Коммитить есть смысл туда, где уже есть люди. Сейчас {category.label}:
+          репозитории от {MIN_STARS} звёзд, не вся свалка языка.
         </p>
         <p className="mt-2 font-mono text-xs text-faint">
           {live ? "Эфир GitHub открыт." : "Эфир молчит. Последняя известная ночь."}{" "}
@@ -64,20 +83,31 @@ function ListPage() {
         <UrlIntake />
       </div>
 
-      <div className="no-scrollbar mt-8 flex gap-2 overflow-x-auto pb-1">
-        <FilterChip
-          active={kind === "all"}
-          onClick={() => setKind("all")}
-          label="Все"
-        />
-        {KINDS.map((k) => (
+      <CatalogFilters to="/list" cat={cat} lang={lang} />
+
+      <div className="mt-6">
+        <p className="font-mono text-xs uppercase tracking-caps text-muted">
+          Тип
+        </p>
+        <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1">
           <FilterChip
-            key={k}
-            active={kind === k}
-            onClick={() => setKind(k)}
-            label={KIND_META[k].track}
-          />
-        ))}
+            type="button"
+            active={kind === "all"}
+            onClick={() => setKind("all")}
+          >
+            Все
+          </FilterChip>
+          {KINDS.map((k) => (
+            <FilterChip
+              key={k}
+              type="button"
+              active={kind === k}
+              onClick={() => setKind(k)}
+            >
+              {KIND_META[k].track}
+            </FilterChip>
+          ))}
+        </div>
       </div>
 
       <label className="sr-only" htmlFor="mission-search">
@@ -102,30 +132,5 @@ function ListPage() {
         </div>
       )}
     </NightShell>
-  );
-}
-
-function FilterChip({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "h-11 shrink-0 rounded-full px-4 text-xs tracking-wide transition-colors duration-150",
-        active
-          ? "bg-paper text-bg"
-          : "text-muted shadow-border hover:text-fg",
-      )}
-    >
-      {label}
-    </button>
   );
 }
