@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
-import { createMemoryJournal } from "./store.ts";
+import { createMemoryJournal, createSqliteJournal, type JournalRepo } from "./store.ts";
 import type { LogEntry } from "./types.ts";
 
 function entry(id: string): LogEntry {
@@ -41,5 +42,46 @@ describe("journal isolation", () => {
     assert.equal(updated?.[0]?.status, "shipping");
     assert.equal(journal.drop("a", "vitejs/vite#1")?.length, 0);
     assert.equal(journal.list("a").length, 0);
+  });
+});
+
+function assertImportIfEmpty(journal: JournalRepo) {
+  const local = [
+    { ...entry("vitejs/vite#1"), status: "shipping" as const, takenAt: 50 },
+    { ...entry("golang/go#2"), status: "shipped" as const, takenAt: 40 },
+    entry("vitejs/vite#1"),
+  ];
+
+  const empty = journal.importIfEmpty("b", local);
+  assert.equal(empty.imported, true);
+  assert.deepEqual(
+    empty.entries.map((item) => item.id),
+    ["vitejs/vite#1", "golang/go#2"],
+  );
+  assert.equal(empty.entries[0]?.status, "shipping");
+  assert.equal(empty.entries[0]?.takenAt, 50);
+
+  journal.take("a", entry("facebook/react#3"));
+  const blocked = journal.importIfEmpty("a", [entry("vitejs/vite#1")]);
+  assert.equal(blocked.imported, false);
+  assert.deepEqual(
+    blocked.entries.map((item) => item.id),
+    ["facebook/react#3"],
+  );
+  assert.equal(journal.list("b").length, 2);
+}
+
+describe("importIfEmpty", () => {
+  it("memory: copies into an empty journal and refuses a merge", () => {
+    assertImportIfEmpty(createMemoryJournal());
+  });
+
+  it("sqlite: copies into an empty journal and refuses a merge", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      assertImportIfEmpty(createSqliteJournal(db));
+    } finally {
+      db.close();
+    }
   });
 });
