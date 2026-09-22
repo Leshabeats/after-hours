@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as FateRouteImport } from './routes/fate'
 import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
+import { Route as ApiUsageRouteImport } from './routes/api/usage'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as MOwnerRepoNumberRouteImport } from './routes/m.$owner.$repo.$number'
@@ -37,6 +38,11 @@ const LogRoute = LogRouteImport.update({
   path: '/log',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiUsageRoute = ApiUsageRouteImport.update({
+  id: '/api/usage',
+  path: '/api/usage',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
   id: '/api/auth/callback',
   path: '/api/auth/callback',
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/m/$owner/$repo/$number': typeof MOwnerRepoNumberRoute
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/m/$owner/$repo/$number'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/m/$owner/$repo/$number'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/m/$owner/$repo/$number'
@@ -116,6 +128,7 @@ export interface RootRouteChildren {
   FateRoute: typeof FateRoute
   ListRoute: typeof ListRoute
   LogRoute: typeof LogRoute
+  ApiUsageRoute: typeof ApiUsageRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   MOwnerRepoNumberRoute: typeof MOwnerRepoNumberRoute
@@ -151,6 +164,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/usage': {
+      id: '/api/usage'
+      path: '/api/usage'
+      fullPath: '/api/usage'
+      preLoaderRoute: typeof ApiUsageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/callback': {
       id: '/api/auth/callback'
       path: '/api/auth/callback'
@@ -180,6 +200,7 @@ const rootRouteChildren: RootRouteChildren = {
   FateRoute: FateRoute,
   ListRoute: ListRoute,
   LogRoute: LogRoute,
+  ApiUsageRoute: ApiUsageRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   MOwnerRepoNumberRoute: MOwnerRepoNumberRoute,

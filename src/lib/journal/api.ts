@@ -1,23 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { KINDS } from "@/lib/kinds";
 import { githubOAuthConfigured } from "@/lib/auth/flags";
+import {
+  importDeviceJournalSchema,
+  takeInputSchema,
+} from "./schema";
 import {
   LOG_STATUSES,
   type AuthSnapshot,
   type LogEntry,
 } from "./types";
-
-const takeInput = z.object({
-  id: z.string().min(1).max(160),
-  owner: z.string().min(1).max(80),
-  repo: z.string().min(1).max(80),
-  number: z.number().int().positive(),
-  title: z.string().min(1).max(300),
-  kind: z.enum(KINDS),
-  url: z.string().url().max(400),
-  isPr: z.boolean(),
-});
 
 async function loadSession() {
   const { readSession } = await import("@/lib/auth/session");
@@ -50,7 +42,7 @@ export const signOut = createServerFn({ method: "POST" }).handler(async () => {
 });
 
 export const takeNight = createServerFn({ method: "POST" })
-  .validator(takeInput)
+  .validator(takeInputSchema)
   .handler(async ({ data }): Promise<{ ok: "anonymous" } | { ok: "account"; entries: LogEntry[] }> => {
     const user = await loadSession();
     if (!user) return { ok: "anonymous" };
@@ -92,5 +84,26 @@ export const dropNight = createServerFn({ method: "POST" })
       const entries = (await loadJournal()).drop(user.id, data.id);
       if (!entries) return { ok: false };
       return { ok: "account", entries };
+    },
+  );
+
+export const importDeviceJournal = createServerFn({ method: "POST" })
+  .validator(importDeviceJournalSchema)
+  .handler(
+    async ({
+      data,
+    }): Promise<
+      | { ok: "anonymous" }
+      | { ok: "imported"; entries: LogEntry[]; skipped: number }
+      | { ok: "keep-server"; entries: LogEntry[]; skipped: number }
+    > => {
+      const user = await loadSession();
+      if (!user) return { ok: "anonymous" };
+      const result = (await loadJournal()).importIfEmpty(user.id, data.entries);
+      return {
+        ok: result.imported ? "imported" : "keep-server",
+        entries: result.entries,
+        skipped: data.skipped,
+      };
     },
   );

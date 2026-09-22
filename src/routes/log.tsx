@@ -4,12 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAccount } from "@/components/account-session";
 import { KIND_META } from "@/lib/kinds";
+import { summarizeJournal } from "@/lib/journal/stats";
 import type { LogStatus } from "@/lib/journal/types";
+import { getUsageSummary, type UsageLoad } from "@/lib/usage/api";
 
 export const Route = createFileRoute("/log")({
   validateSearch: (search: Record<string, unknown>) => ({
     auth: search.auth === "error" ? ("error" as const) : undefined,
   }),
+  loader: () => getUsageSummary(),
   component: LogPage,
 });
 
@@ -19,10 +22,62 @@ const STATUSES: { id: LogStatus; label: string }[] = [
   { id: "shipped", label: "Закрыто" },
 ];
 
+function formatTokens(n: number) {
+  return n.toLocaleString("ru-RU");
+}
+
+function UsagePanel({ user, load }: { user: boolean; load: UsageLoad }) {
+  const usage = user && load.status === "ready" ? load.usage : null;
+  return (
+    <section className="mt-8 max-w-xl">
+      <p className="font-mono text-xs uppercase tracking-caps text-accent">
+        Токены
+      </p>
+      {usage ? (
+        <dl className="mt-3 grid grid-cols-3 gap-3">
+          <div className="rounded-lg bg-surface px-4 py-3 shadow-border">
+            <dt className="font-mono text-xs uppercase tracking-caps text-muted">
+              7 дней
+            </dt>
+            <dd className="mt-1 font-display text-3xl italic tabular-nums text-fg">
+              {formatTokens(usage.weekTokens)}
+            </dd>
+          </div>
+          <div className="rounded-lg bg-surface px-4 py-3 shadow-border">
+            <dt className="font-mono text-xs uppercase tracking-caps text-muted">
+              Всего
+            </dt>
+            <dd className="mt-1 font-display text-3xl italic tabular-nums text-fg">
+              {formatTokens(usage.allTimeTokens)}
+            </dd>
+          </div>
+          <div className="rounded-lg bg-surface px-4 py-3 shadow-border">
+            <dt className="font-mono text-xs uppercase tracking-caps text-muted">
+              Харнес
+            </dt>
+            <dd className="mt-1 truncate font-display text-2xl italic text-fg">
+              {usage.lastHarness ?? "—"}
+            </dd>
+          </div>
+        </dl>
+      ) : user && load.status === "error" ? (
+        <p className="mt-3 text-sm text-muted">Не удалось прочитать расход.</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted">
+          Войди через GitHub, чтобы локальный харнес писал расход токенов. After
+          Hours агента не запускает.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function LogPage() {
   const { entries, setStatus, drop, user } = useAccount();
+  const usage = Route.useLoaderData();
   const authError = Route.useSearch().auth === "error";
   const shown = entries;
+  const stats = summarizeJournal(shown);
 
   return (
     <NightShell>
@@ -40,6 +95,34 @@ function LogPage() {
       {authError ? (
         <p className="mt-3 text-sm text-accent" role="alert">
           GitHub не пустил. Проверь OAuth-приложение и попробуй ещё раз.
+        </p>
+      ) : null}
+
+      <UsagePanel user={Boolean(user)} load={usage} />
+
+      {shown.length > 0 ? (
+        <dl className="mt-8 grid max-w-xl grid-cols-3 gap-3">
+          {(
+            [
+              ["taken", "Взято", stats.taken],
+              ["shipping", "В работе", stats.shipping],
+              ["shipped", "Закрыто", stats.shipped],
+            ] as const
+          ).map(([id, label, value]) => (
+            <div key={id} className="rounded-lg bg-surface px-4 py-3 shadow-border">
+              <dt className="font-mono text-xs uppercase tracking-caps text-muted">
+                {label}
+              </dt>
+              <dd className="mt-1 font-display text-3xl italic tabular-nums text-fg">
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {shown.length > 0 && stats.topKind ? (
+        <p className="mt-3 max-w-xl text-sm text-muted">
+          Всего {stats.total}. Чаще — {KIND_META[stats.topKind].track}.
         </p>
       ) : null}
 

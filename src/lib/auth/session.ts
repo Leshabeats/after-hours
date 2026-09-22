@@ -72,8 +72,7 @@ export function readOAuthStateFromRequest(request: Request) {
   return payload.state;
 }
 
-export function readSession(): SessionUser | null {
-  const token = getCookie(SESSION_COOKIE);
+function sessionFromToken(token: string | undefined): SessionUser | null {
   if (!token) return null;
   const payload = verifyPayload<SessionPayload>(token, readAuthSecret());
   if (!payload || payload.exp < Date.now()) return null;
@@ -84,6 +83,14 @@ export function readSession(): SessionUser | null {
     name: payload.name ?? "",
     avatarUrl: payload.avatarUrl ?? "",
   };
+}
+
+export function readSession(): SessionUser | null {
+  return sessionFromToken(getCookie(SESSION_COOKIE));
+}
+
+export function readSessionFromRequest(request: Request): SessionUser | null {
+  return sessionFromToken(cookieFromRequest(request, SESSION_COOKIE));
 }
 
 export function writeSession(user: SessionUser) {

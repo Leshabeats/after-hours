@@ -1,12 +1,29 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isKind, isLogStatus, type LogEntry, type LogStatus } from "./types.ts";
 
+export type JournalImportResult = {
+  imported: boolean;
+  entries: LogEntry[];
+};
+
 export type JournalRepo = {
   list: (userId: string) => LogEntry[];
   take: (userId: string, entry: LogEntry) => LogEntry[];
   setStatus: (userId: string, id: string, status: LogStatus) => LogEntry[] | null;
   drop: (userId: string, id: string) => LogEntry[] | null;
+  importIfEmpty: (userId: string, entries: LogEntry[]) => JournalImportResult;
 };
+
+function uniqueEntries(entries: readonly LogEntry[]): LogEntry[] {
+  const seen = new Set<string>();
+  const next: LogEntry[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    next.push(clone(entry));
+  }
+  return next;
+}
 
 function clone(entry: LogEntry): LogEntry {
   return { ...entry };
@@ -44,6 +61,12 @@ export function createMemoryJournal(): JournalRepo {
         current.filter((item) => item.id !== id),
       );
       return list(userId);
+    },
+    importIfEmpty(userId, entries) {
+      const current = byUser.get(userId) ?? [];
+      if (current.length > 0) return { imported: false, entries: list(userId) };
+      byUser.set(userId, uniqueEntries(entries));
+      return { imported: true, entries: list(userId) };
     },
   };
 }
@@ -119,6 +142,9 @@ export function createSqliteJournal(db: DatabaseSync): JournalRepo {
   const dropStmt = db.prepare(
     `DELETE FROM journal WHERE user_id = ? AND mission_id = ?`,
   );
+  const countStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM journal WHERE user_id = ?`,
+  );
 
   function list(userId: string) {
     return (listStmt.all(userId) as JournalRow[])
@@ -126,22 +152,26 @@ export function createSqliteJournal(db: DatabaseSync): JournalRepo {
       .filter((entry): entry is LogEntry => Boolean(entry));
   }
 
+  function insert(userId: string, entry: LogEntry) {
+    insertStmt.run(
+      userId,
+      entry.id,
+      entry.owner,
+      entry.repo,
+      entry.number,
+      entry.title,
+      entry.kind,
+      entry.url,
+      entry.isPr ? 1 : 0,
+      entry.status,
+      entry.takenAt,
+    );
+  }
+
   return {
     list,
     take(userId, entry) {
-      insertStmt.run(
-        userId,
-        entry.id,
-        entry.owner,
-        entry.repo,
-        entry.number,
-        entry.title,
-        entry.kind,
-        entry.url,
-        entry.isPr ? 1 : 0,
-        entry.status,
-        entry.takenAt,
-      );
+      insert(userId, entry);
       return list(userId);
     },
     setStatus(userId, id, status) {
@@ -153,6 +183,21 @@ export function createSqliteJournal(db: DatabaseSync): JournalRepo {
       const result = dropStmt.run(userId, id);
       if (result.changes === 0) return null;
       return list(userId);
+    },
+    importIfEmpty(userId, entries) {
+      const n = Number((countStmt.get(userId) as { n: number } | undefined)?.n ?? 0);
+      if (n > 0) return { imported: false, entries: list(userId) };
+      const unique = uniqueEntries(entries);
+      if (unique.length === 0) return { imported: true, entries: [] };
+      db.exec("BEGIN");
+      try {
+        for (const entry of unique) insert(userId, entry);
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+      return { imported: true, entries: list(userId) };
     },
   };
 }

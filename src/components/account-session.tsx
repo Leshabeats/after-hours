@@ -2,7 +2,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -11,10 +13,17 @@ import { Button } from "@/components/ui/button";
 import {
   dropNight,
   getAuthSnapshot,
+  importDeviceJournal,
   setNightStatus,
   signOut,
   takeNight,
 } from "@/lib/journal/api";
+import {
+  decideDeviceJournalUpload,
+  MAX_DEVICE_IMPORT,
+  readDeviceUploadFlag,
+  writeDeviceUploadFlag,
+} from "@/lib/journal/import";
 import type { AuthSnapshot, LogEntry, LogStatus } from "@/lib/journal/types";
 import { entryFromMission } from "@/lib/journal/types";
 import type { Mission } from "@/lib/kinds";
@@ -48,6 +57,68 @@ export function AccountProvider({
   const localDrop = useNightLog((s) => s.drop);
   const hydrated = useHydrated();
   const [snapshot, setSnapshot] = useState(initial);
+  const [uploadAttempt, setUploadAttempt] = useState(0);
+  const uploadUserRef = useRef<string | null>(null);
+  const uploadGate = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const user = snapshot.user;
+    if (!user) {
+      uploadUserRef.current = null;
+      return;
+    }
+    const storage = typeof localStorage === "undefined" ? null : localStorage;
+    const serverCount = snapshot.entries?.length ?? 0;
+    const decision = decideDeviceJournalUpload({
+      signedIn: true,
+      serverCount,
+      localCount: localEntries.length,
+      alreadyAttempted:
+        uploadUserRef.current === user.id || readDeviceUploadFlag(user.id, storage),
+    });
+    if (decision === "skip") return;
+    if (decision === "keep-server") {
+      uploadUserRef.current = user.id;
+      writeDeviceUploadFlag(user.id, storage);
+      return;
+    }
+
+    uploadUserRef.current = user.id;
+    const truncated = localEntries.length > MAX_DEVICE_IMPORT;
+    const payload = localEntries.slice(0, MAX_DEVICE_IMPORT);
+    let release = () => {};
+    uploadGate.current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    void importDeviceJournal({ data: { entries: payload } })
+      .then((result) => {
+        if (uploadUserRef.current !== user.id) return;
+        if (result.ok === "anonymous") {
+          uploadUserRef.current = null;
+          return;
+        }
+        if (result.ok === "imported") {
+          writeDeviceUploadFlag(user.id, storage);
+          if (truncated) {
+            toast(`С устройства перенесены последние ${MAX_DEVICE_IMPORT} ночей.`);
+          }
+          if (result.skipped > 0) {
+            toast("Часть ночей с устройства не прошла проверку и осталась локально.");
+          }
+        }
+        setSnapshot((prev) => {
+          if (prev.user?.id !== user.id) return prev;
+          return { ...prev, entries: result.entries };
+        });
+      })
+      .catch(() => {
+        if (uploadUserRef.current === user.id) uploadUserRef.current = null;
+        toast("Не удалось перенести журнал с устройства.");
+        setUploadAttempt((n) => n + 1);
+      })
+      .finally(release);
+  }, [hydrated, snapshot.user, snapshot.entries, localEntries, uploadAttempt]);
 
   const source: AccountContextValue["source"] = snapshot.user
     ? "account"
@@ -59,6 +130,7 @@ export function AccountProvider({
 
   const take = useCallback(
     async (mission: Mission) => {
+      await uploadGate.current;
       const result = await takeNight({ data: entryFromMission(mission) });
       if (result.ok === "anonymous") {
         localTake(mission);
@@ -71,6 +143,7 @@ export function AccountProvider({
 
   const setStatus = useCallback(
     async (id: string, status: LogStatus) => {
+      await uploadGate.current;
       const result = await setNightStatus({ data: { id, status } });
       if (result.ok === "anonymous") {
         localSetStatus(id, status);
@@ -85,6 +158,7 @@ export function AccountProvider({
 
   const drop = useCallback(
     async (id: string) => {
+      await uploadGate.current;
       const result = await dropNight({ data: { id } });
       if (result.ok === "anonymous") {
         localDrop(id);
