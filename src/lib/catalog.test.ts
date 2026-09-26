@@ -74,6 +74,11 @@ describe("catalogProjects", () => {
     }
     const ai = catalogProjects("ai").map((p) => `${p.owner}/${p.repo}`);
     assert.ok(ai.includes("ollama/ollama"));
+    assert.ok(ai.includes("sgl-project/sglang"));
+    assert.equal(ai.includes("huggingface/text-generation-inference"), false);
     assert.equal(ai.includes("torvalds/linux"), false);
+    const data = catalogProjects("data").map((p) => `${p.owner}/${p.repo}`);
+    assert.ok(data.includes("apache/pulsar"));
+    assert.equal(data.includes("apache/kafka"), false);
   });
 });

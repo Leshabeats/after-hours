@@ -70,7 +70,7 @@ export const WORLDS = [
       { owner: "ggml-org", repo: "llama.cpp", blurb: "Инференс на своём железе" },
       { owner: "vllm-project", repo: "vllm", blurb: "Сервер инференса" },
       { owner: "ollama", repo: "ollama", blurb: "Локальные модели" },
-      { owner: "huggingface", repo: "text-generation-inference", blurb: "Сервер генерации" },
+      { owner: "sgl-project", repo: "sglang", blurb: "Сервер генерации" },
     ],
   },
   {
