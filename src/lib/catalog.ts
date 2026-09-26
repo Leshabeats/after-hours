@@ -94,7 +94,7 @@ export const WORLDS = [
       { owner: "duckdb", repo: "duckdb", blurb: "Аналитическая база" },
       { owner: "ClickHouse", repo: "ClickHouse", blurb: "Колоночная база" },
       { owner: "redis", repo: "redis", blurb: "Ключ-значение" },
-      { owner: "apache", repo: "kafka", blurb: "Поток событий" },
+      { owner: "apache", repo: "pulsar", blurb: "Поток событий" },
       { owner: "elastic", repo: "elasticsearch", blurb: "Поиск и индекс" },
       { owner: "questdb", repo: "questdb", blurb: "База временных рядов" },
     ],
