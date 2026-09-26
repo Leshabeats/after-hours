@@ -11,6 +11,11 @@ import {
 } from "@/lib/catalog";
 import { hasLibraryManifest, isLibraryCatalogNoise } from "@/lib/library-filter";
 import {
+  FRESH_LIMIT,
+  mergedIssueNumbers,
+  withoutMergedFixes,
+} from "@/lib/issue-slice";
+import {
   classifyKind,
   decodeEntities,
   excerptOf,
@@ -22,7 +27,14 @@ const CACHE_MS = 12 * 60 * 1000;
 const PROJECT_CACHE_MS = 6 * 60 * 60 * 1000;
 const cache = new Map<
   string,
-  { at: number; missions: Mission[]; live: boolean }
+  {
+    at: number;
+    missions: Mission[];
+    live: boolean;
+    issueTotal: number | null;
+    prTotal: number | null;
+    filterSkipped: boolean;
+  }
 >();
 const projectCache = new Map<string, { at: number; card: ProjectCard }>();
 
@@ -141,14 +153,20 @@ function toMission(
   };
 }
 
-async function searchIssues(q: string, perPage: number): Promise<GhItem[]> {
+async function searchIssues(
+  q: string,
+  perPage: number,
+): Promise<{ items: GhItem[]; total: number | null }> {
   const url = `https://api.github.com/search/issues?per_page=${perPage}&sort=updated&order=desc&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GitHub issue search ${res.status}`);
   }
-  const json = (await res.json()) as { items?: GhItem[] };
-  return json.items ?? [];
+  const json = (await res.json()) as { items?: GhItem[]; total_count?: number };
+  return {
+    items: json.items ?? [],
+    total: typeof json.total_count === "number" ? json.total_count : null,
+  };
 }
 
 function staticCard(spec: CatalogRepo): ProjectCard {
@@ -336,10 +354,46 @@ export async function loadProjects(query: CatalogQuery): Promise<ProjectShelf> {
   };
 }
 
-export async function loadRepoMissions(
-  owner: string,
-  repo: string,
-): Promise<{ missions: Mission[]; live: boolean; profile: ProjectCard }> {
+async function closingPrsByIssue(owner: string, repo: string, numbers: number[]) {
+  if (numbers.length === 0) return { failed: false, merged: new Set<number>() };
+  const fields = numbers
+    .map(
+      (number, index) =>
+        `i${index}: issue(number: ${number}) { number closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { merged } } }`,
+    )
+    .join("\n");
+  const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(repo)}) { ${fields} } }`;
+  try {
+    const res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (!res.ok) return { failed: true, merged: new Set<number>() };
+    const json = (await res.json()) as {
+      errors?: unknown[];
+      data?: { repository?: Parameters<typeof mergedIssueNumbers>[0] };
+    };
+    if (json.errors?.length || !json.data?.repository) {
+      return { failed: true, merged: new Set<number>() };
+    }
+    return { failed: false, merged: mergedIssueNumbers(json.data.repository) };
+  } catch {
+    return { failed: true, merged: new Set<number>() };
+  }
+}
+
+export type RepoMissions = {
+  issues: Mission[];
+  pullRequests: Mission[];
+  issueTotal: number | null;
+  prTotal: number | null;
+  filterSkipped: boolean;
+  live: boolean;
+  profile: ProjectCard;
+};
+
+export async function loadRepoMissions(owner: string, repo: string): Promise<RepoMissions> {
   const profile = await fetchProject({
     owner,
     repo,
@@ -348,19 +402,59 @@ export async function loadRepoMissions(
   const key = `repo|${owner}/${repo}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) {
-    return { missions: hit.missions, live: hit.live, profile };
+    return {
+      issues: hit.missions.filter((mission) => !mission.isPr),
+      pullRequests: hit.missions.filter((mission) => mission.isPr),
+      issueTotal: hit.issueTotal,
+      prTotal: hit.prTotal,
+      filterSkipped: hit.filterSkipped,
+      live: hit.live,
+      profile,
+    };
   }
   try {
-    const items = await searchIssues(
-      `is:open archived:false repo:${owner}/${repo}`,
-      40,
-    );
-    const missions = items
+    const [issueSearch, prSearch] = await Promise.all([
+      searchIssues(`is:issue is:open archived:false repo:${owner}/${repo}`, FRESH_LIMIT),
+      searchIssues(`is:pr is:open archived:false repo:${owner}/${repo}`, FRESH_LIMIT),
+    ]);
+    const issues = issueSearch.items
       .map((item) => toMission(item, true, ""))
       .filter((mission): mission is Mission => Boolean(mission));
-    if (missions.length > 0) {
-      cache.set(key, { at: Date.now(), missions, live: true });
-      return { missions, live: true, profile };
+    const pullRequests = prSearch.items
+      .map((item) => toMission({ ...item, pull_request: item.pull_request ?? {} }, true, ""))
+      .filter((mission): mission is Mission => Boolean(mission));
+    const closing = await closingPrsByIssue(
+      owner,
+      repo,
+      issues.map((mission) => mission.number),
+    );
+    const filtered = withoutMergedFixes(
+      issues.map((mission) => ({
+        ...mission,
+        closingPrs: closing.merged.has(mission.number) ? [{ merged: true }] : [],
+      })),
+      closing.failed,
+    );
+    const keptIssues = filtered.items;
+    const missions = [...keptIssues, ...pullRequests];
+    if (missions.length > 0 || (issueSearch.total ?? 0) + (prSearch.total ?? 0) > 0) {
+      cache.set(key, {
+        at: Date.now(),
+        missions,
+        live: true,
+        issueTotal: issueSearch.total,
+        prTotal: prSearch.total,
+        filterSkipped: filtered.filterSkipped,
+      });
+      return {
+        issues: keptIssues,
+        pullRequests,
+        issueTotal: issueSearch.total,
+        prTotal: prSearch.total,
+        filterSkipped: filtered.filterSkipped,
+        live: true,
+        profile,
+      };
     }
   } catch {
     // fall through
@@ -368,7 +462,15 @@ export async function loadRepoMissions(
   const seeded = SEED_MISSIONS.filter(
     (mission) => mission.owner === owner && mission.repo === repo,
   );
-  return { missions: seeded, live: false, profile };
+  return {
+    issues: seeded.filter((mission) => !mission.isPr),
+    pullRequests: seeded.filter((mission) => mission.isPr),
+    issueTotal: null,
+    prTotal: null,
+    filterSkipped: false,
+    live: false,
+    profile,
+  };
 }
 
 function rememberMissions(owner: string, repo: string, missions: Mission[]) {
@@ -381,6 +483,9 @@ function rememberMissions(owner: string, repo: string, missions: Mission[]) {
     at: hit?.at ?? Date.now(),
     missions: [...merged.values()],
     live: true,
+    issueTotal: hit?.issueTotal ?? null,
+    prTotal: hit?.prTotal ?? null,
+    filterSkipped: hit?.filterSkipped ?? false,
   });
 }
 
@@ -414,8 +519,8 @@ export async function loadMission(
     // fall through to search
   }
   try {
-    const items = await searchIssues(`repo:${owner}/${repo} ${number}`, 10);
-    const item = items.find((entry) => entry.number === number);
+    const found = await searchIssues(`repo:${owner}/${repo} ${number}`, 10);
+    const item = found.items.find((entry) => entry.number === number);
     const mapped = item ? toMission(item, true, "") : null;
     if (mapped) {
       rememberMissions(owner, repo, [mapped]);
