@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { getMission } from "@/lib/api";
 import { defaultAgentPrompt } from "@/lib/agent-prompt";
 import { briefPrompt } from "@/lib/brief-prompt";
-import { openCodexApp } from "@/lib/codex-link";
+import { codexAppChatUrl } from "@/lib/codex-link";
 import { KIND_META, relativeTime } from "@/lib/kinds";
 import { useAccount } from "@/components/account-session";
 import { ExternalLink } from "lucide-react";
@@ -112,19 +112,22 @@ function MissionPage() {
       </div>
 
       <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        <Button
-          type="button"
-          size="lg"
-          onClick={() => {
-            void (async () => {
-              if (!taken) await take(mission);
-              await setStatus(mission.id, "shipping");
-              openCodexApp(defaultAgentPrompt(mission));
-              toast("Codex открыт. Промпт в новом чате, осталось нажать Enter.");
-            })();
-          }}
-        >
-          Взять эту ночь
+        <Button asChild size="lg">
+          <a
+            href={codexAppChatUrl(defaultAgentPrompt(mission))}
+            onClick={(event) => {
+              event.preventDefault();
+              const href = event.currentTarget.href;
+              void (async () => {
+                if (!taken) await take(mission);
+                await setStatus(mission.id, "shipping");
+                window.location.href = href;
+                toast("Codex открыт. Промпт в новом чате, осталось нажать Enter.");
+              })();
+            }}
+          >
+            Взять эту ночь
+          </a>
         </Button>
         <Button
           type="button"
@@ -163,17 +166,17 @@ function MissionPage() {
           Открывает новый чат в Codex у тебя на компьютере. Промпт уже внутри:
           суть, шаги, риски. Ключ сайта не используется.
         </p>
-        <Button
-          type="button"
-          className="mt-6"
-          variant="paper"
-          size="lg"
-          onClick={() => {
-            openCodexApp(briefPrompt(mission));
-            toast("Codex открыт. Промпт разбора в новом чате, осталось нажать Enter.");
-          }}
-        >
-          Разобрать
+        <Button asChild className="mt-6" variant="paper" size="lg">
+          <a
+            href={codexAppChatUrl(briefPrompt(mission))}
+            onClick={(event) => {
+              event.preventDefault();
+              window.location.href = event.currentTarget.href;
+              toast("Codex открыт. Промпт разбора в новом чате, осталось нажать Enter.");
+            }}
+          >
+            Разобрать
+          </a>
         </Button>
       </section>
     </NightShell>
