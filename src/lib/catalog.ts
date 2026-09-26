@@ -60,6 +60,45 @@ export const WORLDS = [
       { owner: "flatpak", repo: "flatpak", blurb: "Приложения" },
     ],
   },
+  {
+    id: "ai",
+    label: "AI",
+    hint: "Модели, инференс, тулинг",
+    projects: [
+      { owner: "pytorch", repo: "pytorch", blurb: "Обучение моделей" },
+      { owner: "huggingface", repo: "transformers", blurb: "Модели и токенизаторы" },
+      { owner: "ggml-org", repo: "llama.cpp", blurb: "Инференс на своём железе" },
+      { owner: "vllm-project", repo: "vllm", blurb: "Сервер инференса" },
+      { owner: "ollama", repo: "ollama", blurb: "Локальные модели" },
+      { owner: "sgl-project", repo: "sglang", blurb: "Сервер генерации" },
+    ],
+  },
+  {
+    id: "games",
+    label: "Games",
+    hint: "Движки и инструменты",
+    projects: [
+      { owner: "godotengine", repo: "godot", blurb: "Игровой движок" },
+      { owner: "bevyengine", repo: "bevy", blurb: "Движок на Rust" },
+      { owner: "raysan5", repo: "raylib", blurb: "Библиотека для игр" },
+      { owner: "libgdx", repo: "libgdx", blurb: "Движок на Java" },
+      { owner: "SFML", repo: "SFML", blurb: "Мультимедиа для игр" },
+      { owner: "love2d", repo: "love", blurb: "Движок на Lua" },
+    ],
+  },
+  {
+    id: "data",
+    label: "Data",
+    hint: "Базы и клиенты",
+    projects: [
+      { owner: "duckdb", repo: "duckdb", blurb: "Аналитическая база" },
+      { owner: "ClickHouse", repo: "ClickHouse", blurb: "Колоночная база" },
+      { owner: "redis", repo: "redis", blurb: "Ключ-значение" },
+      { owner: "apache", repo: "pulsar", blurb: "Поток событий" },
+      { owner: "elastic", repo: "elasticsearch", blurb: "Поиск и индекс" },
+      { owner: "questdb", repo: "questdb", blurb: "База временных рядов" },
+    ],
+  },
 ] as const;
 
 export type CategoryId = (typeof WORLDS)[number]["id"];

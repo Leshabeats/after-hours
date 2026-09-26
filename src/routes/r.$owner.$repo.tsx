@@ -5,7 +5,8 @@ import { NightShell } from "@/components/night-shell";
 import { MissionCard } from "@/components/mission-card";
 import { FilterChip } from "@/components/filter-chip";
 import { getRepoMissions } from "@/lib/api";
-import { KIND_META, KINDS, type Kind } from "@/lib/kinds";
+import { freshSliceCaption } from "@/lib/issue-slice";
+import { KIND_META, KINDS, type Kind, type Mission } from "@/lib/kinds";
 
 export const Route = createFileRoute("/r/$owner/$repo")({
   loader: ({ params }) => getRepoMissions({ data: params }),
@@ -23,12 +24,19 @@ export const Route = createFileRoute("/r/$owner/$repo")({
 
 function RepoPage() {
   const { owner, repo } = Route.useParams();
-  const { missions, live, profile } = Route.useLoaderData();
+  const { issues, pullRequests, issueTotal, prTotal, filterSkipped, live, profile } =
+    Route.useLoaderData();
   const [kind, setKind] = useState<Kind | "all">("all");
-  const shown = useMemo(
-    () => (kind === "all" ? missions : missions.filter((mission) => mission.kind === kind)),
-    [missions, kind],
+  const shownIssues = useMemo(
+    () => filterKind(issues, kind),
+    [issues, kind],
   );
+  const shownPrs = useMemo(
+    () => filterKind(pullRequests, kind),
+    [pullRequests, kind],
+  );
+  const issueCaption = freshSliceCaption(issues.length, issueTotal);
+  const prCaption = freshSliceCaption(pullRequests.length, prTotal);
   const why = profile.blurb && profile.blurb !== profile.description ? profile.blurb : "";
 
   return (
@@ -84,6 +92,9 @@ function RepoPage() {
         </p>
         <p className="text-xs text-faint">
           {live ? "Эфир GitHub открыт." : "Эфир молчит."}
+          {filterSkipped
+            ? " Фильтр уже смёрженных фиксов пропущен: квота GitHub."
+            : ""}
         </p>
       </div>
 
@@ -119,15 +130,45 @@ function RepoPage() {
         })}
       </div>
 
-      {shown.length === 0 ? (
-        <p className="mt-12 text-sm text-muted">Открытых ишью нет.</p>
+      <WorkSection title="Ишью" caption={issueCaption} missions={shownIssues} empty="Открытых ишью нет." />
+      <WorkSection
+        title="Pull request"
+        caption={prCaption}
+        missions={shownPrs}
+        empty="Открытых pull request нет."
+      />
+    </NightShell>
+  );
+}
+
+function filterKind(missions: Mission[], kind: Kind | "all") {
+  return kind === "all" ? missions : missions.filter((mission) => mission.kind === kind);
+}
+
+function WorkSection({
+  title,
+  caption,
+  missions,
+  empty,
+}: {
+  title: string;
+  caption: string | null;
+  missions: Mission[];
+  empty: string;
+}) {
+  return (
+    <section className="mt-10">
+      <h2 className="font-mono text-xs uppercase tracking-caps text-muted">{title}</h2>
+      {caption ? <p className="mt-2 text-sm text-muted">{caption}</p> : null}
+      {missions.length === 0 ? (
+        <p className="mt-4 text-sm text-muted">{empty}</p>
       ) : (
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
-          {shown.map((mission) => (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          {missions.map((mission) => (
             <MissionCard key={mission.id} mission={mission} />
           ))}
         </div>
       )}
-    </NightShell>
+    </section>
   );
 }

@@ -62,5 +62,23 @@ describe("catalogProjects", () => {
     const names = catalogProjects("stars").map((p) => `${p.owner}/${p.repo}`);
     assert.ok(names.includes("godotengine/godot"));
     assert.ok(names.includes("obsproject/obs-studio"));
+    assert.ok(names.includes("ollama/ollama"));
+  });
+
+  it("keeps Linux off the kernel mirror and adds AI, Games, and Data", () => {
+    const linux = catalogProjects("linux").map((p) => `${p.owner}/${p.repo}`);
+    assert.equal(linux.includes("torvalds/linux"), false);
+    assert.ok(linux.length > 0);
+    for (const world of ["ai", "games", "data"] as const) {
+      assert.ok(catalogProjects(world).length > 0);
+    }
+    const ai = catalogProjects("ai").map((p) => `${p.owner}/${p.repo}`);
+    assert.ok(ai.includes("ollama/ollama"));
+    assert.ok(ai.includes("sgl-project/sglang"));
+    assert.equal(ai.includes("huggingface/text-generation-inference"), false);
+    assert.equal(ai.includes("torvalds/linux"), false);
+    const data = catalogProjects("data").map((p) => `${p.owner}/${p.repo}`);
+    assert.ok(data.includes("apache/pulsar"));
+    assert.equal(data.includes("apache/kafka"), false);
   });
 });
