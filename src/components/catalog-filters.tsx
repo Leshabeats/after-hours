@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { FilterChip } from "@/components/filter-chip";
 import {
-  CATEGORIES,
   LANGUAGES,
+  WORLDS,
   type CategoryId,
   type LanguageId,
 } from "@/lib/catalog";
@@ -22,7 +22,7 @@ export function CatalogFilters({
   return (
     <div className="mt-8 space-y-5">
       <FilterRow label="Направление">
-        {CATEGORIES.map((item) => (
+        {WORLDS.map((item) => (
           <FilterChip key={item.id} active={cat === item.id} asChild>
             <Link
               to={to}
@@ -41,7 +41,7 @@ export function CatalogFilters({
       </FilterRow>
       <FilterRow label="Язык">
         <FilterChip active={!lang} asChild>
-          <Link to={to} search={{ cat }}>
+          <Link to={to} search={cat === "web" ? {} : { cat }}>
             Все
           </Link>
         </FilterChip>
