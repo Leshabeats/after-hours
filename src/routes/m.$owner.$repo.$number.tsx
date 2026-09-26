@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { getMission } from "@/lib/api";
 import { defaultAgentPrompt } from "@/lib/agent-prompt";
 import { briefPrompt } from "@/lib/brief-prompt";
 import { codexAppChatUrl } from "@/lib/codex-link";
+import { repoIssuesLink } from "@/lib/repo-issues";
 import { KIND_META, relativeTime } from "@/lib/kinds";
 import { useAccount } from "@/components/account-session";
 import { ExternalLink } from "lucide-react";
@@ -41,7 +42,7 @@ function MissionPending() {
 
 function MissionPage() {
   const mission = Route.useLoaderData();
-  const router = useRouter();
+  const issuesLink = repoIssuesLink(mission.owner, mission.repo);
   const meta = KIND_META[mission.kind];
   const { take, setStatus, entries } = useAccount();
   const taken = entries.some((e) => e.id === mission.id);
@@ -61,22 +62,13 @@ function MissionPage() {
         <Link to="/list" className="text-xs tracking-wide text-muted hover:text-fg">
           К списку
         </Link>
-        <button
-          type="button"
+        <Link
+          to={issuesLink.to}
+          params={issuesLink.params}
           className="text-xs tracking-wide text-muted hover:text-fg"
-          onClick={() => {
-            if (router.history.canGoBack()) {
-              router.history.back();
-              return;
-            }
-            void router.navigate({
-              to: "/r/$owner/$repo",
-              params: { owner: mission.owner, repo: mission.repo },
-            });
-          }}
         >
           К списку ишью
-        </button>
+        </Link>
       </div>
 
       <p className="mt-6 font-mono text-xs uppercase tracking-caps text-accent">

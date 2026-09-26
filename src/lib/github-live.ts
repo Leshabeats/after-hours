@@ -1,4 +1,4 @@
-import { SEED_MISSIONS, findSeed } from "@/lib/seed";
+import { SEED_MISSIONS, findSeed } from "./seed.ts";
 import {
   ecosystemProjects,
   findCatalogRepo,
@@ -8,20 +8,20 @@ import {
   type CatalogRepo,
   type CategoryId,
   type LanguageId,
-} from "@/lib/catalog";
-import { hasLibraryManifest, isLibraryCatalogNoise } from "@/lib/library-filter";
+} from "./catalog.ts";
+import { hasLibraryManifest, isLibraryCatalogNoise } from "./library-filter.ts";
 import {
   FRESH_LIMIT,
   mergedIssueNumbers,
   withoutMergedFixes,
-} from "@/lib/issue-slice";
+} from "./issue-slice.ts";
 import {
   classifyKind,
   decodeEntities,
   excerptOf,
   missionId,
   type Mission,
-} from "@/lib/kinds";
+} from "./kinds.ts";
 
 const CACHE_MS = 12 * 60 * 1000;
 const PROJECT_CACHE_MS = 6 * 60 * 60 * 1000;
@@ -36,6 +36,8 @@ const cache = new Map<
     filterSkipped: boolean;
   }
 >();
+/** Bodies opened one at a time. They must not satisfy the repository list cache. */
+const openedMissions = new Map<string, Mission>();
 const projectCache = new Map<string, { at: number; card: ProjectCard }>();
 
 export type ProjectCard = CatalogRepo & {
@@ -473,26 +475,20 @@ export async function loadRepoMissions(owner: string, repo: string): Promise<Rep
   };
 }
 
-function rememberMissions(owner: string, repo: string, missions: Mission[]) {
-  const key = `repo|${owner}/${repo}`;
-  const hit = cache.get(key);
-  const merged = new Map<number, Mission>();
-  for (const mission of hit?.missions ?? []) merged.set(mission.number, mission);
-  for (const mission of missions) merged.set(mission.number, mission);
-  cache.set(key, {
-    at: hit?.at ?? Date.now(),
-    missions: [...merged.values()],
-    live: true,
-    issueTotal: hit?.issueTotal ?? null,
-    prTotal: hit?.prTotal ?? null,
-    filterSkipped: hit?.filterSkipped ?? false,
-  });
+function openedKey(owner: string, repo: string, number: number) {
+  return `${owner}/${repo}#${number}`;
+}
+
+function rememberOpenedMission(mission: Mission) {
+  openedMissions.set(openedKey(mission.owner, mission.repo, mission.number), mission);
 }
 
 function cachedMission(owner: string, repo: string, number: number) {
-  return cache
+  const listed = cache
     .get(`repo|${owner}/${repo}`)
     ?.missions.find((mission) => mission.number === number);
+  if (listed?.body) return listed;
+  return openedMissions.get(openedKey(owner, repo, number)) ?? listed;
 }
 
 export async function loadMission(
@@ -511,7 +507,7 @@ export async function loadMission(
       const item = (await res.json()) as GhItem;
       const mapped = toMission(item, true, "");
       if (mapped) {
-        rememberMissions(owner, repo, [mapped]);
+        rememberOpenedMission(mapped);
         return mapped;
       }
     }
@@ -523,7 +519,7 @@ export async function loadMission(
     const item = found.items.find((entry) => entry.number === number);
     const mapped = item ? toMission(item, true, "") : null;
     if (mapped) {
-      rememberMissions(owner, repo, [mapped]);
+      rememberOpenedMission(mapped);
       return mapped;
     }
   } catch {

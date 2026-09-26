@@ -1,5 +1,5 @@
-import type { Mission } from "@/lib/kinds";
-import { classifyKind, excerptOf, missionId } from "@/lib/kinds";
+import type { Mission } from "./kinds.ts";
+import { classifyKind, excerptOf, missionId } from "./kinds.ts";
 
 type Seed = Omit<Mission, "id" | "kind" | "excerpt" | "live" | "language"> & {
   kind?: Mission["kind"];
