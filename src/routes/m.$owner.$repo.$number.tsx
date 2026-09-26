@@ -1,13 +1,14 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { briefMission, getMission, type Brief } from "@/lib/api";
+import { getMission } from "@/lib/api";
 import { defaultAgentPrompt } from "@/lib/agent-prompt";
+import { briefPrompt } from "@/lib/brief-prompt";
+import { openCodexApp } from "@/lib/codex-link";
 import { KIND_META, relativeTime } from "@/lib/kinds";
-import { notifyTaken, useAccount } from "@/components/account-session";
+import { useAccount } from "@/components/account-session";
 import { ExternalLink } from "lucide-react";
 
 export const Route = createFileRoute("/m/$owner/$repo/$number")({
@@ -40,12 +41,10 @@ function MissionPending() {
 
 function MissionPage() {
   const mission = Route.useLoaderData();
+  const router = useRouter();
   const meta = KIND_META[mission.kind];
-  const { take, entries } = useAccount();
+  const { take, setStatus, entries } = useAccount();
   const taken = entries.some((e) => e.id === mission.id);
-  const [brief, setBrief] = useState<Brief | null>(null);
-  const [briefing, setBriefing] = useState(false);
-  const [briefError, setBriefError] = useState("");
 
   async function copyPrompt(text: string, label: string) {
     try {
@@ -56,33 +55,29 @@ function MissionPage() {
     }
   }
 
-  async function runBrief() {
-    setBriefing(true);
-    setBriefError("");
-    const result = await briefMission({
-      data: {
-        owner: mission.owner,
-        repo: mission.repo,
-        number: mission.number,
-        title: mission.title,
-        body: mission.body.slice(0, 8000),
-        url: mission.url,
-        isPr: mission.isPr,
-      },
-    });
-    setBriefing(false);
-    if (!result.ok) {
-      setBriefError(result.error);
-      return;
-    }
-    setBrief(result.brief);
-  }
-
   return (
     <NightShell>
-      <Link to="/list" className="text-xs tracking-wide text-muted hover:text-fg">
-        К списку
-      </Link>
+      <div className="flex flex-wrap gap-x-4 gap-y-2">
+        <Link to="/list" className="text-xs tracking-wide text-muted hover:text-fg">
+          К списку
+        </Link>
+        <button
+          type="button"
+          className="text-xs tracking-wide text-muted hover:text-fg"
+          onClick={() => {
+            if (router.history.canGoBack()) {
+              router.history.back();
+              return;
+            }
+            void router.navigate({
+              to: "/r/$owner/$repo",
+              params: { owner: mission.owner, repo: mission.repo },
+            });
+          }}
+        >
+          К списку ишью
+        </button>
+      </div>
 
       <p className="mt-6 font-mono text-xs uppercase tracking-caps text-accent">
         {meta.track}
@@ -121,11 +116,15 @@ function MissionPage() {
           type="button"
           size="lg"
           onClick={() => {
-            void take(mission).then(() => notifyTaken());
+            void (async () => {
+              if (!taken) await take(mission);
+              await setStatus(mission.id, "shipping");
+              openCodexApp(defaultAgentPrompt(mission));
+              toast("Codex открыт. Промпт в новом чате, осталось нажать Enter.");
+            })();
           }}
-          disabled={taken}
         >
-          {taken ? "Уже в журнале" : "Взять эту ночь"}
+          Взять эту ночь
         </Button>
         <Button
           type="button"
@@ -161,107 +160,22 @@ function MissionPage() {
       <section className="mt-12 rounded-xl bg-surface p-6 shadow-border sm:p-8">
         <h2 className="font-display text-3xl italic">Разбор ночи</h2>
         <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-          Токены уходят сюда: модель читает ишью и возвращает план, риски и
-          готовый промпт для агента. Один запрос — по кнопке, не сам.
+          Открывает новый чат в Codex у тебя на компьютере. Промпт уже внутри:
+          суть, шаги, риски. Ключ сайта не используется.
         </p>
         <Button
           type="button"
           className="mt-6"
           variant="paper"
           size="lg"
-          disabled={briefing}
-          onClick={() => void runBrief()}
+          onClick={() => {
+            openCodexApp(briefPrompt(mission));
+            toast("Codex открыт. Промпт разбора в новом чате, осталось нажать Enter.");
+          }}
         >
-          {briefing ? "Читает…" : brief ? "Перечитать" : "Разобрать"}
+          Разобрать
         </Button>
-        {briefing ? (
-          <p className="mt-4 font-mono text-xs uppercase tracking-caps text-muted">
-            Читает тело. Это займёт несколько секунд.
-          </p>
-        ) : null}
-        {briefError ? (
-          <p className="mt-4 text-sm text-accent" role="alert">
-            {briefError}
-          </p>
-        ) : null}
-
-        {brief ? (
-          <div className="mt-8 space-y-6">
-            <BriefBlock title="Суть" body={brief.summary} />
-            <BriefBlock title="Зачем" body={brief.whyItMatters} />
-            <div>
-              <h3 className="font-mono text-xs uppercase tracking-caps text-muted">
-                Сложность
-              </h3>
-              <p className="mt-2 text-sm">
-                {brief.difficulty === "solo"
-                  ? "Одна ночь, одному"
-                  : brief.difficulty === "bleed"
-                    ? "Глубокий долг"
-                    : "Нужна голова"}
-              </p>
-            </div>
-            {brief.likelyFiles.length ? (
-              <div>
-                <h3 className="font-mono text-xs uppercase tracking-caps text-muted">
-                  Где смотреть
-                </h3>
-                <ul className="mt-2 space-y-1 font-mono text-sm text-fg">
-                  {brief.likelyFiles.map((f) => (
-                    <li key={f}>{f}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {brief.firstSteps.length ? (
-              <div>
-                <h3 className="font-mono text-xs uppercase tracking-caps text-muted">
-                  Первые шаги
-                </h3>
-                <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-relaxed">
-                  {brief.firstSteps.map((s) => (
-                    <li key={s}>{s}</li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
-            <BriefBlock title="Как проверить" body={brief.howToTest} />
-            <BriefBlock title="Риски" body={brief.risks} />
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="font-mono text-xs uppercase tracking-caps text-muted">
-                  Промпт агента
-                </h3>
-                <Button
-                  type="button"
-                  variant="quiet"
-                  size="sm"
-                  onClick={() =>
-                    copyPrompt(brief.agentPrompt, "Промпт скопирован")
-                  }
-                >
-                  Копировать
-                </Button>
-              </div>
-              <pre className="body-scroll mt-3 overflow-auto whitespace-pre-wrap rounded-md bg-bg p-4 font-mono text-xs leading-relaxed text-fg/90 shadow-border">
-                {brief.agentPrompt}
-              </pre>
-            </div>
-          </div>
-        ) : null}
       </section>
     </NightShell>
-  );
-}
-
-function BriefBlock({ title, body }: { title: string; body: string }) {
-  if (!body) return null;
-  return (
-    <div>
-      <h3 className="font-mono text-xs uppercase tracking-caps text-muted">
-        {title}
-      </h3>
-      <p className="mt-2 text-sm leading-relaxed text-fg/90">{body}</p>
-    </div>
   );
 }

@@ -29,7 +29,7 @@ npm run dev
 Ни одна не обязательна, кроме GitHub OAuth если нужен вход.
 
 - `GITHUB_TOKEN` — живой каталог с GitHub. Без токена приложение быстро упрётся в rate limit и покажет зашитый seed.
-- `XAI_API_KEY` — кнопка «Разбор ночи» на карточке миссии. Без ключа разбор недоступен, остальное работает.
+- «Взять эту ночь» и «Разобрать» открывают Codex на компьютере того, кто нажал. Сервер агента не запускает.
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — вход через GitHub. OAuth App: Homepage `http://127.0.0.1:5173`, callback `http://127.0.0.1:5173/api/auth/callback`.
 - `APP_ORIGIN` — публичный origin для redirect URI.
 - `AUTH_SECRET` — подпись сессии, от 32 символов. Локально файл `data/.auth-secret` создаётся сам.
