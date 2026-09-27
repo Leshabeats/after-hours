@@ -5,7 +5,7 @@ import { NightShell } from "@/components/night-shell";
 import { MissionCard } from "@/components/mission-card";
 import { FilterChip } from "@/components/filter-chip";
 import { getRepoMissions } from "@/lib/api";
-import { freshSliceCaption } from "@/lib/issue-slice";
+import { emptySliceMessage, freshSliceCaption } from "@/lib/issue-slice";
 import { KIND_META, KINDS, type Kind, type Mission } from "@/lib/kinds";
 
 export const Route = createFileRoute("/r/$owner/$repo")({
@@ -130,12 +130,27 @@ function RepoPage() {
         })}
       </div>
 
-      <WorkSection title="Ишью" caption={issueCaption} missions={shownIssues} empty="Открытых ишью нет." />
+      <WorkSection
+        title="Ишью"
+        caption={issueCaption}
+        missions={shownIssues}
+        empty={emptySliceMessage(
+          issues.length,
+          shownIssues.length,
+          kind !== "all",
+          "Открытых ишью нет.",
+        )}
+      />
       <WorkSection
         title="Pull request"
         caption={prCaption}
         missions={shownPrs}
-        empty="Открытых pull request нет."
+        empty={emptySliceMessage(
+          pullRequests.length,
+          shownPrs.length,
+          kind !== "all",
+          "Открытых pull request нет.",
+        )}
       />
     </NightShell>
   );

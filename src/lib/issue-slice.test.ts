@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  emptySliceMessage,
   freshSliceCaption,
+  issueClosedByMergedPull,
   mergedIssueNumbers,
   splitWork,
   withoutMergedFixes,
@@ -15,6 +17,47 @@ describe("freshSliceCaption", () => {
   it("stays quiet when everything returned fits", () => {
     assert.equal(freshSliceCaption(12, 12), null);
     assert.equal(freshSliceCaption(0, null), null);
+  });
+});
+
+describe("emptySliceMessage", () => {
+  it("says the track is empty when the slice itself has work", () => {
+    assert.equal(
+      emptySliceMessage(4, 0, true, "Открытых pull request нет."),
+      "В этом треке пусто.",
+    );
+    assert.equal(
+      emptySliceMessage(0, 0, true, "Открытых pull request нет."),
+      "Открытых pull request нет.",
+    );
+  });
+});
+
+describe("issueClosedByMergedPull", () => {
+  it("reads a merged pull request from a public timeline", () => {
+    assert.equal(
+      issueClosedByMergedPull([
+        {
+          event: "cross-referenced",
+          source: { issue: { pull_request: { merged_at: null } } },
+        },
+        {
+          event: "cross-referenced",
+          source: { issue: { pull_request: { merged_at: "2024-02-02T00:00:00Z" } } },
+        },
+      ]),
+      true,
+    );
+    assert.equal(
+      issueClosedByMergedPull([
+        { event: "commented" },
+        {
+          event: "cross-referenced",
+          source: { issue: { pull_request: { merged_at: null } } },
+        },
+      ]),
+      false,
+    );
   });
 });
 

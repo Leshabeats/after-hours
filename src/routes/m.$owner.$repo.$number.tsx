@@ -8,6 +8,7 @@ import { defaultAgentPrompt } from "@/lib/agent-prompt";
 import { briefPrompt } from "@/lib/brief-prompt";
 import { codexAppChatUrl } from "@/lib/codex-link";
 import { repoIssuesLink } from "@/lib/repo-issues";
+import { shouldMarkShipping } from "@/lib/take-night";
 import { KIND_META, relativeTime } from "@/lib/kinds";
 import { useAccount } from "@/components/account-session";
 import { ExternalLink } from "lucide-react";
@@ -45,7 +46,7 @@ function MissionPage() {
   const issuesLink = repoIssuesLink(mission.owner, mission.repo);
   const meta = KIND_META[mission.kind];
   const { take, setStatus, entries } = useAccount();
-  const taken = entries.some((e) => e.id === mission.id);
+  const entry = entries.find((item) => item.id === mission.id);
 
   async function copyPrompt(text: string, label: string) {
     try {
@@ -111,8 +112,14 @@ function MissionPage() {
               event.preventDefault();
               const href = event.currentTarget.href;
               void (async () => {
-                if (!taken) await take(mission);
-                await setStatus(mission.id, "shipping");
+                try {
+                  if (!entry) await take(mission);
+                  if (shouldMarkShipping(entry?.status)) {
+                    await setStatus(mission.id, "shipping");
+                  }
+                } catch {
+                  // A journal failure must not keep Codex from opening.
+                }
                 window.location.href = href;
                 toast("Codex открыт. Промпт в новом чате, осталось нажать Enter.");
               })();

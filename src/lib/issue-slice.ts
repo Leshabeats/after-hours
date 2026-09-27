@@ -1,5 +1,33 @@
 export const FRESH_LIMIT = 40;
 
+export function emptySliceMessage(
+  sliceCount: number,
+  shownCount: number,
+  filtered: boolean,
+  untouched: string,
+) {
+  if (filtered && sliceCount > 0 && shownCount === 0) return "В этом треке пусто.";
+  return untouched;
+}
+
+export type TimelineEvent = {
+  event?: string;
+  source?: {
+    issue?: {
+      pull_request?: { merged_at?: string | null } | null;
+    } | null;
+  } | null;
+};
+
+/** A cross-reference counts only when the pull request was merged. */
+export function issueClosedByMergedPull(events: readonly TimelineEvent[]) {
+  return events.some((event) => {
+    if (event.event !== "cross-referenced") return false;
+    const mergedAt = event.source?.issue?.pull_request?.merged_at;
+    return typeof mergedAt === "string" && mergedAt.length > 0;
+  });
+}
+
 export function freshSliceCaption(
   shown: number,
   total: number | null | undefined,
