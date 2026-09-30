@@ -1,24 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { NightShell } from "@/components/night-shell";
-import { MissionCard } from "@/components/mission-card";
+import { ProjectCard } from "@/components/project-card";
 import { UrlIntake } from "@/components/url-intake";
-import { FilterChip } from "@/components/filter-chip";
 import { CatalogFilters } from "@/components/catalog-filters";
-import { getMissions } from "@/lib/api";
+import { getProjects } from "@/lib/api";
 import {
-  MIN_STARS,
+  LANGUAGES,
   getCategory,
   parseCatalogSearch,
   parseCategoryId,
 } from "@/lib/catalog";
-import { KIND_META, KINDS, type Kind } from "@/lib/kinds";
 
 export const Route = createFileRoute("/list")({
   validateSearch: parseCatalogSearch,
   loaderDeps: ({ search }) => ({ cat: search.cat, lang: search.lang }),
   loader: ({ deps }) =>
-    getMissions({
+    getProjects({
       data: {
         category: deps.cat,
         language: deps.lang,
@@ -36,28 +34,35 @@ export const Route = createFileRoute("/list")({
   component: ListPage,
 });
 
+function matches(project: { repo: string; owner: string; description: string; blurb: string }, query: string) {
+  return (
+    project.repo.toLowerCase().includes(query) ||
+    project.owner.toLowerCase().includes(query) ||
+    project.description.toLowerCase().includes(query) ||
+    project.blurb.toLowerCase().includes(query)
+  );
+}
+
 function ListPage() {
-  const { missions, live } = Route.useLoaderData();
+  const shelf = Route.useLoaderData();
   const search = Route.useSearch();
   const cat = parseCategoryId(search.cat);
   const lang = search.lang;
   const category = getCategory(cat);
-  const [kind, setKind] = useState<Kind | "all">("all");
+  const language = LANGUAGES.find((item) => item.id === lang);
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
-    return missions.filter((m) => {
-      if (kind !== "all" && m.kind !== kind) return false;
-      if (!query) return true;
-      return (
-        m.title.toLowerCase().includes(query) ||
-        m.repo.toLowerCase().includes(query) ||
-        m.owner.toLowerCase().includes(query) ||
-        m.language.toLowerCase().includes(query)
-      );
-    });
-  }, [missions, kind, q]);
+    const apply = <T extends { repo: string; owner: string; description: string; blurb: string }>(
+      items: T[],
+    ) => (query ? items.filter((project) => matches(project, query)) : items);
+    return {
+      ecosystem: apply(shelf.ecosystem),
+      direction: apply(shelf.direction),
+      libraries: apply(shelf.libraries),
+    };
+  }, [shelf, q]);
 
   return (
     <NightShell>
@@ -66,16 +71,17 @@ function ListPage() {
           The list
         </p>
         <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">
-          Список ночи
+          {language ? language.label : category.label}
         </h1>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
-          Коммитить есть смысл туда, где уже есть люди. Сейчас {category.label}:
-          репозитории от {MIN_STARS} звёзд, не вся свалка языка.
+          {language
+            ? `${category.label} и ${language.label} вместе: сверху экосистема языка, ниже проекты этого направления на нём и библиотеки.`
+            : `Проекты направления ${category.label}. Язык добавит его экосистему и библиотеки. Ишью открываются внутри.`}
         </p>
         <p className="mt-2 font-mono text-xs text-faint">
-          {live ? "Эфир GitHub открыт." : "Эфир молчит. Последняя известная ночь."}{" "}
-          {filtered.length}{" "}
-          {filtered.length === 1 ? "миссия" : "миссий"}
+          {shelf.live
+            ? "Эфир GitHub открыт."
+            : "Описания с полки. Логотипы подтянутся, когда эфир ответит."}
         </p>
       </div>
 
@@ -85,52 +91,58 @@ function ListPage() {
 
       <CatalogFilters to="/list" cat={cat} lang={lang} />
 
-      <div className="mt-6">
-        <p className="font-mono text-xs uppercase tracking-caps text-muted">
-          Тип
-        </p>
-        <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1">
-          <FilterChip
-            type="button"
-            active={kind === "all"}
-            onClick={() => setKind("all")}
-          >
-            Все
-          </FilterChip>
-          {KINDS.map((k) => (
-            <FilterChip
-              key={k}
-              type="button"
-              active={kind === k}
-              onClick={() => setKind(k)}
-            >
-              {KIND_META[k].track}
-            </FilterChip>
-          ))}
-        </div>
-      </div>
-
-      <label className="sr-only" htmlFor="mission-search">
+      <label className="sr-only" htmlFor="project-search">
         Поиск
       </label>
       <input
-        id="mission-search"
+        id="project-search"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="Репозиторий или заголовок"
+        placeholder="Проект"
         suppressHydrationWarning
         className="mt-4 h-12 w-full max-w-md rounded-md bg-surface px-4 text-sm text-fg placeholder:text-faint shadow-border focus:outline-none focus:ring-2 focus:ring-accent/70"
       />
 
-      {filtered.length === 0 ? (
+      <ProjectSection title="Экосистема" projects={filtered.ecosystem} />
+      <ProjectSection
+        title={language ? `В направлении ${category.label}` : category.label}
+        projects={filtered.direction}
+      />
+      <ProjectSection title="Библиотеки" projects={filtered.libraries} />
+      {filtered.ecosystem.length + filtered.direction.length + filtered.libraries.length ===
+      0 ? (
         <p className="mt-12 text-sm text-muted">В этой полосе ночь пустая.</p>
-      ) : (
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
-          {filtered.map((mission) => (
-            <MissionCard key={mission.id} mission={mission} />
-          ))}
-        </div>
-      )}
+      ) : null}
     </NightShell>
+  );
+}
+
+function ProjectSection({
+  title,
+  projects,
+}: {
+  title: string;
+  projects: {
+    owner: string;
+    repo: string;
+    blurb: string;
+    description: string;
+    logoUrl: string;
+    stars: number | null;
+    language: string | null;
+    url: string;
+    live: boolean;
+  }[];
+}) {
+  if (projects.length === 0) return null;
+  return (
+    <section className="mt-10">
+      <h2 className="font-mono text-xs uppercase tracking-caps text-muted">{title}</h2>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        {projects.map((project) => (
+          <ProjectCard key={`${project.owner}/${project.repo}`} project={project} />
+        ))}
+      </div>
+    </section>
   );
 }

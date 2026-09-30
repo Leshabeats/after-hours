@@ -1,14 +1,15 @@
 import { SEED_MISSIONS, findSeed } from "@/lib/seed";
 import {
-  CATALOG_REPO_LIMIT,
-  curatedRepos,
-  hintLanguage,
-  issueSearchQuery,
-  repoSearchQuery,
-  seedFits,
+  ecosystemProjects,
+  findCatalogRepo,
+  libraryPicks,
+  worldProjects,
+  MIN_STARS,
+  type CatalogRepo,
   type CategoryId,
   type LanguageId,
 } from "@/lib/catalog";
+import { hasLibraryManifest, isLibraryCatalogNoise } from "@/lib/library-filter";
 import {
   classifyKind,
   decodeEntities,
@@ -18,10 +19,28 @@ import {
 } from "@/lib/kinds";
 
 const CACHE_MS = 12 * 60 * 1000;
+const PROJECT_CACHE_MS = 6 * 60 * 60 * 1000;
 const cache = new Map<
   string,
   { at: number; missions: Mission[]; live: boolean }
 >();
+const projectCache = new Map<string, { at: number; card: ProjectCard }>();
+
+export type ProjectCard = CatalogRepo & {
+  description: string;
+  logoUrl: string;
+  stars: number | null;
+  language: string | null;
+  url: string;
+  live: boolean;
+};
+
+export type ProjectShelf = {
+  ecosystem: ProjectCard[];
+  direction: ProjectCard[];
+  libraries: ProjectCard[];
+  live: boolean;
+};
 
 type GhUser = { login?: string } | null;
 type GhLabel = string | { name?: string };
@@ -43,10 +62,6 @@ export type CatalogQuery = {
   category: CategoryId;
   language?: LanguageId;
 };
-
-function cacheKey(query: CatalogQuery) {
-  return `${query.category}|${query.language ?? ""}`;
-}
 
 function headers(): HeadersInit {
   const h: Record<string, string> = {
@@ -136,81 +151,243 @@ async function searchIssues(q: string, perPage: number): Promise<GhItem[]> {
   return json.items ?? [];
 }
 
-async function searchStarredRepos(q: string): Promise<string[]> {
-  const url = `https://api.github.com/search/repositories?per_page=${CATALOG_REPO_LIMIT}&sort=stars&order=desc&q=${encodeURIComponent(q)}`;
+function staticCard(spec: CatalogRepo): ProjectCard {
+  return {
+    ...spec,
+    description: spec.blurb,
+    logoUrl: `https://github.com/${spec.owner}.png`,
+    stars: null,
+    language: null,
+    url: `https://github.com/${spec.owner}/${spec.repo}`,
+    live: false,
+  };
+}
+
+function projectKey(owner: string, repo: string) {
+  return `${owner}/${repo}`.toLowerCase();
+}
+
+async function fetchProject(spec: CatalogRepo): Promise<ProjectCard> {
+  const key = `${spec.owner}/${spec.repo}`;
+  const hit = projectCache.get(key);
+  if (hit && Date.now() - hit.at < PROJECT_CACHE_MS) return hit.card;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${spec.owner}/${spec.repo}`, {
+      headers: headers(),
+    });
+    if (!res.ok) return staticCard(spec);
+    const json = (await res.json()) as {
+      description?: string | null;
+      stargazers_count?: number;
+      language?: string | null;
+      owner?: { avatar_url?: string };
+      html_url?: string;
+    };
+    const card: ProjectCard = {
+      ...spec,
+      description: json.description?.trim() || spec.blurb,
+      logoUrl: json.owner?.avatar_url || `https://github.com/${spec.owner}.png`,
+      stars: json.stargazers_count ?? null,
+      language: json.language ?? null,
+      url: json.html_url || `https://github.com/${spec.owner}/${spec.repo}`,
+      live: true,
+    };
+    projectCache.set(key, { at: Date.now(), card });
+    return card;
+  } catch {
+    return staticCard(spec);
+  }
+}
+
+const libraryCache = new Map<
+  string,
+  { at: number; cards: ProjectCard[] }
+>();
+
+async function rootFileNames(owner: string, repo: string): Promise<string[] | null> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as { name?: string }[];
+    if (!Array.isArray(json)) return null;
+    return json.map((entry) => entry.name ?? "").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+async function searchLibraries(language: string): Promise<ProjectCard[]> {
+  const hit = libraryCache.get(language);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.cards;
+  const q = [
+    `language:${language}`,
+    `stars:>=${MIN_STARS}`,
+    "fork:false",
+    "archived:false",
+    "-topic:awesome",
+    "-topic:algorithm",
+    "-topic:algorithms",
+    "-topic:leetcode",
+    "-topic:interview",
+    "-topic:tutorial",
+    "-topic:learning",
+    "-topic:cheatsheet",
+    "-topic:roadmap",
+  ].join(" ");
+  const url = `https://api.github.com/search/repositories?per_page=30&sort=stars&order=desc&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, { headers: headers() });
-  if (!res.ok) {
-    throw new Error(`GitHub repo search ${res.status}`);
-  }
-  const json = (await res.json()) as { items?: { full_name?: string }[] };
-  const names: string[] = [];
-  const seen = new Set<string>();
-  for (const item of json.items ?? []) {
-    const name = item.full_name ?? "";
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names;
+  if (!res.ok) throw new Error(`GitHub repo search ${res.status}`);
+  const json = (await res.json()) as {
+    items?: {
+      name?: string;
+      description?: string | null;
+      stargazers_count?: number;
+      language?: string | null;
+      html_url?: string;
+      topics?: string[];
+      owner?: { login?: string; avatar_url?: string };
+    }[];
+  };
+  const candidates = (json.items ?? []).flatMap((item) => {
+    const owner = item.owner?.login;
+    const repo = item.name;
+    if (!owner || !repo) return [];
+    if (
+      isLibraryCatalogNoise({
+        name: repo,
+        description: item.description,
+        topics: item.topics,
+      })
+    ) {
+      return [];
+    }
+    const card: ProjectCard = {
+      owner,
+      repo,
+      blurb: item.description?.trim() || repo,
+      description: item.description?.trim() || repo,
+      logoUrl: item.owner?.avatar_url || `https://github.com/${owner}.png`,
+      stars: item.stargazers_count ?? null,
+      language: item.language ?? language,
+      url: item.html_url || `https://github.com/${owner}/${repo}`,
+      live: true,
+    };
+    return [card];
+  });
+  const checked = await Promise.all(
+    candidates.slice(0, 16).map(async (card) => {
+      const files = await rootFileNames(card.owner, card.repo);
+      if (files && !hasLibraryManifest(files)) return null;
+      return card;
+    }),
+  );
+  const cards = checked.filter((card): card is ProjectCard => Boolean(card)).slice(0, 12);
+  libraryCache.set(language, { at: Date.now(), cards });
+  return cards;
 }
 
-async function fetchLive(query: CatalogQuery): Promise<Mission[]> {
-  const curated = curatedRepos(query.category);
-  const repos = curated
-    ? [...curated]
-    : await searchStarredRepos(repoSearchQuery(query.category, query.language));
-  if (repos.length === 0) return [];
-
-  const issueLang = curated ? query.language : undefined;
-  const items = await searchIssues(issueSearchQuery(repos, issueLang), 40);
-  const language = hintLanguage(query.category, query.language);
-  const mapped = items
-    .map((item) => toMission(item, true, language))
-    .filter((m): m is Mission => Boolean(m));
-
-  const seen = new Set<string>();
-  const unique: Mission[] = [];
-  for (const m of mapped) {
-    if (seen.has(m.id)) continue;
-    seen.add(m.id);
-    unique.push(m);
-  }
-  unique.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  return unique;
+function sameLanguage(card: ProjectCard, language: string) {
+  return card.language?.toLowerCase() === language.toLowerCase();
 }
 
-function fallback(query: CatalogQuery): {
-  missions: Mission[];
-  live: boolean;
-} {
-  if (seedFits(query.category, query.language)) {
-    return { missions: SEED_MISSIONS, live: false };
+export async function loadProjects(query: CatalogQuery): Promise<ProjectShelf> {
+  const world = await Promise.all(
+    worldProjects(query.category).map((spec) => fetchProject(spec)),
+  );
+  if (!query.language) {
+    return {
+      ecosystem: [],
+      direction: world,
+      libraries: [],
+      live: world.some((project) => project.live),
+    };
   }
-  return { missions: [], live: false };
+
+  const ecosystem = await Promise.all(
+    ecosystemProjects(query.language).map((spec) => fetchProject(spec)),
+  );
+  const picks = await Promise.all(
+    libraryPicks(query.language).map((spec) => fetchProject(spec)),
+  );
+  const seen = new Set(
+    [...ecosystem, ...world, ...picks].map((project) =>
+      projectKey(project.owner, project.repo),
+    ),
+  );
+  const direction = world.filter((project) => sameLanguage(project, query.language!));
+  let libraries = picks;
+  try {
+    const found = (await searchLibraries(query.language)).filter(
+      (project) => !seen.has(projectKey(project.owner, project.repo)),
+    );
+    libraries = [...picks, ...found];
+  } catch {
+    libraries = picks;
+  }
+  const all = [...ecosystem, ...direction, ...libraries];
+  return {
+    ecosystem,
+    direction,
+    libraries,
+    live: all.some((project) => project.live),
+  };
 }
 
-export async function loadMissions(query: CatalogQuery): Promise<{
-  missions: Mission[];
-  live: boolean;
-}> {
-  const key = cacheKey(query);
+export async function loadRepoMissions(
+  owner: string,
+  repo: string,
+): Promise<{ missions: Mission[]; live: boolean; profile: ProjectCard }> {
+  const profile = await fetchProject({
+    owner,
+    repo,
+    blurb: findCatalogRepo(owner, repo)?.blurb ?? "",
+  });
+  const key = `repo|${owner}/${repo}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) {
-    return { missions: hit.missions, live: hit.live };
+    return { missions: hit.missions, live: hit.live, profile };
   }
   try {
-    const live = await fetchLive(query);
-    if (live.length >= 4) {
-      const packed = { at: Date.now(), missions: live, live: true };
-      cache.set(key, packed);
-      return { missions: live, live: true };
+    const items = await searchIssues(
+      `is:open archived:false repo:${owner}/${repo}`,
+      40,
+    );
+    const missions = items
+      .map((item) => toMission(item, true, ""))
+      .filter((mission): mission is Mission => Boolean(mission));
+    if (missions.length > 0) {
+      cache.set(key, { at: Date.now(), missions, live: true });
+      return { missions, live: true, profile };
     }
   } catch {
     // fall through
   }
-  const packed = { at: Date.now(), ...fallback(query) };
-  cache.set(key, packed);
-  return packed;
+  const seeded = SEED_MISSIONS.filter(
+    (mission) => mission.owner === owner && mission.repo === repo,
+  );
+  return { missions: seeded, live: false, profile };
+}
+
+function rememberMissions(owner: string, repo: string, missions: Mission[]) {
+  const key = `repo|${owner}/${repo}`;
+  const hit = cache.get(key);
+  const merged = new Map<number, Mission>();
+  for (const mission of hit?.missions ?? []) merged.set(mission.number, mission);
+  for (const mission of missions) merged.set(mission.number, mission);
+  cache.set(key, {
+    at: hit?.at ?? Date.now(),
+    missions: [...merged.values()],
+    live: true,
+  });
+}
+
+function cachedMission(owner: string, repo: string, number: number) {
+  return cache
+    .get(`repo|${owner}/${repo}`)
+    ?.missions.find((mission) => mission.number === number);
 }
 
 export async function loadMission(
@@ -218,6 +395,8 @@ export async function loadMission(
   repo: string,
   number: number,
 ): Promise<Mission> {
+  const known = cachedMission(owner, repo, number);
+  if (known?.body) return known;
   try {
     const res = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/issues/${number}`,
@@ -226,7 +405,21 @@ export async function loadMission(
     if (res.ok) {
       const item = (await res.json()) as GhItem;
       const mapped = toMission(item, true, "");
-      if (mapped) return mapped;
+      if (mapped) {
+        rememberMissions(owner, repo, [mapped]);
+        return mapped;
+      }
+    }
+  } catch {
+    // fall through to search
+  }
+  try {
+    const items = await searchIssues(`repo:${owner}/${repo} ${number}`, 10);
+    const item = items.find((entry) => entry.number === number);
+    const mapped = item ? toMission(item, true, "") : null;
+    if (mapped) {
+      rememberMissions(owner, repo, [mapped]);
+      return mapped;
     }
   } catch {
     // fall through

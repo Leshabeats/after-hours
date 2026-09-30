@@ -1,90 +1,66 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  MIN_STARS,
-  curatedRepos,
-  hintLanguage,
-  issueSearchQuery,
+  catalogProjects,
+  findCatalogRepo,
+  libraryPicks,
   parseCatalogSearch,
   parseCategoryId,
-  repoSearchQuery,
-  seedFits,
 } from "./catalog.ts";
 
 describe("parseCatalogSearch", () => {
-  it("defaults to an empty search, resolved as web", () => {
+  it("defaults to web with no language", () => {
     assert.deepEqual(parseCatalogSearch({}), {});
-    assert.deepEqual(parseCatalogSearch({ cat: "nope", lang: "COBOL" }), {});
     assert.equal(parseCategoryId(undefined), "web");
   });
 
-  it("keeps known category and language", () => {
-    assert.deepEqual(parseCatalogSearch({ cat: "linux", lang: "C" }), {
-      cat: "linux",
-      lang: "C",
+  it("treats an old language category as the language ecosystem", () => {
+    assert.deepEqual(parseCatalogSearch({ cat: "typescript" }), {
+      lang: "TypeScript",
     });
   });
 });
 
-describe("star criterion", () => {
-  it("is one thousand repository stars", () => {
-    assert.equal(MIN_STARS, 1000);
+describe("catalogProjects", () => {
+  it("lists web platform projects, not TypeScript apps", () => {
+    const names = catalogProjects("web").map((p) => `${p.owner}/${p.repo}`);
+    assert.ok(names.includes("whatwg/html"));
+    assert.equal(names.includes("microsoft/TypeScript"), false);
   });
 
-  it("searches repos by stars, not every repo in a language", () => {
-    assert.equal(
-      repoSearchQuery("web"),
-      "stars:>=1000 fork:false archived:false language:TypeScript",
+  it("lists the language itself, not libraries written in it", () => {
+    const names = catalogProjects("web", "TypeScript").map(
+      (p) => `${p.owner}/${p.repo}`,
     );
-    assert.equal(
-      repoSearchQuery("go"),
-      "stars:>=1000 fork:false archived:false language:Go",
-    );
-    assert.equal(
-      repoSearchQuery("web", "Go"),
-      "stars:>=1000 fork:false archived:false language:Go",
-    );
-    assert.equal(
-      repoSearchQuery("linux", "C"),
-      "stars:>=1000 fork:false archived:false language:C linux kernel",
-    );
+    assert.deepEqual(names[0], "microsoft/TypeScript");
+    assert.equal(names.includes("microsoft/vscode"), false);
+    assert.equal(names.includes("colinhacks/zod"), false);
   });
 
-  it("looks up issues only inside chosen repos", () => {
-    const q = issueSearchQuery(["microsoft/vscode", "golang/go"]);
-    assert.equal(
-      q,
-      "is:open archived:false repo:microsoft/vscode repo:golang/go",
-    );
-    assert.match(
-      issueSearchQuery(["microsoft/vscode"], "Go"),
-      /^is:open archived:false language:Go repo:microsoft\/vscode$/,
-    );
+  it("pins the JS and TS libraries we actually use", () => {
+    for (const lang of ["TypeScript", "JavaScript"] as const) {
+      const names = libraryPicks(lang).map((p) => `${p.owner}/${p.repo}`);
+      assert.ok(names.includes("colinhacks/zod"));
+      assert.ok(names.includes("prisma/prisma"));
+      assert.ok(names.includes("drizzle-team/drizzle-orm"));
+      assert.ok(names.includes("npm/cli"));
+      assert.ok(names.includes("vitejs/vite"));
+      assert.ok(names.includes("pnpm/pnpm"));
+      assert.ok(names.includes("typeorm/typeorm"));
+      assert.ok(names.includes("pinojs/pino"));
+      assert.ok(names.includes("react-hook-form/react-hook-form"));
+    }
+    assert.equal(libraryPicks("Go").length, 0);
   });
 
-  it("keeps Stars as a curated household list", () => {
-    const repos = curatedRepos("stars") ?? [];
-    assert.ok(repos.includes("microsoft/vscode"));
-    assert.ok(repos.includes("godotengine/godot"));
-    assert.equal(curatedRepos("go"), undefined);
+  it("finds the curated note for a known repo", () => {
+    assert.equal(findCatalogRepo("microsoft", "TypeScript")?.blurb, "Компилятор и язык");
+    assert.equal(findCatalogRepo("NoSuch", "repo"), undefined);
   });
-});
 
-describe("hintLanguage", () => {
-  it("prefers the language filter, else category language", () => {
-    assert.equal(hintLanguage("web"), "TypeScript");
-    assert.equal(hintLanguage("web", "Go"), "Go");
-    assert.equal(hintLanguage("cpp"), "C++");
-    assert.equal(hintLanguage("linux"), "");
-    assert.equal(hintLanguage("stars"), "");
-  });
-});
-
-describe("seedFits", () => {
-  it("only backs the web/ts world", () => {
-    assert.equal(seedFits("web"), true);
-    assert.equal(seedFits("web", "TypeScript"), true);
-    assert.equal(seedFits("go"), false);
-    assert.equal(seedFits("linux", "C"), false);
+  it("keeps Stars as household projects", () => {
+    const names = catalogProjects("stars").map((p) => `${p.owner}/${p.repo}`);
+    assert.ok(names.includes("godotengine/godot"));
+    assert.ok(names.includes("obsproject/obs-studio"));
   });
 });

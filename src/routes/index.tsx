@@ -3,7 +3,7 @@ import { AccountControl } from "@/components/account-session";
 import { Clock } from "@/components/clock";
 import { UrlIntake } from "@/components/url-intake";
 import { Button } from "@/components/ui/button";
-import { CATEGORIES } from "@/lib/catalog";
+import { WORLDS } from "@/lib/catalog";
 
 export const Route = createFileRoute("/")({ component: Home });
 
@@ -38,8 +38,8 @@ function Home() {
             Hours
           </h1>
           <p className="mt-4 max-w-lg text-sm leading-relaxed text-fg/90 sm:mt-6 sm:text-lg">
-            Жги токены на живой опенсорс. Веб на виду сразу. Дальше — Go, ядро,
-            что угодно.
+            Жги токены на живой опенсорс. Снаружи проекты. Ишью — внутри.
+            Язык — это его экосистема, не библиотеки на нём.
           </p>
 
           <div className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row">
@@ -63,8 +63,8 @@ function Home() {
           </div>
         </div>
 
-        <ul className="no-scrollbar mt-8 flex gap-6 overflow-x-auto pb-1 sm:mt-12 sm:grid sm:grid-cols-5 sm:gap-x-6 sm:gap-y-4 sm:overflow-visible">
-          {CATEGORIES.map((item) => (
+        <ul className="no-scrollbar mt-8 flex gap-6 overflow-x-auto pb-1 sm:mt-12 sm:grid sm:grid-cols-3 sm:gap-x-6 sm:gap-y-4 sm:overflow-visible">
+          {WORLDS.map((item) => (
             <li key={item.id} className="min-w-36 shrink-0 sm:min-w-0">
               <Link
                 to="/list"
