@@ -1,4 +1,4 @@
-import { SEED_MISSIONS, findSeed } from "@/lib/seed";
+import { SEED_MISSIONS, findSeed } from "./seed.ts";
 import {
   ecosystemProjects,
   findCatalogRepo,
@@ -8,22 +8,39 @@ import {
   type CatalogRepo,
   type CategoryId,
   type LanguageId,
-} from "@/lib/catalog";
-import { hasLibraryManifest, isLibraryCatalogNoise } from "@/lib/library-filter";
+} from "./catalog.ts";
+import { hasLibraryManifest, isLibraryCatalogNoise } from "./library-filter.ts";
+import { repoSearchQualifier } from "./github-slug.ts";
+import {
+  FRESH_LIMIT,
+  issueClosedByMergedPull,
+  mergedIssueNumbers,
+  withoutMergedFixes,
+  type TimelineEvent,
+} from "./issue-slice.ts";
 import {
   classifyKind,
   decodeEntities,
   excerptOf,
   missionId,
   type Mission,
-} from "@/lib/kinds";
+} from "./kinds.ts";
 
 const CACHE_MS = 12 * 60 * 1000;
 const PROJECT_CACHE_MS = 6 * 60 * 60 * 1000;
 const cache = new Map<
   string,
-  { at: number; missions: Mission[]; live: boolean }
+  {
+    at: number;
+    missions: Mission[];
+    live: boolean;
+    issueTotal: number | null;
+    prTotal: number | null;
+    filterSkipped: boolean;
+  }
 >();
+/** Bodies opened one at a time. They must not satisfy the repository list cache. */
+const openedMissions = new Map<string, { at: number; mission: Mission }>();
 const projectCache = new Map<string, { at: number; card: ProjectCard }>();
 
 export type ProjectCard = CatalogRepo & {
@@ -141,14 +158,20 @@ function toMission(
   };
 }
 
-async function searchIssues(q: string, perPage: number): Promise<GhItem[]> {
+async function searchIssues(
+  q: string,
+  perPage: number,
+): Promise<{ items: GhItem[]; total: number | null }> {
   const url = `https://api.github.com/search/issues?per_page=${perPage}&sort=updated&order=desc&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GitHub issue search ${res.status}`);
   }
-  const json = (await res.json()) as { items?: GhItem[] };
-  return json.items ?? [];
+  const json = (await res.json()) as { items?: GhItem[]; total_count?: number };
+  return {
+    items: json.items ?? [],
+    total: typeof json.total_count === "number" ? json.total_count : null,
+  };
 }
 
 function staticCard(spec: CatalogRepo): ProjectCard {
@@ -309,9 +332,7 @@ export async function loadProjects(query: CatalogQuery): Promise<ProjectShelf> {
   const ecosystem = await Promise.all(
     ecosystemProjects(query.language).map((spec) => fetchProject(spec)),
   );
-  const picks = await Promise.all(
-    libraryPicks(query.language).map((spec) => fetchProject(spec)),
-  );
+  const picks = libraryPicks(query.language).map((spec) => staticCard(spec));
   const seen = new Set(
     [...ecosystem, ...world, ...picks].map((project) =>
       projectKey(project.owner, project.repo),
@@ -336,10 +357,147 @@ export async function loadProjects(query: CatalogQuery): Promise<ProjectShelf> {
   };
 }
 
-export async function loadRepoMissions(
+type ClosingLookup = { failed: boolean; merged: Set<number> };
+
+async function closingPrsByIssue(owner: string, repo: string, numbers: number[]) {
+  if (numbers.length === 0) return { failed: false, merged: new Set<number>() };
+  if (process.env.GITHUB_TOKEN) return closingPrsGraphql(owner, repo, numbers);
+  return closingPrsTimeline(owner, repo, numbers);
+}
+
+async function closingPrsGraphql(
   owner: string,
   repo: string,
-): Promise<{ missions: Mission[]; live: boolean; profile: ProjectCard }> {
+  numbers: number[],
+): Promise<ClosingLookup> {
+  const merged = new Set<number>();
+  let pending = numbers.map((number) => ({ number, cursor: null as string | null }));
+  try {
+    for (let page = 0; page < 4 && pending.length > 0; page += 1) {
+      const fields = pending
+        .map((item, index) => {
+          const after = item.cursor ? `, after: ${JSON.stringify(item.cursor)}` : "";
+          return `i${index}: issue(number: ${item.number}) { number closedByPullRequestsReferences(first: 100, includeClosedPrs: true${after}) { nodes { merged } pageInfo { hasNextPage endCursor } } }`;
+        })
+        .join("\n");
+      const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(repo)}) { ${fields} } }`;
+      const res = await fetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      if (!res.ok) return { failed: true, merged: new Set() };
+      const json = (await res.json()) as {
+        errors?: unknown[];
+        data?: {
+          repository?: Record<
+            string,
+            {
+              number?: number | null;
+              closedByPullRequestsReferences?: {
+                nodes?: ({ merged?: boolean | null } | null)[] | null;
+                pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+              } | null;
+            } | null
+          >;
+        };
+      };
+      const repository = json.data?.repository;
+      if (json.errors?.length || !repository) return { failed: true, merged: new Set() };
+      mergedIssueNumbers(repository).forEach((number) => merged.add(number));
+      const next = [];
+      for (const [index, item] of pending.entries()) {
+        if (merged.has(item.number)) continue;
+        const pageInfo = repository[`i${index}`]?.closedByPullRequestsReferences?.pageInfo;
+        if (pageInfo?.hasNextPage && pageInfo.endCursor) {
+          next.push({ number: item.number, cursor: pageInfo.endCursor });
+        }
+      }
+      pending = next;
+    }
+  } catch {
+    return { failed: true, merged: new Set() };
+  }
+  if (pending.length > 0) return { failed: true, merged: new Set() };
+  return { failed: false, merged };
+}
+
+async function timelineState(owner: string, repo: string, number: number) {
+  for (let page = 1; page <= 5; page += 1) {
+    const res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}/timeline?per_page=100&page=${page}`,
+      { headers: headers() },
+    );
+    if (!res.ok) return "failed" as const;
+    const events = (await res.json()) as TimelineEvent[];
+    if (!Array.isArray(events)) return "failed" as const;
+    if (issueClosedByMergedPull(events)) return "merged" as const;
+    if (events.length < 100) return "open" as const;
+  }
+  return "open" as const;
+}
+
+async function closingPrsTimeline(
+  owner: string,
+  repo: string,
+  numbers: number[],
+): Promise<ClosingLookup> {
+  const merged = new Set<number>();
+  let failed = false;
+  let index = 0;
+  async function worker() {
+    while (!failed) {
+      const current = index;
+      index += 1;
+      if (current >= numbers.length) return;
+      const state = await timelineState(owner, repo, numbers[current]);
+      if (state === "failed") {
+        failed = true;
+        return;
+      }
+      if (state === "merged") merged.add(numbers[current]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(4, numbers.length) }, () => worker()),
+  );
+  if (failed) return { failed: true, merged: new Set() };
+  return { failed: false, merged };
+}
+
+export type RepoMissions = {
+  issues: Mission[];
+  pullRequests: Mission[];
+  issueTotal: number | null;
+  prTotal: number | null;
+  filterSkipped: boolean;
+  live: boolean;
+  profile: ProjectCard;
+};
+
+function blankMissions(owner: string, repo: string): RepoMissions {
+  return {
+    issues: [],
+    pullRequests: [],
+    issueTotal: null,
+    prTotal: null,
+    filterSkipped: false,
+    live: false,
+    profile: staticCard({ owner, repo, blurb: findCatalogRepo(owner, repo)?.blurb ?? "" }),
+  };
+}
+
+async function settledSearch(query: string) {
+  try {
+    return { ok: true as const, result: await searchIssues(query, FRESH_LIMIT) };
+  } catch {
+    return { ok: false as const };
+  }
+}
+
+export async function loadRepoMissions(owner: string, repo: string): Promise<RepoMissions> {
+  const qualifier = repoSearchQualifier(owner, repo);
+  if (!qualifier) return blankMissions(owner, repo);
   const profile = await fetchProject({
     owner,
     repo,
@@ -348,46 +506,102 @@ export async function loadRepoMissions(
   const key = `repo|${owner}/${repo}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) {
-    return { missions: hit.missions, live: hit.live, profile };
+    return {
+      issues: hit.missions.filter((mission) => !mission.isPr),
+      pullRequests: hit.missions.filter((mission) => mission.isPr),
+      issueTotal: hit.issueTotal,
+      prTotal: hit.prTotal,
+      filterSkipped: hit.filterSkipped,
+      live: hit.live,
+      profile,
+    };
   }
-  try {
-    const items = await searchIssues(
-      `is:open archived:false repo:${owner}/${repo}`,
-      40,
-    );
-    const missions = items
+  const [issueOutcome, prOutcome] = await Promise.all([
+    settledSearch(`is:issue is:open archived:false ${qualifier}`),
+    settledSearch(`is:pr is:open archived:false ${qualifier}`),
+  ]);
+  if (issueOutcome.ok || prOutcome.ok) {
+    const issueSearch = issueOutcome.ok ? issueOutcome.result : { items: [], total: null };
+    const prSearch = prOutcome.ok ? prOutcome.result : { items: [], total: null };
+    const issues = issueSearch.items
       .map((item) => toMission(item, true, ""))
       .filter((mission): mission is Mission => Boolean(mission));
-    if (missions.length > 0) {
-      cache.set(key, { at: Date.now(), missions, live: true });
-      return { missions, live: true, profile };
-    }
-  } catch {
-    // fall through
+    const pullRequests = prSearch.items
+      .map((item) => toMission({ ...item, pull_request: item.pull_request ?? {} }, true, ""))
+      .filter((mission): mission is Mission => Boolean(mission));
+    const closing = issueOutcome.ok
+      ? await closingPrsByIssue(
+          owner,
+          repo,
+          issues.map((mission) => mission.number),
+        )
+      : { failed: false, merged: new Set<number>() };
+    const filtered = withoutMergedFixes(
+      issues.map((mission) => ({
+        ...mission,
+        closingPrs: closing.merged.has(mission.number) ? [{ merged: true }] : [],
+      })),
+      closing.failed,
+    );
+    const keptIssues = filtered.items;
+    cache.set(key, {
+      at: Date.now(),
+      missions: [...keptIssues, ...pullRequests],
+      live: true,
+      issueTotal: issueSearch.total,
+      prTotal: prSearch.total,
+      filterSkipped: filtered.filterSkipped,
+    });
+    return {
+      issues: keptIssues,
+      pullRequests,
+      issueTotal: issueSearch.total,
+      prTotal: prSearch.total,
+      filterSkipped: filtered.filterSkipped,
+      live: true,
+      profile,
+    };
   }
   const seeded = SEED_MISSIONS.filter(
     (mission) => mission.owner === owner && mission.repo === repo,
   );
-  return { missions: seeded, live: false, profile };
+  return {
+    issues: seeded.filter((mission) => !mission.isPr),
+    pullRequests: seeded.filter((mission) => mission.isPr),
+    issueTotal: null,
+    prTotal: null,
+    filterSkipped: false,
+    live: false,
+    profile,
+  };
 }
 
-function rememberMissions(owner: string, repo: string, missions: Mission[]) {
-  const key = `repo|${owner}/${repo}`;
-  const hit = cache.get(key);
-  const merged = new Map<number, Mission>();
-  for (const mission of hit?.missions ?? []) merged.set(mission.number, mission);
-  for (const mission of missions) merged.set(mission.number, mission);
-  cache.set(key, {
-    at: hit?.at ?? Date.now(),
-    missions: [...merged.values()],
-    live: true,
+function openedKey(owner: string, repo: string, number: number) {
+  return `${owner}/${repo}#${number}`;
+}
+
+function rememberOpenedMission(mission: Mission) {
+  openedMissions.set(openedKey(mission.owner, mission.repo, mission.number), {
+    at: Date.now(),
+    mission,
   });
 }
 
 function cachedMission(owner: string, repo: string, number: number) {
-  return cache
-    .get(`repo|${owner}/${repo}`)
-    ?.missions.find((mission) => mission.number === number);
+  const hit = cache.get(`repo|${owner}/${repo}`);
+  const listed =
+    hit && Date.now() - hit.at < CACHE_MS
+      ? hit.missions.find((mission) => mission.number === number)
+      : undefined;
+  if (listed?.body) return listed;
+  const key = openedKey(owner, repo, number);
+  const opened = openedMissions.get(key);
+  if (!opened) return listed;
+  if (Date.now() - opened.at >= CACHE_MS) {
+    openedMissions.delete(key);
+    return listed;
+  }
+  return opened.mission.body ? opened.mission : listed;
 }
 
 export async function loadMission(
@@ -399,26 +613,28 @@ export async function loadMission(
   if (known?.body) return known;
   try {
     const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${number}`,
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
       { headers: headers() },
     );
     if (res.ok) {
       const item = (await res.json()) as GhItem;
       const mapped = toMission(item, true, "");
       if (mapped) {
-        rememberMissions(owner, repo, [mapped]);
+        rememberOpenedMission(mapped);
         return mapped;
       }
     }
   } catch {
     // fall through to search
   }
+  const qualifier = repoSearchQualifier(owner, repo);
   try {
-    const items = await searchIssues(`repo:${owner}/${repo} ${number}`, 10);
-    const item = items.find((entry) => entry.number === number);
+    if (!qualifier) throw new Error("unsafe repo");
+    const found = await searchIssues(`${qualifier} ${number}`, 10);
+    const item = found.items.find((entry) => entry.number === number);
     const mapped = item ? toMission(item, true, "") : null;
     if (mapped) {
-      rememberMissions(owner, repo, [mapped]);
+      rememberOpenedMission(mapped);
       return mapped;
     }
   } catch {
