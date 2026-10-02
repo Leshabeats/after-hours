@@ -599,7 +599,9 @@ export async function loadMission(
   try {
     const res = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
-      { headers: headers() },
+      // A transferred issue can redirect into a private repository accessible
+      // to the server token. Fall back to public-only search instead.
+      { headers: headers(), redirect: "error" },
     );
     if (res.ok) {
       const item = (await res.json()) as GhItem;

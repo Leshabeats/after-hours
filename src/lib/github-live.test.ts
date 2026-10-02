@@ -331,6 +331,36 @@ describe("review fixes", () => {
 });
 
 describe("public repository boundary", () => {
+  it("never follows an issue transfer into a private repository or caches its body", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    let issueRequests = 0;
+    let publicSearches = 0;
+    globalThis.fetch = async (input, init) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/repos/transfer-source/public")) return json({ private: false });
+      if (url.endsWith("/issues/17")) {
+        issueRequests++;
+        // Model fetch's default redirect handling: the token can read the target.
+        if (init?.redirect === "error") throw new TypeError("unexpected redirect");
+        return json(issueItem("transfer-target", "private", 17, "PRIVATE TITLE"));
+      }
+      if (url.includes("/search/issues")) {
+        assert.ok(new URL(url).searchParams.get("q")?.split(" ").includes("is:public"));
+        publicSearches++;
+        return json({ items: [], total_count: 0 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const mission = await loadMission("transfer-source", "public", 17);
+      assert.equal(mission.body, "");
+      assert.equal(mission.live, false);
+      assert.equal(mission.title, "transfer-source/public#17");
+    }
+    assert.equal(issueRequests, 2);
+    assert.equal(publicSearches, 2);
+  });
+
   for (const visibility of [true, undefined]) {
     it(`refuses issue and repository data when private=${visibility}`, async () => {
       process.env.GITHUB_TOKEN = "test-token";
