@@ -599,12 +599,16 @@ export async function loadMission(
   try {
     const res = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
-      // A transferred issue can redirect into a private repository accessible
-      // to the server token. Fall back to public-only search instead.
-      { headers: headers(), redirect: "error" },
+      { headers: headers() },
     );
     if (res.ok) {
       const item = (await res.json()) as GhItem;
+      // GitHub can redirect a transferred issue into another repository.
+      // Verify the payload destination before exposing or caching its body.
+      const destination = item.repository_url?.match(/^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)$/);
+      if (!destination || !await publicRepository(destination[1], destination[2])) {
+        return fallbackMission(owner, repo, number);
+      }
       const mapped = toMission(item, true, "");
       if (mapped) {
         rememberOpenedMission(mapped);

@@ -331,17 +331,35 @@ describe("review fixes", () => {
 });
 
 describe("public repository boundary", () => {
-  it("never follows an issue transfer into a private repository or caches its body", async () => {
+  it("preserves public transferred issues and rechecks destination visibility", async () => {
+    let destinationPrivate = false;
+    globalThis.fetch = async (input) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/repos/public-transfer/source")) return json({ private: false });
+      if (url.endsWith("/repos/public-transfer/destination")) return json({ private: destinationPrivate });
+      if (url.endsWith("/issues/18")) return json(issueItem("public-transfer", "destination", 19, "Transferred public issue"));
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    const mission = await loadMission("public-transfer", "source", 18);
+    assert.equal(mission.title, "Transferred public issue");
+    assert.equal(mission.body, "body 19");
+    assert.equal(mission.repo, "destination");
+    destinationPrivate = true;
+    assert.equal((await loadMission("public-transfer", "source", 18)).body, "");
+    assert.equal((await loadMission("public-transfer", "destination", 19)).body, "");
+  });
+
+  it("never exposes an issue transferred into a private repository or caches its body", async () => {
     process.env.GITHUB_TOKEN = "test-token";
     let issueRequests = 0;
     let publicSearches = 0;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = async (input) => {
       const url = requestUrl(input);
       if (url.endsWith("/repos/transfer-source/public")) return json({ private: false });
+      if (url.endsWith("/repos/transfer-target/private")) return json({ private: true });
       if (url.endsWith("/issues/17")) {
         issueRequests++;
-        // Model fetch's default redirect handling: the token can read the target.
-        if (init?.redirect === "error") throw new TypeError("unexpected redirect");
+        // The token can read the private destination after fetch follows a 301.
         return json(issueItem("transfer-target", "private", 17, "PRIVATE TITLE"));
       }
       if (url.includes("/search/issues")) {
@@ -358,7 +376,7 @@ describe("public repository boundary", () => {
       assert.equal(mission.title, "transfer-source/public#17");
     }
     assert.equal(issueRequests, 2);
-    assert.equal(publicSearches, 2);
+    assert.equal(publicSearches, 0);
   });
 
   for (const visibility of [true, undefined]) {
