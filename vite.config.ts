@@ -19,7 +19,7 @@ export default defineConfig(({ command, isPreview }) => ({
   plugins: [
     tailwindcss(),
     tanstackStart(),
-    ...(command === "build" || isPreview ? [nitro({ preset: "vercel" })] : []),
+    ...(command === "build" || isPreview ? [nitro({ preset: "node-server" })] : []),
     viteReact(),
   ],
 }));
