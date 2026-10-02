@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { freshSliceCaption } from "./issue-slice.ts";
 import { loadMission, loadProjects, loadRepoMissions } from "./github-live.ts";
 
 const realFetch = globalThis.fetch;
 const savedToken = process.env.GITHUB_TOKEN;
-delete process.env.GITHUB_TOKEN;
+beforeEach(() => { delete process.env.GITHUB_TOKEN; });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -53,7 +53,7 @@ function stubGithub(owner: string, repo: string) {
           ? input.href
           : input.url;
     calls.push(url);
-    if (url.includes("/timeline")) return json({ message: "rate limit" }, 403);
+    if (new URL(url).pathname.endsWith("/timeline")) return json({ message: "rate limit" }, 403);
     if (url.includes("/search/issues")) {
       const query = new URL(url).searchParams.get("q") ?? "";
       if (query.includes("is:pr")) {
@@ -84,7 +84,8 @@ function stubGithub(owner: string, repo: string) {
     }
     if (url.includes(`/repos/${owner}/${repo}`)) {
       return json({
-        description: "A live description that is not the shelf line",
+        private: false,
+          description: "A live description that is not the shelf line",
         stargazers_count: 20,
         language: "C",
         owner: { avatar_url: "https://example.com/logo.png" },
@@ -185,6 +186,7 @@ describe("review fixes", () => {
       }
       if (url.includes("/repos/partial/repo")) {
         return json({
+          private: false,
           description: "Live partial",
           stargazers_count: 1,
           owner: { avatar_url: "https://example.com/a.png" },
@@ -206,7 +208,8 @@ describe("review fixes", () => {
       const url = requestUrl(input);
       if (url.includes("/search/issues")) return json({ items: [], total_count: 0 });
       if (url.includes("/repos/vitejs/vite")) {
-        return json({ description: "Vite", stargazers_count: 1 });
+        return json({ private: false,
+          description: "Vite", stargazers_count: 1 });
       }
       return json({ message: "no" }, 404);
     };
@@ -217,10 +220,10 @@ describe("review fixes", () => {
     assert.equal(page.filterSkipped, false);
   });
 
-  it("drops an issue whose public timeline shows a merged pull request", async () => {
+  it("keeps issues without trusting timeline mentions when no token is configured", async () => {
     globalThis.fetch = async (input) => {
       const url = requestUrl(input);
-      if (url.includes("/timeline")) {
+      if (new URL(url).pathname.endsWith("/timeline")) {
         const merged = url.includes("/issues/43911/");
         return json(
           merged
@@ -247,15 +250,16 @@ describe("review fixes", () => {
         });
       }
       if (url.includes("/repos/timeline/repo")) {
-        return json({ description: "Timeline", stargazers_count: 1 });
+        return json({ private: false,
+          description: "Timeline", stargazers_count: 1 });
       }
       return json({ message: "no" }, 404);
     };
     const page = await loadRepoMissions("timeline", "repo");
-    assert.equal(page.filterSkipped, false);
+    assert.equal(page.filterSkipped, true);
     assert.deepEqual(
       page.issues.map((item) => item.number),
-      [100],
+      [43911, 100],
     );
   });
 
@@ -270,6 +274,7 @@ describe("review fixes", () => {
       if (url.includes("/issues/43911")) {
         return json(issueItem("ttl-order", "probe", 43911, "first title"));
       }
+      if (url.endsWith("/repos/ttl-order/probe")) return json({ private: false });
       return json({ message: "no" }, 404);
     };
     try {
@@ -287,6 +292,7 @@ describe("review fixes", () => {
         if (url.includes("/issues/43911")) {
           return json(issueItem("ttl-order", "probe", 43911, "edited title"));
         }
+        if (url.endsWith("/repos/ttl-order/probe")) return json({ private: false });
         return json({ message: "no" }, 404);
       };
       const again = await loadMission("ttl-order", "probe", 43911);
@@ -305,6 +311,7 @@ describe("review fixes", () => {
       if (url.includes("/repos/") && !url.includes("/contents/")) {
         repoGets.push(url);
         return json({
+          private: false,
           description: "Live project",
           stargazers_count: 10,
           language: "TypeScript",
@@ -321,4 +328,124 @@ describe("review fixes", () => {
     assert.ok(repoGets.length <= 15);
     assert.ok(repoGets.some((url) => url.includes("/TypeScript")));
   });
+});
+
+describe("public repository boundary", () => {
+  for (const visibility of [true, undefined]) {
+    it(`refuses issue and repository data when private=${visibility}`, async () => {
+      process.env.GITHUB_TOKEN = "test-token";
+      const calls: string[] = [];
+      globalThis.fetch = async (input) => {
+        calls.push(requestUrl(input));
+        return json({ private: visibility, description: "PRIVATE DESCRIPTION" });
+      };
+      const mission = await loadMission("private-owner", "private-repo", 1);
+      const page = await loadRepoMissions("private-owner", "private-repo");
+      assert.equal(mission.body, "");
+      assert.equal(mission.live, false);
+      assert.equal(page.profile.description, "");
+      assert.deepEqual(page.issues, []);
+      assert.deepEqual(page.pullRequests, []);
+      assert.ok(calls.every((url) => url.endsWith("/repos/private-owner/private-repo")));
+    });
+  }
+
+  it("checks visibility again before returning cached bodies, slices or profiles", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    stubGithub("visibility-change", "repo");
+    const mission = await loadMission("visibility-change", "repo", 43911);
+    const page = await loadRepoMissions("visibility-change", "repo");
+    assert.ok(mission.body);
+    assert.ok(page.issues.length);
+    const calls: string[] = [];
+    globalThis.fetch = async (input) => {
+      calls.push(requestUrl(input));
+      return json({ private: true, description: "NOW PRIVATE" });
+    };
+    assert.equal((await loadMission("visibility-change", "repo", 43911)).body, "");
+    const denied = await loadRepoMissions("visibility-change", "repo");
+    assert.equal(denied.issues.length, 0);
+    assert.equal(denied.pullRequests.length, 0);
+    assert.equal(denied.profile.description, "");
+    assert.equal(calls.length, 2);
+  });
+
+  it("does not serve cached private-capable data when the visibility check fails", async () => {
+    stubGithub("visibility-error", "repo");
+    await loadMission("visibility-error", "repo", 43911);
+    await loadRepoMissions("visibility-error", "repo");
+    globalThis.fetch = async () => { throw new TypeError("fetch failed"); };
+    assert.equal((await loadMission("visibility-error", "repo", 43911)).body, "");
+    assert.equal((await loadRepoMissions("visibility-error", "repo")).issues.length, 0);
+  });
+
+  it("restricts issue, fallback and library searches to public repositories", async () => {
+    process.env.GITHUB_TOKEN = "test-token";
+    const queries: string[] = [];
+    const calls: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = requestUrl(input);
+      calls.push(url);
+      if (url.includes("/search/")) {
+        const query = new URL(url).searchParams.get("q") ?? "";
+        queries.push(query);
+        if (url.includes("/search/repositories")) return json({ items: [
+          { name: "private-library", private: true, owner: { login: "fixture" } },
+          { name: "public-library", private: false, owner: { login: "fixture" } },
+        ] });
+        return json({ items: [], total_count: 0 });
+      }
+      if (url.includes("/contents/")) return json([{ name: "Cargo.toml" }]);
+      if (url.includes("/issues/")) return json({}, 404);
+      return json({ private: false, description: "public", language: "Rust" });
+    };
+    await loadRepoMissions("search-public", "repo");
+    await loadMission("search-public", "repo", 123);
+    const shelf = await loadProjects({ category: "games", language: "Rust" });
+    assert.equal(queries.length, 4);
+    assert.ok(queries.every((query) => query.split(" ").includes("is:public")));
+    assert.ok(shelf.libraries.some((item) => item.repo === "public-library"));
+    assert.ok(!shelf.libraries.some((item) => item.repo === "private-library"));
+    assert.ok(!calls.some((url) => url.includes("private-library")));
+  });
+});
+
+describe("confirmed closing relationships", () => {
+  for (const mode of ["merged", "network-error", "invalid-json", "graphql-error", "no-token"] as const) {
+    it(`keeps lists usable with ${mode}`, async () => {
+      if (mode !== "no-token") process.env.GITHUB_TOKEN = "test-token";
+      const owner = "closing-lookup";
+      const repo = mode;
+      let timelineCalls = 0;
+      globalThis.fetch = async (input) => {
+        const url = requestUrl(input);
+        if (new URL(url).pathname.endsWith("/timeline")) {
+          timelineCalls++;
+          throw new TypeError("timeline is unavailable");
+        }
+        if (url === "https://api.github.com/graphql") {
+          if (mode === "network-error") throw new TypeError("fetch failed");
+          if (mode === "invalid-json") return new Response("not JSON");
+          if (mode === "graphql-error") return json({ errors: [{ message: "rate limit" }] });
+          return json({ data: { repository: {
+            i0: { number: 41, closedByPullRequestsReferences: { nodes: [{ merged: true }] } },
+            i1: { number: 42, closedByPullRequestsReferences: { nodes: [{ merged: false }] } },
+          } } });
+        }
+        if (url.includes("/search/issues")) {
+          const isPr = new URL(url).searchParams.get("q")?.includes("is:pr");
+          return json({ items: isPr ? [prItem(owner, repo, 43)] : [
+            issueItem(owner, repo, 41, "fixed"), issueItem(owner, repo, 42, "open"),
+          ], total_count: isPr ? 1 : 2 });
+        }
+        return json({ private: false });
+      };
+      const page = await loadRepoMissions(owner, repo);
+      assert.deepEqual(page.issues.map((issue) => issue.number), mode === "merged" ? [42] : [41, 42]);
+      assert.deepEqual(page.pullRequests.map((pr) => pr.number), [43]);
+      assert.equal(page.filterSkipped, mode !== "merged");
+      assert.equal(page.live, true);
+      assert.equal(timelineCalls, 0);
+    });
+  }
 });

@@ -113,9 +113,18 @@ export function AccountProvider({
         });
       })
       .catch(() => {
-        if (uploadUserRef.current === user.id) uploadUserRef.current = null;
-        toast("Не удалось перенести журнал с устройства.");
-        setUploadAttempt((n) => n + 1);
+        if (uploadUserRef.current !== user.id) return;
+        // Keep the attempted flag until the user explicitly retries.
+        toast("Не удалось перенести журнал с устройства.", {
+          action: {
+            label: "Повторить",
+            onClick: () => {
+              if (uploadUserRef.current !== user.id) return;
+              uploadUserRef.current = null;
+              setUploadAttempt((n) => n + 1);
+            },
+          },
+        });
       })
       .finally(release);
   }, [hydrated, snapshot.user, snapshot.entries, localEntries, uploadAttempt]);
@@ -130,6 +139,10 @@ export function AccountProvider({
 
   const take = useCallback(
     async (mission: Mission) => {
+      if (!snapshot.user) {
+        localTake(mission);
+        return;
+      }
       await uploadGate.current;
       const result = await takeNight({ data: entryFromMission(mission) });
       if (result.ok === "anonymous") {
@@ -138,11 +151,15 @@ export function AccountProvider({
       }
       setSnapshot((prev) => ({ ...prev, entries: result.entries }));
     },
-    [localTake],
+    [localTake, snapshot.user],
   );
 
   const setStatus = useCallback(
     async (id: string, status: LogStatus) => {
+      if (!snapshot.user) {
+        localSetStatus(id, status);
+        return;
+      }
       await uploadGate.current;
       const result = await setNightStatus({ data: { id, status } });
       if (result.ok === "anonymous") {
@@ -153,11 +170,15 @@ export function AccountProvider({
         setSnapshot((prev) => ({ ...prev, entries: result.entries }));
       }
     },
-    [localSetStatus],
+    [localSetStatus, snapshot.user],
   );
 
   const drop = useCallback(
     async (id: string) => {
+      if (!snapshot.user) {
+        localDrop(id);
+        return;
+      }
       await uploadGate.current;
       const result = await dropNight({ data: { id } });
       if (result.ok === "anonymous") {
@@ -168,7 +189,7 @@ export function AccountProvider({
         setSnapshot((prev) => ({ ...prev, entries: result.entries }));
       }
     },
-    [localDrop],
+    [localDrop, snapshot.user],
   );
 
   const signOutUser = useCallback(async () => {

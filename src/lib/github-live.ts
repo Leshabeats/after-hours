@@ -13,10 +13,8 @@ import { hasLibraryManifest, isLibraryCatalogNoise } from "./library-filter.ts";
 import { repoSearchQualifier } from "./github-slug.ts";
 import {
   FRESH_LIMIT,
-  issueClosedByMergedPull,
   mergedIssueNumbers,
   withoutMergedFixes,
-  type TimelineEvent,
 } from "./issue-slice.ts";
 import {
   classifyKind,
@@ -60,6 +58,14 @@ export type ProjectShelf = {
 };
 
 type GhUser = { login?: string } | null;
+type GhRepo = {
+  private: boolean;
+  description?: string | null;
+  stargazers_count?: number;
+  language?: string | null;
+  owner?: { avatar_url?: string };
+  html_url?: string;
+};
 type GhLabel = string | { name?: string };
 type GhItem = {
   title?: string;
@@ -162,7 +168,7 @@ async function searchIssues(
   q: string,
   perPage: number,
 ): Promise<{ items: GhItem[]; total: number | null }> {
-  const url = `https://api.github.com/search/issues?per_page=${perPage}&sort=updated&order=desc&q=${encodeURIComponent(q)}`;
+  const url = `https://api.github.com/search/issues?per_page=${perPage}&sort=updated&order=desc&q=${encodeURIComponent(`${q} is:public`)}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GitHub issue search ${res.status}`);
@@ -190,22 +196,29 @@ function projectKey(owner: string, repo: string) {
   return `${owner}/${repo}`.toLowerCase();
 }
 
-async function fetchProject(spec: CatalogRepo): Promise<ProjectCard> {
+/** Check visibility afresh before exposing issue data, including cached data. */
+async function publicRepository(owner: string, repo: string): Promise<GhRepo | null> {
+  if (!repoSearchQualifier(owner, repo)) return null;
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as GhRepo | null;
+    return json?.private === false ? json : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchProject(spec: CatalogRepo, verified?: GhRepo): Promise<ProjectCard> {
   const key = `${spec.owner}/${spec.repo}`;
   const hit = projectCache.get(key);
-  if (hit && Date.now() - hit.at < PROJECT_CACHE_MS) return hit.card;
+  if (!verified && hit && Date.now() - hit.at < PROJECT_CACHE_MS) return hit.card;
   try {
-    const res = await fetch(`https://api.github.com/repos/${spec.owner}/${spec.repo}`, {
-      headers: headers(),
-    });
-    if (!res.ok) return staticCard(spec);
-    const json = (await res.json()) as {
-      description?: string | null;
-      stargazers_count?: number;
-      language?: string | null;
-      owner?: { avatar_url?: string };
-      html_url?: string;
-    };
+    const json = verified ?? await publicRepository(spec.owner, spec.repo);
+    if (!json) return staticCard(spec);
     const card: ProjectCard = {
       ...spec,
       description: json.description?.trim() || spec.blurb,
@@ -246,6 +259,7 @@ async function searchLibraries(language: string): Promise<ProjectCard[]> {
   const hit = libraryCache.get(language);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.cards;
   const q = [
+    "is:public",
     `language:${language}`,
     `stars:>=${MIN_STARS}`,
     "fork:false",
@@ -265,6 +279,7 @@ async function searchLibraries(language: string): Promise<ProjectCard[]> {
   if (!res.ok) throw new Error(`GitHub repo search ${res.status}`);
   const json = (await res.json()) as {
     items?: {
+      private?: boolean;
       name?: string;
       description?: string | null;
       stargazers_count?: number;
@@ -275,6 +290,7 @@ async function searchLibraries(language: string): Promise<ProjectCard[]> {
     }[];
   };
   const candidates = (json.items ?? []).flatMap((item) => {
+    if (item.private !== false) return [];
     const owner = item.owner?.login;
     const repo = item.name;
     if (!owner || !repo) return [];
@@ -362,7 +378,8 @@ type ClosingLookup = { failed: boolean; merged: Set<number> };
 async function closingPrsByIssue(owner: string, repo: string, numbers: number[]) {
   if (numbers.length === 0) return { failed: false, merged: new Set<number>() };
   if (process.env.GITHUB_TOKEN) return closingPrsGraphql(owner, repo, numbers);
-  return closingPrsTimeline(owner, repo, numbers);
+  // REST cross-references prove a mention, not a closing relationship.
+  return { failed: true, merged: new Set<number>() };
 }
 
 async function closingPrsGraphql(
@@ -422,49 +439,6 @@ async function closingPrsGraphql(
   return { failed: false, merged };
 }
 
-async function timelineState(owner: string, repo: string, number: number) {
-  for (let page = 1; page <= 5; page += 1) {
-    const res = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}/timeline?per_page=100&page=${page}`,
-      { headers: headers() },
-    );
-    if (!res.ok) return "failed" as const;
-    const events = (await res.json()) as TimelineEvent[];
-    if (!Array.isArray(events)) return "failed" as const;
-    if (issueClosedByMergedPull(events)) return "merged" as const;
-    if (events.length < 100) return "open" as const;
-  }
-  return "open" as const;
-}
-
-async function closingPrsTimeline(
-  owner: string,
-  repo: string,
-  numbers: number[],
-): Promise<ClosingLookup> {
-  const merged = new Set<number>();
-  let failed = false;
-  let index = 0;
-  async function worker() {
-    while (!failed) {
-      const current = index;
-      index += 1;
-      if (current >= numbers.length) return;
-      const state = await timelineState(owner, repo, numbers[current]);
-      if (state === "failed") {
-        failed = true;
-        return;
-      }
-      if (state === "merged") merged.add(numbers[current]);
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(4, numbers.length) }, () => worker()),
-  );
-  if (failed) return { failed: true, merged: new Set() };
-  return { failed: false, merged };
-}
-
 export type RepoMissions = {
   issues: Mission[];
   pullRequests: Mission[];
@@ -498,11 +472,21 @@ async function settledSearch(query: string) {
 export async function loadRepoMissions(owner: string, repo: string): Promise<RepoMissions> {
   const qualifier = repoSearchQualifier(owner, repo);
   if (!qualifier) return blankMissions(owner, repo);
+  const repository = await publicRepository(owner, repo);
+  if (!repository) {
+    // Only the baked, already-public seed is safe when visibility is unknown.
+    const seeded = SEED_MISSIONS.filter((item) => item.owner === owner && item.repo === repo);
+    return {
+      ...blankMissions(owner, repo),
+      issues: seeded.filter((item) => !item.isPr),
+      pullRequests: seeded.filter((item) => item.isPr),
+    };
+  }
   const profile = await fetchProject({
     owner,
     repo,
     blurb: findCatalogRepo(owner, repo)?.blurb ?? "",
-  });
+  }, repository);
   const key = `repo|${owner}/${repo}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) {
@@ -609,6 +593,7 @@ export async function loadMission(
   repo: string,
   number: number,
 ): Promise<Mission> {
+  if (!await publicRepository(owner, repo)) return fallbackMission(owner, repo, number);
   const known = cachedMission(owner, repo, number);
   if (known?.body) return known;
   try {
@@ -641,6 +626,10 @@ export async function loadMission(
     // fall through
   }
 
+  return fallbackMission(owner, repo, number);
+}
+
+function fallbackMission(owner: string, repo: string, number: number): Mission {
   const seeded = findSeed(owner, repo, number);
   if (seeded) return seeded;
 

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { dataDirectory } from "./data-dir.ts";
 import { createSqliteJournal, upsertUser, type JournalRepo } from "@/lib/journal/store";
 import type { SessionUser } from "@/lib/journal/types";
 import { createSqliteUsage, type UsageRepo } from "@/lib/usage/store";
@@ -11,7 +12,7 @@ let sqlite: DatabaseSync | undefined;
 
 function openDb() {
   if (sqlite) return sqlite;
-  const dir = join(process.cwd(), "data");
+  const dir = dataDirectory();
   mkdirSync(dir, { recursive: true });
   sqlite = new DatabaseSync(join(dir, "after-hours.sqlite"));
   return sqlite;
