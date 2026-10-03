@@ -263,7 +263,7 @@ function isPathStart(text, index) {
   if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     return true;
   }
-  if (text[index] === "\\" && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
+  if (text[index] === "\\" && previous !== "\\" && !isWordChar(previous)) {
     let firstDot = false;
     let inFirst = true;
     let firstLength = 0;
@@ -272,10 +272,9 @@ function isPathStart(text, index) {
       if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
       if (char === "\\" || char === "/") return true;
       if (char === " " || char === "\t") inFirst = false;
-      else if (inFirst) {
-        firstLength += 1;
-        if (char === ".") firstDot = true;
-      }
+      else if (inFirst && char === ".") firstDot = true;
+      else if (inFirst && /[A-Za-z0-9]/.test(char)) firstLength += 1;
+      else if (inFirst) firstLength = 0;
     }
     if (firstDot || firstLength >= 2) return true;
   }
@@ -288,7 +287,7 @@ function isPathStart(text, index) {
   if (
     text[index] === "/" &&
     previous !== "/" &&
-    !/[A-Za-z0-9]/.test(previous ?? "") &&
+    !isWordChar(previous) &&
     !(previous === ":" && text[index + 1] === "/")
   ) {
     return true;
@@ -362,8 +361,12 @@ function relativeWindowsBody(text, index) {
   return separators >= 2 || (separators >= 1 && componentHasDot);
 }
 
+function isWordChar(char) {
+  return /[\p{L}\p{N}]/u.test(char ?? "");
+}
+
 function isWordStart(text, index) {
-  return /[A-Za-z0-9]/.test(text[index] ?? "") && !/[A-Za-z0-9]/.test(text[index - 1] ?? "");
+  return isWordChar(text[index]) && !isWordChar(text[index - 1]);
 }
 
 function wordTokenHas(text, index, mark) {
@@ -427,11 +430,22 @@ function windowsPathStarts(text) {
     const dottedToken = wordTokenHas(text, start, "\\") && wordTokenHas(text, start, ".");
     let previous = index - 1;
     if (upper) {
-      while (previous >= 0 && !body[previous] && wordsStayOnOneLine(text, words[previous], start)) {
-        const word = words[previous];
-        if (text[word] === text[word].toLowerCase()) break;
-        windowsStarts[word] = 1;
-        previous -= 1;
+      if (componentLength(text, start) < 8) {
+        const run = [];
+        while (
+          previous >= 0 &&
+          !body[previous] &&
+          wordsStayOnOneLine(text, words[previous], start)
+        ) {
+          const word = words[previous];
+          if (text[word] === text[word].toLowerCase()) break;
+          run.push(word);
+          previous -= 1;
+        }
+        const skip = run.length >= 3 && previous < 0 ? run[run.length - 1] : -1;
+        for (const word of run) {
+          if (word !== skip) windowsStarts[word] = 1;
+        }
       }
       continue;
     }
@@ -460,32 +474,19 @@ function isVersionSlash(text, index) {
   return /\d/.test(text[cursor] ?? "");
 }
 
+function isPathTokenChar(char) {
+  return isWordChar(char) || char === "." || char === "_" || char === "-" || char === "+";
+}
+
 function isRelativePosixPath(text, index) {
-  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
-  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
+  if (!isWordStart(text, index)) return false;
   let slashes = 0;
   let sawDot = false;
   let version = false;
   for (let cursor = index; cursor < text.length; cursor += 1) {
     const char = text[cursor];
-    if (
-      char === "\n" ||
-      char === "\r" ||
-      char === "`" ||
-      char === '"' ||
-      char === " " ||
-      char === "\t" ||
-      char === ":" ||
-      char === "," ||
-      char === ";" ||
-      char === "(" ||
-      char === ")" ||
-      char === "'" ||
-      char === "="
-    ) {
-      break;
-    }
     if (char === "\\") return false;
+    if (!isPathTokenChar(char) && char !== "/") break;
     if (char === "/") {
       slashes += 1;
       if (slashes === 1 && isVersionSlash(text, cursor + 1)) version = true;
@@ -495,6 +496,47 @@ function isRelativePosixPath(text, index) {
     }
   }
   return slashes === 1 && sawDot && !version;
+}
+
+function componentLength(text, index) {
+  let length = 0;
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (
+      char === "\\" ||
+      char === "/" ||
+      char === " " ||
+      char === "\t" ||
+      char === "\n" ||
+      char === "\r"
+    ) {
+      break;
+    }
+    length += 1;
+  }
+  return length;
+}
+
+/** Stop an extensionless `\secret` or `\Private Folder` before the failure clause. */
+function extensionlessRootEnd(text, index, lineEnd) {
+  if (text[index] !== "\\") return -1;
+  let cursor = index + 1;
+  let length = 0;
+  while (cursor < lineEnd && /[A-Za-z0-9]/.test(text[cursor])) {
+    length += 1;
+    cursor += 1;
+  }
+  if (length < 2) return -1;
+  if (text[cursor] === "\\" || text[cursor] === "/" || text[cursor] === ".") return -1;
+  while (text[cursor] === " " || text[cursor] === "\t") {
+    let look = cursor + 1;
+    while (text[look] === " " || text[look] === "\t") look += 1;
+    const next = text[look] ?? "";
+    if (next === next.toLowerCase() || !/[A-Za-z]/.test(next)) break;
+    cursor = look;
+    while (cursor < lineEnd && /[A-Za-z0-9]/.test(text[cursor])) cursor += 1;
+  }
+  return cursor;
 }
 
 function pathEnd(text, index) {
@@ -507,6 +549,8 @@ function pathEnd(text, index) {
     lineEnd += 1;
   }
   if (closer !== -1) return closer;
+  const rootEnd = extensionlessRootEnd(text, index, lineEnd);
+  if (rootEnd > index) return rootEnd;
 
   let lastRequired = index;
   let cursor = index;
@@ -909,6 +953,12 @@ async function listThreads(client, { pages, limit, archived, idBase, sourceKinds
   return { error: null, threads, more };
 }
 
+/** Name only the extra kinds that were actually merged into the summary. */
+function threadScope(sources) {
+  const extras = EXTRA_SOURCE_KINDS.filter((kind) => sources?.[kind]);
+  return extras.length > 0 ? `interactive+${extras.join("+")}` : "interactive";
+}
+
 export async function runProbe({
   bin = process.env.CODEX_BIN || "codex",
   args,
@@ -952,24 +1002,25 @@ export async function runProbe({
       sourceKinds: EXTRA_SOURCE_KINDS,
     });
 
+    const counted = summarizeThreads(
+      dedupeThreads([
+        ...active.threads,
+        ...(extra.error ? [] : extra.threads),
+        ...(archived.error ? [] : archived.threads),
+        ...(archivedExtra.error ? [] : archivedExtra.threads),
+      ]),
+    );
     const limits = await client.request(100, "account/rateLimits/read", {});
     return {
       userAgent: shareableUserAgent(init.result?.userAgent),
       threads: {
-        ...summarizeThreads(
-          dedupeThreads([
-            ...active.threads,
-            ...(extra.error ? [] : extra.threads),
-            ...(archived.error ? [] : archived.threads),
-            ...(archivedExtra.error ? [] : archivedExtra.threads),
-          ]),
-        ),
+        ...counted,
         more:
           active.more ||
           (!extra.error && extra.more) ||
           (!archived.error && archived.more) ||
           (!archivedExtra.error && archivedExtra.more),
-        scope: "interactive",
+        scope: threadScope(counted.sources),
         extraSourcesIncluded: !extra.error,
         archivedIncluded: !archived.error,
         archivedExtraIncluded: !archivedExtra.error,

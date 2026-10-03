@@ -488,6 +488,47 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("\\secret").includes("secret"), false);
     assert.equal(redactDiagnostic("\\Private Folder").includes("Private"), false);
     assert.equal(redactDiagnostic("\\Private Folder").includes("Folder"), false);
+    const missingProject = redactDiagnostic("Missing PrivateProject\\secrets\\key.txt");
+    const errorProject = redactDiagnostic("Error PrivateProject\\secrets\\key.txt");
+    const missingSessions = redactDiagnostic("Missing Sessions\\Jane Doe.jsonl");
+    const seePerson = redactDiagnostic("See Maria Jose Garcia\\secrets\\key.txt later");
+    assert.equal(missingProject.startsWith("Missing "), true);
+    assert.equal(missingProject.includes("PrivateProject"), false);
+    assert.equal(errorProject, "Error [redacted]");
+    assert.equal(missingSessions.startsWith("Missing "), true);
+    assert.equal(missingSessions.includes("Sessions"), false);
+    assert.equal(missingSessions.includes("Jane"), false);
+    assert.equal(seePerson.startsWith("See "), true);
+    assert.equal(seePerson.includes("later"), true);
+    assert.equal(seePerson.includes("Maria"), false);
+    assert.equal(seePerson.includes("Jose"), false);
+    assert.equal(seePerson.includes("Garcia"), false);
+    assert.equal(redactDiagnostic("Maria Jose Garcia\\secrets\\key.txt"), "[redacted]");
+    const rootedClause = redactDiagnostic("see \\secret because it is locked");
+    const rootedFolder = redactDiagnostic("cannot open \\Private Folder because it is locked");
+    assert.equal(rootedClause.startsWith("see "), true);
+    assert.equal(rootedClause.includes("because it is locked"), true);
+    assert.equal(rootedClause.includes("secret"), false);
+    assert.equal(rootedFolder.startsWith("cannot open "), true);
+    assert.equal(rootedFolder.includes("because it is locked"), true);
+    assert.equal(rootedFolder.includes("Private"), false);
+    assert.equal(rootedFolder.includes("Folder"), false);
+    assert.equal(redactDiagnostic("open \\^[ later"), "open \\^[ later");
+    const unicodePosix = redactDiagnostic("see Проект/секреты/key.txt later");
+    const unicodeWindows = redactDiagnostic("see Проект\\секреты\\key.txt later");
+    assert.equal(unicodePosix, "see [redacted] later");
+    assert.equal(unicodeWindows, "see [redacted] later");
+    const unicodeSummary = summarizeThreads([
+      {
+        source: { custom: "Проект/секреты/key.txt" },
+        originator: "Проект/секреты/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(unicodeSummary.originators["[redacted]"], 1);
+    assert.equal(unicodeSummary.sources["[redacted]"], 1);
+    assert.equal(JSON.stringify(unicodeSummary).includes("Проект"), false);
+    assert.equal(JSON.stringify(unicodeSummary).includes("секреты"), false);
     const rootSummary = summarizeThreads([
       {
         source: { custom: "\\secret" },
@@ -507,6 +548,10 @@ describe("codex app-server probe", () => {
     const versionStarted = Date.now();
     assert.equal(redactDiagnostic(versions), versions);
     assert.equal(Date.now() - versionStarted < 1000, true);
+    const punctuated = "a$".repeat(40000);
+    const punctuatedStarted = Date.now();
+    assert.equal(redactDiagnostic(punctuated), punctuated);
+    assert.equal(Date.now() - punctuatedStarted < 1000, true);
     assert.equal(missing.startsWith("Missing "), true);
     assert.equal(missing.includes("sessions"), false);
     assert.equal(missing.includes("Jane"), false);
@@ -1097,6 +1142,7 @@ describe("codex app-server probe", () => {
     try {
       const summary = await runProbe({ bin: process.execPath, args: [helper] });
       assert.equal(summary.threads.count, 4);
+      assert.equal(summary.threads.scope, "interactive+exec");
       assert.equal(summary.threads.sources["custom:atlas"], 2);
       assert.equal(summary.threads.sources.exec, 2);
       assert.equal(summary.threads.originators["atlas-origin"], 2);
