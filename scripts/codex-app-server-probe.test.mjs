@@ -445,6 +445,16 @@ describe("codex app-server probe", () => {
     assert.equal(uri.includes("example.com"), true);
   });
 
+  it("keeps a remote URL path and the text after it", () => {
+    const failure = redactDiagnostic("https://api.openai.com/v1/responses failed with 500");
+    const mixed = redactDiagnostic("https://api.openai.com/v1/responses then /Users/me/secret");
+    assert.equal(failure, "https://api.openai.com/v1/responses failed with 500");
+    assert.equal(mixed.includes("https://api.openai.com/v1/responses"), true);
+    assert.equal(mixed.includes("then"), true);
+    assert.equal(mixed.includes("/Users"), false);
+    assert.equal(mixed.includes("secret"), false);
+  });
+
   it("redacts a long spaced path without a quadratic scan", () => {
     const spaced = `/tmp/${"Private ".repeat(4000)}secret`;
     const started = Date.now();

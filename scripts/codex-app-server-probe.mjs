@@ -171,6 +171,16 @@ function readOptions(argv) {
   return options;
 }
 
+/** A remote URI stays intact, including the path after the host. file:// is a local path. */
+function remoteUriEnd(text, index) {
+  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return -1;
+  const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text.slice(index));
+  if (!match || match[1].toLowerCase() === "file") return -1;
+  let cursor = index + match[0].length;
+  while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) cursor += 1;
+  return cursor;
+}
+
 function isPathStart(text, index) {
   if (text.startsWith("~/", index)) return true;
   const previous = text[index - 1];
@@ -287,6 +297,12 @@ export function redactDiagnostic(value) {
   const text = String(value ?? "");
   let redacted = "";
   for (let index = 0; index < text.length;) {
+    const uriEnd = remoteUriEnd(text, index);
+    if (uriEnd > index) {
+      redacted += text.slice(index, uriEnd);
+      index = uriEnd;
+      continue;
+    }
     if (!isPathStart(text, index)) {
       redacted += text[index];
       index += 1;
