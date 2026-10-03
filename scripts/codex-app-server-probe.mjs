@@ -274,7 +274,12 @@ function isPathStart(text, index) {
   ) {
     return true;
   }
-  if (text[index] === "/" && previous !== "/" && !(previous === ":" && text[index + 1] === "/")) {
+  if (
+    text[index] === "/" &&
+    previous !== "/" &&
+    !/[A-Za-z0-9]/.test(previous ?? "") &&
+    !(previous === ":" && text[index + 1] === "/")
+  ) {
     return true;
   }
   if (
@@ -285,7 +290,48 @@ function isPathStart(text, index) {
   ) {
     return true;
   }
-  return false;
+  return isRelativeWindowsPath(text, index);
+}
+
+function isRelativeWindowsPath(text, index) {
+  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
+  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
+  let separators = 0;
+  let componentHasDot = false;
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
+    if (char === "\\") {
+      separators += 1;
+      componentHasDot = false;
+      continue;
+    }
+    if (char === " " || char === "\t") {
+      if (separators === 0) break;
+      let later = false;
+      for (let look = cursor + 1; look < text.length; look += 1) {
+        const next = text[look];
+        if (
+          next === "\n" ||
+          next === "\r" ||
+          next === "`" ||
+          next === '"' ||
+          next === " " ||
+          next === "\t"
+        ) {
+          break;
+        }
+        if (next === "\\") {
+          later = true;
+          break;
+        }
+      }
+      if (!later) break;
+      continue;
+    }
+    if (char === "." && separators >= 1) componentHasDot = true;
+  }
+  return separators >= 2 || (separators >= 1 && componentHasDot);
 }
 
 function pathEnd(text, index) {
@@ -410,7 +456,7 @@ export function redactDiagnostic(value) {
       continue;
     }
     const plainEnd = plainSchemeEnd(text, index);
-    if (plainEnd > index && text[plainEnd] !== ":") {
+    if (plainEnd > index && text[plainEnd] !== ":" && !isRelativeWindowsPath(text, index)) {
       redacted += text.slice(index, plainEnd);
       index = plainEnd;
       continue;

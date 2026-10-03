@@ -383,6 +383,26 @@ describe("codex app-server probe", () => {
     assert.equal(file.includes("secret"), false);
     assert.equal(file.includes("later"), true);
     assert.equal(file.startsWith("see "), true);
+    const relative = redactDiagnostic("see PrivateProject\\secrets\\key.txt later");
+    assert.equal(relative.includes("PrivateProject"), false);
+    assert.equal(relative.includes("secrets"), false);
+    assert.equal(relative.includes("key"), false);
+    assert.equal(relative.includes("later"), true);
+    assert.equal(relative.startsWith("see "), true);
+    assert.equal(redactDiagnostic("failed not\\n later"), "failed not\\n later");
+    const relativeSummary = summarizeThreads([
+      {
+        source: { custom: "PrivateProject\\secrets\\key.txt" },
+        originator: "PrivateProject\\secrets\\key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const relativeJson = JSON.stringify(relativeSummary);
+    assert.equal(relativeJson.includes("PrivateProject"), false);
+    assert.equal(relativeJson.includes("secrets"), false);
+    assert.equal(relativeJson.includes("key.txt"), false);
+    assert.equal(relativeSummary.originators["[redacted]"], 1);
+    assert.equal(relativeSummary.sources["[redacted]"], 1);
     const fileSummary = summarizeThreads([
       {
         source: { custom: "\\secret.txt" },
@@ -688,6 +708,37 @@ describe("codex app-server probe", () => {
       assert.equal(summary.userAgent, "[redacted]");
       assert.equal(json.includes("alice"), false);
       assert.equal(json.includes("/Users"), false);
+      const agent = "codex_cli_rs/0.159.0 (Linux 6.12.94; x86_64) rust (after-hours-probe; 0.0.0)";
+      assert.equal(redactDiagnostic(agent), agent);
+      const mixed = redactDiagnostic(`${agent} /Users/alice/.codex`);
+      assert.equal(mixed.includes("codex_cli_rs/0.159.0"), true);
+      assert.equal(mixed.includes("/Users"), false);
+      assert.equal(mixed.includes("alice"), false);
+      const clean = join(dir, "clean.mjs");
+      writeFileSync(
+        clean,
+        [
+          'import { createInterface } from "node:readline";',
+          "const rl = createInterface({ input: process.stdin });",
+          "rl.on('line', (line) => {",
+          "  let message;",
+          "  try { message = JSON.parse(line); } catch { return; }",
+          '  if (message.method === "initialize") {',
+          `    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: ${JSON.stringify(agent)} } }) + '\\n');`,
+          "    return;",
+          "  }",
+          '  if (message.method === "thread/list") {',
+          "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [] } }) + '\\n');",
+          "    return;",
+          "  }",
+          '  if (message.method === "account/rateLimits/read") {',
+          "    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');",
+          "  }",
+          "});",
+        ].join("\n"),
+      );
+      const cleanSummary = await runProbe({ bin: process.execPath, args: [clean] });
+      assert.equal(cleanSummary.userAgent, agent);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
