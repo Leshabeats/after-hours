@@ -272,8 +272,10 @@ function isPathStart(text, index) {
       if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
       if (char === "\\" || char === "/") return true;
       if (char === " " || char === "\t") inFirst = false;
-      else if (inFirst && char === ".") firstDot = true;
-      else if (inFirst && isWordChar(char)) firstLength += 1;
+      else if (!inFirst) continue;
+      else if (char === ".") firstDot = true;
+      else if (isWordChar(char)) firstLength += 1;
+      else break;
     }
     if (firstDot || firstLength >= 2) return true;
   }
@@ -409,17 +411,16 @@ function windowsPathStarts(text) {
     let previous = index - 1;
     if (upper) {
       const run = [];
-      while (
-        previous >= 0 &&
-        bodyAt[words[previous]] !== 1 &&
-        wordsStayOnOneLine(text, words[previous], start)
-      ) {
+      let right = start;
+      while (run.length < 2 && previous >= 0 && bodyAt[words[previous]] !== 1) {
         const word = words[previous];
+        if (!wordsStayOnOneLine(text, word, right)) break;
         if (text[word] === text[word].toLowerCase()) break;
         run.push(word);
+        right = word;
         previous -= 1;
       }
-      const skip = previous < 0 && (run.length === 1 || run.length >= 3) ? run[run.length - 1] : -1;
+      const skip = previous < 0 && run.length === 1 ? run[0] : -1;
       for (const word of run) {
         if (word !== skip) windowsStarts[word] = 1;
       }
@@ -474,35 +475,68 @@ function isRelativePosixPath(text, index) {
   return slashes === 1 && sawDot && !version;
 }
 
-const EXTENSIONLESS_STOP = new Set(["because", "it", "is", "locked", "later"]);
+const LOWER_ROOT_WORD = new Set(["documents", "документы"]);
 
-/** Stop an extensionless root before the failure clause, keeping lowercase path words. */
+/** A following word may extend an extensionless root. Punctuation ends it. */
+function extensionlessWord(text, index, lineEnd) {
+  let cursor = index;
+  while (cursor < lineEnd && (text[cursor] === " " || text[cursor] === "\t")) cursor += 1;
+  if (cursor >= lineEnd) return null;
+  const char = text[cursor];
+  if (char === "\\" || char === "/" || char === ".") return { defer: true };
+  if (!isWordChar(char)) return { end: index };
+  let wordEnd = cursor + 1;
+  while (wordEnd < lineEnd && isWordChar(text[wordEnd])) wordEnd += 1;
+  if (text[wordEnd] === "\\" || text[wordEnd] === "/" || text[wordEnd] === ".")
+    return { defer: true };
+  return {
+    end: wordEnd,
+    word: text.slice(cursor, wordEnd),
+    capitalized: char !== char.toLowerCase(),
+  };
+}
+
+/** Stop an extensionless root before punctuation or the failure clause. */
 function extensionlessRootEnd(text, index, lineEnd) {
   if (text[index] !== "\\") return -1;
   let cursor = index + 1;
   let length = 0;
   while (cursor < lineEnd) {
     const char = text[cursor];
-    if (char === "\\" || char === "/" || char === "." || char === " " || char === "\t") break;
-    if (isWordChar(char)) length += 1;
+    if (char === "\\" || char === "/" || char === ".") return -1;
+    if (char === " " || char === "\t") break;
+    if (!isWordChar(char)) return length >= 2 ? cursor : -1;
+    length += 1;
     cursor += 1;
   }
   if (length < 2) return -1;
-  if (text[cursor] === "\\" || text[cursor] === "/" || text[cursor] === ".") return -1;
+  let allowLower = true;
   while (cursor < lineEnd && (text[cursor] === " " || text[cursor] === "\t")) {
-    let look = cursor + 1;
-    while (look < lineEnd && (text[look] === " " || text[look] === "\t")) look += 1;
-    if (look >= lineEnd) return lineEnd;
-    let wordEnd = look;
-    while (wordEnd < lineEnd) {
-      const char = text[wordEnd];
-      if (char === " " || char === "\t" || char === "\\" || char === "/" || char === ".") break;
-      wordEnd += 1;
+    const next = extensionlessWord(text, cursor, lineEnd);
+    if (!next) return lineEnd;
+    if (next.defer) return -1;
+    if (next.end === cursor) return cursor;
+    const lower = next.word.toLowerCase();
+    if (next.capitalized) {
+      allowLower = false;
+      cursor = next.end;
+      continue;
     }
-    if (text[wordEnd] === "\\" || text[wordEnd] === "/" || text[wordEnd] === ".") return -1;
-    const word = text.slice(look, wordEnd).toLowerCase();
-    if (word.length === 0 || EXTENSIONLESS_STOP.has(word)) break;
-    cursor = wordEnd;
+    if (lower === "and") {
+      const follow = extensionlessWord(text, next.end, lineEnd);
+      if (follow?.capitalized) {
+        allowLower = false;
+        cursor = next.end;
+        continue;
+      }
+      return cursor;
+    }
+    if (allowLower && LOWER_ROOT_WORD.has(lower)) {
+      allowLower = false;
+      cursor = next.end;
+      continue;
+    }
+    return cursor;
   }
   return cursor;
 }

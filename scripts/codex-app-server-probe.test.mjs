@@ -536,6 +536,16 @@ describe("codex app-server probe", () => {
     assert.equal(cyrillicFolder.includes("документы"), false);
     assert.equal(mixedRoot, "cannot open [redacted] because it is locked");
     assert.equal(settings, "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("cannot open \\My documents: file does not exist"),
+      "cannot open [redacted]: file does not exist",
+    );
+    assert.equal(redactDiagnostic("see \\Private Folder on disk"), "see [redacted] on disk");
+    assert.equal(redactDiagnostic("see \\secret, then continue"), "see [redacted], then continue");
+    assert.equal(
+      redactDiagnostic("The File Is Missing From Documents\\secrets\\key.txt"),
+      "The File Is [redacted]",
+    );
     const unicodePosix = redactDiagnostic("see Проект/секреты/key.txt later");
     const unicodeWindows = redactDiagnostic("see Проект\\секреты\\key.txt later");
     assert.equal(unicodePosix, "see [redacted] later");
@@ -570,6 +580,12 @@ describe("codex app-server probe", () => {
     const versionStarted = Date.now();
     assert.equal(redactDiagnostic(versions), versions);
     assert.equal(Date.now() - versionStarted < 1000, true);
+    const titled = `${"Word ".repeat(16000)}Documents\\secrets\\key.txt`;
+    const titledStarted = Date.now();
+    const titledRedacted = redactDiagnostic(titled);
+    assert.equal(Date.now() - titledStarted < 1000, true);
+    assert.equal(titledRedacted.startsWith("Word "), true);
+    assert.equal(titledRedacted.includes("Documents"), false);
     const fragments = `${"a\\a ".repeat(16000)}.txt`;
     const fragmentStarted = Date.now();
     const fragmentRedacted = redactDiagnostic(fragments);
