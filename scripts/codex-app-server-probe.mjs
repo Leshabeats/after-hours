@@ -381,9 +381,36 @@ export function redactDiagnostic(value) {
     redacted += "[redacted]";
     index = Math.max(end, index + 1);
   }
-  return redacted
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted]")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted]");
+  return redactEmails(redacted).replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    "[redacted]",
+  );
+}
+
+const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
+const EMAIL_DOMAIN = /[A-Za-z0-9.-]/;
+
+/** Find addresses from each @. A greedy local-part regex retries every character of a long line. */
+function redactEmails(text) {
+  let redacted = "";
+  let cursor = 0;
+  for (let at = text.indexOf("@", cursor); at !== -1; at = text.indexOf("@", cursor)) {
+    let local = at;
+    while (local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
+    let domain = at + 1;
+    while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
+    const host = text.slice(at + 1, domain);
+    const dot = host.lastIndexOf(".");
+    const tld = dot === -1 ? "" : host.slice(dot + 1);
+    if (local < at && dot > 0 && tld.length >= 2 && /^[A-Za-z]+$/.test(tld)) {
+      redacted += `${text.slice(cursor, local)}[redacted]`;
+      cursor = domain;
+    } else {
+      redacted += text.slice(cursor, at + 1);
+      cursor = at + 1;
+    }
+  }
+  return redacted + text.slice(cursor);
 }
 
 function rpcError(message) {

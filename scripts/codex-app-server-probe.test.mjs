@@ -547,7 +547,12 @@ describe("codex app-server probe", () => {
     assert.equal(signed, "https://example.com/v1 failed");
     const mailed = redactDiagnostic("auth failed for alice@example.com");
     assert.equal(mailed, "auth failed for [redacted]");
+    assert.equal(redactDiagnostic("bob@example.co.uk"), "[redacted]");
     assert.equal(stderrDetail("alice@example.com").includes("@"), false);
+    const letters = "a".repeat(100_000);
+    const started = Date.now();
+    assert.equal(redactDiagnostic(letters), letters);
+    assert.equal(Date.now() - started < 1000, true);
   });
 
   it("redacts a remote URL path in an originator or custom source", () => {
