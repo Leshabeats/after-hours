@@ -541,10 +541,21 @@ describe("codex app-server probe", () => {
       "cannot open [redacted]: file does not exist",
     );
     assert.equal(redactDiagnostic("see \\Private Folder on disk"), "see [redacted] on disk");
+    assert.equal(redactDiagnostic("cwd:\\Program Files (x86)\\Codex"), "cwd:[redacted]");
+    assert.equal(
+      redactDiagnostic("see \\Program Files (x86)\\Codex\\a.txt later"),
+      "see [redacted] later",
+    );
+    assert.equal(redactDiagnostic("see \\Program Files (x86) later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see \\secret, then continue"), "see [redacted], then continue");
     assert.equal(
       redactDiagnostic("The File Is Missing From Documents\\secrets\\key.txt"),
-      "The File Is [redacted]",
+      "The File Is Missing From [redacted]",
+    );
+    assert.equal(redactDiagnostic("Very Private Customer Project\\secrets\\key.txt"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("see Very Private Customer Project\\secrets\\key.txt later"),
+      "see [redacted] later",
     );
     const unicodePosix = redactDiagnostic("see Проект/секреты/key.txt later");
     const unicodeWindows = redactDiagnostic("see Проект\\секреты\\key.txt later");
@@ -584,7 +595,7 @@ describe("codex app-server probe", () => {
     const titledStarted = Date.now();
     const titledRedacted = redactDiagnostic(titled);
     assert.equal(Date.now() - titledStarted < 1000, true);
-    assert.equal(titledRedacted.startsWith("Word "), true);
+    assert.equal(titledRedacted.includes("Word"), false);
     assert.equal(titledRedacted.includes("Documents"), false);
     const fragments = `${"a\\a ".repeat(16000)}.txt`;
     const fragmentStarted = Date.now();
@@ -1307,6 +1318,41 @@ describe("codex app-server probe", () => {
       assert.equal(summary.threads.originators["live-origin"], 1);
       assert.equal(summary.threads.originators["exec-origin"], 1);
       assert.equal(summary.threads.originators["archived-origin"], 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a pending request when app-server output closes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "stdout-close.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    process.stdout.end();",
+        "    setTimeout(() => {}, 30000);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => runProbe({ bin: process.execPath, args: [helper] }),
+        /output closed/,
+      );
+      assert.equal(Date.now() - started < 5000, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

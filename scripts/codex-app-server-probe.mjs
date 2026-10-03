@@ -388,8 +388,27 @@ function wordsStayOnOneLine(text, left, right) {
   return true;
 }
 
+const PATH_CLAUSE = new Set([
+  "Cannot",
+  "Error",
+  "Failed",
+  "Failure",
+  "From",
+  "Is",
+  "Missing",
+  "Open",
+  "See",
+  "The",
+]);
+
 let windowsStartText = null;
 let windowsStarts = null;
+
+function wordText(text, index) {
+  let end = index;
+  while (end < text.length && isWordChar(text[end])) end += 1;
+  return text.slice(index, end);
+}
 
 /** One pass over word starts. A later path must not pull in every earlier word. */
 function windowsPathStarts(text) {
@@ -412,18 +431,16 @@ function windowsPathStarts(text) {
     if (upper) {
       const run = [];
       let right = start;
-      while (run.length < 2 && previous >= 0 && bodyAt[words[previous]] !== 1) {
+      while (previous >= 0 && bodyAt[words[previous]] !== 1) {
         const word = words[previous];
         if (!wordsStayOnOneLine(text, word, right)) break;
         if (text[word] === text[word].toLowerCase()) break;
+        if (PATH_CLAUSE.has(wordText(text, word))) break;
         run.push(word);
         right = word;
         previous -= 1;
       }
-      const skip = previous < 0 && run.length === 1 ? run[0] : -1;
-      for (const word of run) {
-        if (word !== skip) windowsStarts[word] = 1;
-      }
+      for (const word of run) windowsStarts[word] = 1;
       continue;
     }
     if (!dottedToken || previous < 0 || bodyAt[words[previous]] === 1) continue;
@@ -484,6 +501,15 @@ function extensionlessWord(text, index, lineEnd) {
   if (cursor >= lineEnd) return null;
   const char = text[cursor];
   if (char === "\\" || char === "/" || char === ".") return { defer: true };
+  if (char === "(") {
+    const close = text.indexOf(")", cursor + 1);
+    if (close === -1 || close >= lineEnd) return { end: index };
+    let after = close + 1;
+    while (after < lineEnd && (text[after] === " " || text[after] === "\t")) after += 1;
+    const follow = text[after] ?? "";
+    if (follow === "\\" || follow === "/" || follow === ".") return { defer: true };
+    return { end: close + 1, group: true };
+  }
   if (!isWordChar(char)) return { end: index };
   let wordEnd = cursor + 1;
   while (wordEnd < lineEnd && isWordChar(text[wordEnd])) wordEnd += 1;
@@ -515,6 +541,10 @@ function extensionlessRootEnd(text, index, lineEnd) {
     const next = extensionlessWord(text, cursor, lineEnd);
     if (!next) return lineEnd;
     if (next.defer) return -1;
+    if (next.group) {
+      cursor = next.end;
+      continue;
+    }
     if (next.end === cursor) return cursor;
     const lower = next.word.toLowerCase();
     if (next.capitalized) {
@@ -854,11 +884,14 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
 
   bindStdin(child.stdin, rejectPending);
 
+  let stopping = false;
+  let outputTimer = null;
   child.on("error", (error) => {
     const reason = error.code || redactDiagnostic(error.message);
     rejectPending(new Error(`codex app-server failed to start: ${reason}`));
   });
   child.on("exit", (code, signal) => {
+    if (outputTimer) clearTimeout(outputTimer);
     const why = signal ? `signal ${signal}` : `code ${code}`;
     const detail = stderrDetail(stderrText(stderrState));
     rejectPending(
@@ -869,6 +902,16 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   });
 
   const rl = createInterface({ input: child.stdout });
+  rl.on("close", () => {
+    if (stopping || failure) return;
+    if (child.exitCode != null || child.signalCode != null) return;
+    outputTimer = setTimeout(() => {
+      outputTimer = null;
+      if (stopping || failure) return;
+      if (child.exitCode != null || child.signalCode != null) return;
+      rejectPending(new Error("codex app-server output closed"));
+    }, 50);
+  });
   rl.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
@@ -912,6 +955,8 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   };
 
   const stop = () => {
+    stopping = true;
+    if (outputTimer) clearTimeout(outputTimer);
     rl.close();
     stopChild(child);
   };
