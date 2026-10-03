@@ -399,18 +399,30 @@ function redactEmails(text) {
     while (local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
     let domain = at + 1;
     while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
-    const host = text.slice(at + 1, domain);
-    const dot = host.lastIndexOf(".");
-    const tld = dot === -1 ? "" : host.slice(dot + 1);
-    if (local < at && dot > 0 && tld.length >= 2 && /^[A-Za-z]+$/.test(tld)) {
+    const end = local < at ? emailEnd(text, at, domain) : -1;
+    if (end !== -1) {
       redacted += `${text.slice(cursor, local)}[redacted]`;
-      cursor = domain;
+      cursor = end;
     } else {
       redacted += text.slice(cursor, at + 1);
       cursor = at + 1;
     }
   }
   return redacted + text.slice(cursor);
+}
+
+/** Shrink a trailing dot or a non-letter label until the TLD is at least two letters. */
+function emailEnd(text, at, domain) {
+  let end = domain;
+  while (end > at + 1) {
+    const host = text.slice(at + 1, end);
+    const dot = host.lastIndexOf(".");
+    if (dot <= 0) return -1;
+    const tld = host.slice(dot + 1);
+    if (tld.length >= 2 && /^[A-Za-z]+$/.test(tld)) return at + 1 + dot + 1 + tld.length;
+    end = at + 1 + dot;
+  }
+  return -1;
 }
 
 function rpcError(message) {

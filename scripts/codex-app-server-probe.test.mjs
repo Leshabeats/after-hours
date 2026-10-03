@@ -548,7 +548,23 @@ describe("codex app-server probe", () => {
     const mailed = redactDiagnostic("auth failed for alice@example.com");
     assert.equal(mailed, "auth failed for [redacted]");
     assert.equal(redactDiagnostic("bob@example.co.uk"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("auth failed for alice@example.com."),
+      "auth failed for [redacted].",
+    );
+    assert.equal(
+      redactDiagnostic("auth failed for alice@example.com. Retry later."),
+      "auth failed for [redacted]. Retry later.",
+    );
+    assert.equal(redactDiagnostic("bob@example.co.uk."), "[redacted].");
+    assert.equal(redactDiagnostic("alice@example.com.1"), "[redacted].1");
     assert.equal(stderrDetail("alice@example.com").includes("@"), false);
+    assert.equal(stderrDetail("alice@example.com.").includes("alice"), false);
+    const dotted = summarizeThreads([
+      { originator: "alice@example.com.", source: "cli", status: { type: "idle" } },
+    ]);
+    assert.equal(JSON.stringify(dotted).includes("alice"), false);
+    assert.equal(dotted.originators["[redacted]"], 1);
     const letters = "a".repeat(100_000);
     const started = Date.now();
     assert.equal(redactDiagnostic(letters), letters);
