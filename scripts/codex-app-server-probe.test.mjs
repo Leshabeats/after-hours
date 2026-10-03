@@ -498,6 +498,15 @@ describe("codex app-server probe", () => {
     assert.equal(missingSessions.startsWith("Missing "), true);
     assert.equal(missingSessions.includes("Sessions"), false);
     assert.equal(missingSessions.includes("Jane"), false);
+    const missingShort = redactDiagnostic("Missing Session\\Jane Doe.jsonl");
+    assert.equal(missingShort.startsWith("Missing "), true);
+    assert.equal(missingShort.includes("Session"), false);
+    assert.equal(missingShort.includes("Jane"), false);
+    assert.equal(
+      redactDiagnostic("see Jane Doe Documents\\secrets\\key.txt later"),
+      "see [redacted] later",
+    );
+    assert.equal(redactDiagnostic("Maria Jose PrivateProject\\secrets\\key.txt"), "[redacted]");
     assert.equal(seePerson.startsWith("See "), true);
     assert.equal(seePerson.includes("later"), true);
     assert.equal(seePerson.includes("Maria"), false);
@@ -514,6 +523,19 @@ describe("codex app-server probe", () => {
     assert.equal(rootedFolder.includes("Private"), false);
     assert.equal(rootedFolder.includes("Folder"), false);
     assert.equal(redactDiagnostic("open \\^[ later"), "open \\^[ later");
+    const cyrillicRoot = redactDiagnostic("see \\Секрет because it is locked");
+    const cyrillicFolder = redactDiagnostic("cannot open \\Мои документы because it is locked");
+    const mixedRoot = redactDiagnostic("cannot open \\My documents because it is locked");
+    const settings = redactDiagnostic("see \\Documents and Settings later");
+    assert.equal(cyrillicRoot.startsWith("see "), true);
+    assert.equal(cyrillicRoot.includes("because it is locked"), true);
+    assert.equal(cyrillicRoot.includes("Секрет"), false);
+    assert.equal(cyrillicFolder.startsWith("cannot open "), true);
+    assert.equal(cyrillicFolder.includes("because it is locked"), true);
+    assert.equal(cyrillicFolder.includes("Мои"), false);
+    assert.equal(cyrillicFolder.includes("документы"), false);
+    assert.equal(mixedRoot, "cannot open [redacted] because it is locked");
+    assert.equal(settings, "see [redacted] later");
     const unicodePosix = redactDiagnostic("see Проект/секреты/key.txt later");
     const unicodeWindows = redactDiagnostic("see Проект\\секреты\\key.txt later");
     assert.equal(unicodePosix, "see [redacted] later");
@@ -548,6 +570,11 @@ describe("codex app-server probe", () => {
     const versionStarted = Date.now();
     assert.equal(redactDiagnostic(versions), versions);
     assert.equal(Date.now() - versionStarted < 1000, true);
+    const fragments = `${"a\\a ".repeat(16000)}.txt`;
+    const fragmentStarted = Date.now();
+    const fragmentRedacted = redactDiagnostic(fragments);
+    assert.equal(Date.now() - fragmentStarted < 1000, true);
+    assert.equal(fragmentRedacted.includes("a\\a"), false);
     const punctuated = "a$".repeat(40000);
     const punctuatedStarted = Date.now();
     assert.equal(redactDiagnostic(punctuated), punctuated);

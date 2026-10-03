@@ -273,8 +273,7 @@ function isPathStart(text, index) {
       if (char === "\\" || char === "/") return true;
       if (char === " " || char === "\t") inFirst = false;
       else if (inFirst && char === ".") firstDot = true;
-      else if (inFirst && /[A-Za-z0-9]/.test(char)) firstLength += 1;
-      else if (inFirst) firstLength = 0;
+      else if (inFirst && isWordChar(char)) firstLength += 1;
     }
     if (firstDot || firstLength >= 2) return true;
   }
@@ -303,39 +302,15 @@ function isPathStart(text, index) {
   return isRelativeWindowsPath(text, index) || isRelativePosixPath(text, index);
 }
 
-let pathMarkText = null;
-let pathMark = null;
-
-/** One reverse pass per text. A later `\\` or `.` stays visible without rescanning each suffix. */
-function pathMarkFrom(text, index) {
-  if (pathMarkText !== text) {
-    pathMarkText = text;
-    pathMark = new Uint8Array(text.length);
-    let mark = 0;
-    for (let cursor = text.length - 1; cursor >= 0; cursor -= 1) {
-      const char = text[cursor];
-      if (
-        char === "\n" ||
-        char === "\r" ||
-        char === "`" ||
-        char === '"' ||
-        char === ":" ||
-        char === "="
-      ) {
-        mark = 0;
-      } else if (char === "\\" || char === ".") {
-        mark = 1;
-      }
-      pathMark[cursor] = mark;
-    }
-  }
-  return index < text.length && pathMark[index] === 1;
-}
-
-function relativeWindowsBody(text, index) {
-  let separators = 0;
-  let componentHasDot = false;
-  for (let cursor = index; cursor < text.length; cursor += 1) {
+/**
+ * One reverse pass. A `\\` starts a body when another `\\` or `.` remains later
+ * in the same segment. Spaces stay inside the segment only while that tail exists.
+ */
+function windowsBodyAt(text) {
+  const body = new Uint8Array(text.length);
+  let seenRight = false;
+  let qualifies = false;
+  for (let cursor = text.length - 1; cursor >= 0; cursor -= 1) {
     const char = text[cursor];
     if (
       char === "\n" ||
@@ -345,20 +320,23 @@ function relativeWindowsBody(text, index) {
       char === ":" ||
       char === "="
     ) {
-      break;
-    }
-    if (char === "\\") {
-      separators += 1;
-      componentHasDot = false;
+      seenRight = false;
+      qualifies = false;
       continue;
     }
     if (char === " " || char === "\t") {
-      if (separators === 0 || !pathMarkFrom(text, cursor)) break;
+      qualifies = false;
       continue;
     }
-    if (char === "." && separators >= 1) componentHasDot = true;
+    if (char === "\\") {
+      qualifies = seenRight;
+      seenRight = true;
+      continue;
+    }
+    if (char === ".") seenRight = true;
+    if (qualifies) body[cursor] = 1;
   }
-  return separators >= 2 || (separators >= 1 && componentHasDot);
+  return body;
 }
 
 function isWordChar(char) {
@@ -421,35 +399,33 @@ function windowsPathStarts(text) {
   for (let index = 0; index < text.length; index += 1) {
     if (isWordStart(text, index)) words.push(index);
   }
-  const body = words.map((index) => relativeWindowsBody(text, index));
+  const bodyAt = windowsBodyAt(text);
   for (let index = 0; index < words.length; index += 1) {
-    if (!body[index]) continue;
+    if (bodyAt[words[index]] !== 1) continue;
     const start = words[index];
     windowsStarts[start] = 1;
     const upper = text[start] !== text[start].toLowerCase();
     const dottedToken = wordTokenHas(text, start, "\\") && wordTokenHas(text, start, ".");
     let previous = index - 1;
     if (upper) {
-      if (componentLength(text, start) < 8) {
-        const run = [];
-        while (
-          previous >= 0 &&
-          !body[previous] &&
-          wordsStayOnOneLine(text, words[previous], start)
-        ) {
-          const word = words[previous];
-          if (text[word] === text[word].toLowerCase()) break;
-          run.push(word);
-          previous -= 1;
-        }
-        const skip = run.length >= 3 && previous < 0 ? run[run.length - 1] : -1;
-        for (const word of run) {
-          if (word !== skip) windowsStarts[word] = 1;
-        }
+      const run = [];
+      while (
+        previous >= 0 &&
+        bodyAt[words[previous]] !== 1 &&
+        wordsStayOnOneLine(text, words[previous], start)
+      ) {
+        const word = words[previous];
+        if (text[word] === text[word].toLowerCase()) break;
+        run.push(word);
+        previous -= 1;
+      }
+      const skip = previous < 0 && (run.length === 1 || run.length >= 3) ? run[run.length - 1] : -1;
+      for (const word of run) {
+        if (word !== skip) windowsStarts[word] = 1;
       }
       continue;
     }
-    if (!dottedToken || previous < 0 || body[previous]) continue;
+    if (!dottedToken || previous < 0 || bodyAt[words[previous]] === 1) continue;
     const word = words[previous];
     if (!wordsStayOnOneLine(text, word, start)) continue;
     if (text[word] !== text[word].toLowerCase()) continue;
@@ -498,43 +474,35 @@ function isRelativePosixPath(text, index) {
   return slashes === 1 && sawDot && !version;
 }
 
-function componentLength(text, index) {
-  let length = 0;
-  for (let cursor = index; cursor < text.length; cursor += 1) {
-    const char = text[cursor];
-    if (
-      char === "\\" ||
-      char === "/" ||
-      char === " " ||
-      char === "\t" ||
-      char === "\n" ||
-      char === "\r"
-    ) {
-      break;
-    }
-    length += 1;
-  }
-  return length;
-}
+const EXTENSIONLESS_STOP = new Set(["because", "it", "is", "locked", "later"]);
 
-/** Stop an extensionless `\secret` or `\Private Folder` before the failure clause. */
+/** Stop an extensionless root before the failure clause, keeping lowercase path words. */
 function extensionlessRootEnd(text, index, lineEnd) {
   if (text[index] !== "\\") return -1;
   let cursor = index + 1;
   let length = 0;
-  while (cursor < lineEnd && /[A-Za-z0-9]/.test(text[cursor])) {
-    length += 1;
+  while (cursor < lineEnd) {
+    const char = text[cursor];
+    if (char === "\\" || char === "/" || char === "." || char === " " || char === "\t") break;
+    if (isWordChar(char)) length += 1;
     cursor += 1;
   }
   if (length < 2) return -1;
   if (text[cursor] === "\\" || text[cursor] === "/" || text[cursor] === ".") return -1;
-  while (text[cursor] === " " || text[cursor] === "\t") {
+  while (cursor < lineEnd && (text[cursor] === " " || text[cursor] === "\t")) {
     let look = cursor + 1;
-    while (text[look] === " " || text[look] === "\t") look += 1;
-    const next = text[look] ?? "";
-    if (next === next.toLowerCase() || !/[A-Za-z]/.test(next)) break;
-    cursor = look;
-    while (cursor < lineEnd && /[A-Za-z0-9]/.test(text[cursor])) cursor += 1;
+    while (look < lineEnd && (text[look] === " " || text[look] === "\t")) look += 1;
+    if (look >= lineEnd) return lineEnd;
+    let wordEnd = look;
+    while (wordEnd < lineEnd) {
+      const char = text[wordEnd];
+      if (char === " " || char === "\t" || char === "\\" || char === "/" || char === ".") break;
+      wordEnd += 1;
+    }
+    if (text[wordEnd] === "\\" || text[wordEnd] === "/" || text[wordEnd] === ".") return -1;
+    const word = text.slice(look, wordEnd).toLowerCase();
+    if (word.length === 0 || EXTENSIONLESS_STOP.has(word)) break;
+    cursor = wordEnd;
   }
   return cursor;
 }
