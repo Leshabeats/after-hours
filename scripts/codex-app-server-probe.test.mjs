@@ -83,6 +83,8 @@ describe("codex app-server probe", () => {
       resetsAtPresent: true,
     });
     assert.equal(summary.secondary, null);
+    assert.equal(summary.spendControlReached, null);
+    assert.equal(summary.individualRemainingPercent, null);
     assert.deepEqual(summary.buckets, []);
     assert.equal(JSON.stringify(summary).includes("acct_secret"), false);
     assert.equal(JSON.stringify(summary).includes("pro"), false);
@@ -119,16 +121,58 @@ describe("codex app-server probe", () => {
         primary: { usedPercent: 22, windowDurationMins: 10080, resetsAtPresent: true },
         secondary: null,
         rateLimitReachedType: null,
+        spendControlReached: null,
+        individualRemainingPercent: null,
       },
       {
         limitId: "extra",
         primary: { usedPercent: 5, windowDurationMins: 60, resetsAtPresent: false },
         secondary: { usedPercent: 9, windowDurationMins: 300, resetsAtPresent: true },
         rateLimitReachedType: null,
+        spendControlReached: null,
+        individualRemainingPercent: null,
       },
     ]);
     assert.equal(JSON.stringify(summary).includes("pro"), false);
     assert.equal(JSON.stringify(summary).includes("acct_secret"), false);
+  });
+
+  it("keeps a blocked spend control when the usage window is still open", () => {
+    const summary = summarizeRateLimits({
+      ordinaryUsageAllowed: false,
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 10, windowDurationMins: 60, resetsAt: 1 },
+        secondary: null,
+        spendControlReached: true,
+        individualLimit: {
+          limit: "usd-secret-limit",
+          remainingPercent: 0,
+          resetsAt: 5,
+          used: "usd-secret-used",
+        },
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: "codex",
+          primary: { usedPercent: 10, windowDurationMins: 60, resetsAt: 1 },
+          spendControlReached: true,
+          individualLimit: {
+            remainingPercent: 0,
+            limit: "usd-secret-limit",
+            resetsAt: 5,
+            used: "1",
+          },
+        },
+      },
+    });
+
+    assert.equal(summary.spendControlReached, true);
+    assert.equal(summary.individualRemainingPercent, 0);
+    assert.equal(summary.primary.usedPercent, 10);
+    assert.equal(summary.buckets[0].spendControlReached, true);
+    assert.equal(summary.buckets[0].individualRemainingPercent, 0);
+    assert.equal(JSON.stringify(summary).includes("usd-secret"), false);
   });
 
   it("treats a missing limit window as unavailable", () => {
@@ -185,6 +229,70 @@ describe("codex app-server probe", () => {
     assert.equal(unix.includes("Jane Doe"), false);
     assert.equal(unix.includes(".codex"), false);
     assert.equal(unix.startsWith("missing "), true);
+  });
+
+  it("redacts UNC paths and profile names of more than two words", () => {
+    const unc = redactDiagnostic(
+      "failed \\\\server\\share\\Ada Lovelace\\.codex\\sessions\\rollout.jsonl: file does not exist",
+    );
+    const three = redactDiagnostic(
+      "failed to resolve rollout path `C:\\Users\\Maria Jose Garcia\\.codex\\sessions\\rollout.jsonl`: file does not exist",
+    );
+    const programFiles = redactDiagnostic(
+      "missing C:\\Program Files (x86)\\Codex\\sessions\\a.jsonl after",
+    );
+    assert.equal(unc.includes("server"), false);
+    assert.equal(unc.includes("Lovelace"), false);
+    assert.equal(unc.includes(".codex"), false);
+    assert.equal(unc.includes("file does not exist"), true);
+    assert.equal(three.includes("Maria"), false);
+    assert.equal(three.includes("Jose"), false);
+    assert.equal(three.includes("Garcia"), false);
+    assert.equal(three.includes(".codex"), false);
+    assert.equal(three.includes("file does not exist"), true);
+    assert.equal(programFiles.includes("Program"), false);
+    assert.equal(programFiles.includes("x86"), false);
+    assert.equal(programFiles.includes("Codex"), false);
+    assert.equal(programFiles.includes("after"), true);
+  });
+
+  it("reads rate limits when the thread list fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "list-error.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32603, message: 'corrupt /tmp/secret-rollout.jsonl' } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', primary: { usedPercent: 10, windowDurationMins: 60, resetsAt: 1 }, secondary: null, spendControlReached: true, individualLimit: { limit: 'usd-secret-limit', remainingPercent: 0, resetsAt: 5, used: 'usd-secret-used' } } } }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.match(summary.threads.error, /^-32603: /);
+      assert.equal(summary.threads.error.includes("secret-rollout"), false);
+      assert.equal(summary.rateLimits.spendControlReached, true);
+      assert.equal(summary.rateLimits.individualRemainingPercent, 0);
+      assert.equal(summary.rateLimits.primary.usedPercent, 10);
+      assert.equal(JSON.stringify(summary).includes("usd-secret"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses a model turn", () => {

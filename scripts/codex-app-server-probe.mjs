@@ -75,6 +75,15 @@ function windowOf(window) {
   };
 }
 
+function spendControlOf(snapshot) {
+  const reached = snapshot?.spendControlReached;
+  const remaining = snapshot?.individualLimit?.remainingPercent;
+  return {
+    spendControlReached: typeof reached === "boolean" ? reached : null,
+    individualRemainingPercent: typeof remaining === "number" ? remaining : null,
+  };
+}
+
 function summarizeBucket(key, snapshot) {
   const limits = snapshot && typeof snapshot === "object" ? snapshot : {};
   return {
@@ -82,6 +91,7 @@ function summarizeBucket(key, snapshot) {
     primary: windowOf(limits.primary),
     secondary: windowOf(limits.secondary),
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
+    ...spendControlOf(limits),
   };
 }
 
@@ -106,6 +116,7 @@ export function summarizeRateLimits(result) {
     primary: windowOf(limits.primary),
     secondary: windowOf(limits.secondary),
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
+    ...spendControlOf(limits),
     buckets,
   };
 }
@@ -131,6 +142,9 @@ function readOptions(argv) {
 function isPathStart(text, index) {
   if (text.startsWith("~/", index)) return true;
   const previous = text[index - 1];
+  if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
+    return true;
+  }
   if (text[index] === "/" && previous !== "/" && previous !== ":") return true;
   if (
     /[A-Za-z]/.test(text[index] ?? "") &&
@@ -149,8 +163,10 @@ function pathEnd(text, index) {
     const char = text[end];
     if (char === "`" || char === "'" || char === '"' || char === "\n" || char === "\r") break;
     if (char === " " || char === "\t") {
-      const next = text.slice(end + 1).split(/[\s`'"]/, 1)[0];
-      if (!next || (!next.includes("/") && !next.includes("\\") && !next.includes("."))) break;
+      const rest = text.slice(end + 1);
+      const delimiter = rest.search(/[`'"\n\r]/);
+      const horizon = delimiter === -1 ? rest : rest.slice(0, delimiter);
+      if (!horizon.includes("/") && !horizon.includes("\\")) break;
     }
     end += 1;
   }
@@ -304,10 +320,11 @@ export async function runProbe({
         ...(cursor ? { cursor } : {}),
       });
       if (listed.error) {
+        const limits = await client.request(100, "account/rateLimits/read", {});
         return {
           userAgent: init.result?.userAgent ?? null,
           threads: rpcError(listed.error),
-          rateLimits: null,
+          rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
         };
       }
       threads.push(...(listed.result?.data ?? []));
