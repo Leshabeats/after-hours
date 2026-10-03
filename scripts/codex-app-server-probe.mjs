@@ -128,11 +128,53 @@ function readOptions(argv) {
   return options;
 }
 
+function isPathStart(text, index) {
+  if (text.startsWith("~/", index)) return true;
+  const previous = text[index - 1];
+  if (text[index] === "/" && previous !== "/" && previous !== ":") return true;
+  if (
+    /[A-Za-z]/.test(text[index] ?? "") &&
+    text[index + 1] === ":" &&
+    (text[index + 2] === "\\" || text[index + 2] === "/") &&
+    !/[A-Za-z]/.test(previous ?? "")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function pathEnd(text, index) {
+  let end = index;
+  while (end < text.length) {
+    const char = text[end];
+    if (char === "`" || char === "'" || char === '"' || char === "\n" || char === "\r") break;
+    if (char === " " || char === "\t") {
+      const next = text.slice(end + 1).split(/[\s`'"]/, 1)[0];
+      if (!next || (!next.includes("/") && !next.includes("\\") && !next.includes("."))) break;
+    }
+    end += 1;
+  }
+  return end;
+}
+
 /** Drop local paths and thread ids from text that may be printed. */
 export function redactDiagnostic(value) {
-  return String(value ?? "")
-    .replace(/(?:\/|[A-Za-z]:\\)(?:[^/\s\\]+[\\/])+[^/\s\\]+|~\/[^\s"'`,;)]+/g, "[redacted]")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted]");
+  const text = String(value ?? "");
+  let redacted = "";
+  for (let index = 0; index < text.length;) {
+    if (!isPathStart(text, index)) {
+      redacted += text[index];
+      index += 1;
+      continue;
+    }
+    const end = pathEnd(text, index);
+    redacted += "[redacted]";
+    index = Math.max(end, index + 1);
+  }
+  return redacted.replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    "[redacted]",
+  );
 }
 
 function rpcError(message) {

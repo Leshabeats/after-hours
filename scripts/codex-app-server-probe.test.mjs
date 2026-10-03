@@ -174,6 +174,19 @@ describe("codex app-server probe", () => {
     assert.equal(text.startsWith("missing "), true);
   });
 
+  it("redacts rollout paths whose home directory contains a space", () => {
+    const windows = redactDiagnostic(
+      "failed to resolve rollout path `C:\\Users\\Jane Doe\\.codex\\sessions\\rollout.jsonl`: file does not exist",
+    );
+    const unix = redactDiagnostic("missing /Users/Jane Doe/.codex/sessions/rollout.jsonl");
+    assert.equal(windows.includes("Jane Doe"), false);
+    assert.equal(windows.includes(".codex"), false);
+    assert.equal(windows.includes("file does not exist"), true);
+    assert.equal(unix.includes("Jane Doe"), false);
+    assert.equal(unix.includes(".codex"), false);
+    assert.equal(unix.startsWith("missing "), true);
+  });
+
   it("refuses a model turn", () => {
     assert.doesNotThrow(() => assertProbeMethod("thread/list"));
     assert.throws(() => assertProbeMethod("turn/start"), /refuses turn\/start/);
