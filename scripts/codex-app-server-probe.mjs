@@ -460,9 +460,7 @@ export async function runProbe({
         archivedExtraIncluded: !archivedExtra.error,
         ...(extra.error ? { extraSourceError: rpcError(extra.error).error } : {}),
         ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
-        ...(archivedExtra.error
-          ? { archivedExtraError: rpcError(archivedExtra.error).error }
-          : {}),
+        ...(archivedExtra.error ? { archivedExtraError: rpcError(archivedExtra.error).error } : {}),
       },
       rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
     };
