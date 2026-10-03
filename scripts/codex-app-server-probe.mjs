@@ -36,20 +36,25 @@ function statusLabel(status) {
   return flags.length > 0 ? `${type}:${flags.join("+")}` : type;
 }
 
+function emptyCounts() {
+  return Object.create(null);
+}
+
+function bump(counts, key) {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
 /** Counts only. Thread titles, previews, paths, and ids are not copied. */
 export function summarizeThreads(threads) {
-  const sources = {};
-  const originators = {};
-  const statuses = {};
+  const sources = emptyCounts();
+  const originators = emptyCounts();
+  const statuses = emptyCounts();
   let uuidIds = 0;
   for (const thread of threads) {
-    const source = sourceLabel(thread?.source);
-    sources[source] = (sources[source] ?? 0) + 1;
+    bump(sources, sourceLabel(thread?.source));
     const origin = thread?.originator ?? null;
-    const originKey = origin == null ? "null" : String(origin);
-    originators[originKey] = (originators[originKey] ?? 0) + 1;
-    const status = statusLabel(thread?.status);
-    statuses[status] = (statuses[status] ?? 0) + 1;
+    bump(originators, origin == null ? "null" : String(origin));
+    bump(statuses, statusLabel(thread?.status));
     if (typeof thread?.id === "string" && UUID.test(thread.id)) uuidIds += 1;
   }
   return {
@@ -70,12 +75,28 @@ function windowOf(window) {
   };
 }
 
+function summarizeBucket(key, snapshot) {
+  const limits = snapshot && typeof snapshot === "object" ? snapshot : {};
+  return {
+    limitId: limits.limitId ?? key,
+    primary: windowOf(limits.primary),
+    secondary: windowOf(limits.secondary),
+    rateLimitReachedType: limits.rateLimitReachedType ?? null,
+  };
+}
+
 /**
  * Rate-limit shape for the operator running the probe.
  * The account id itself is not copied; only whether the field was present.
+ * `buckets` lists every entry of `rateLimitsByLimitId`, not only `rateLimits`.
  */
 export function summarizeRateLimits(result) {
   const limits = result?.rateLimits ?? {};
+  const byId = result?.rateLimitsByLimitId;
+  const buckets =
+    byId && typeof byId === "object" && !Array.isArray(byId)
+      ? Object.entries(byId).map(([key, snapshot]) => summarizeBucket(key, snapshot))
+      : [];
   return {
     accountIdPresent: result?.accountId != null,
     ordinaryUsageAllowed:
@@ -85,6 +106,7 @@ export function summarizeRateLimits(result) {
     primary: windowOf(limits.primary),
     secondary: windowOf(limits.secondary),
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
+    buckets,
   };
 }
 
@@ -116,11 +138,38 @@ function connect(bin) {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stderr = "";
+  let failure = null;
+  const pending = new Map();
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     stderr = `${stderr}${chunk}`.slice(-2000);
   });
-  const pending = new Map();
+  child.stderr.on("error", () => {});
+  child.stdin.on("error", () => {});
+
+  const rejectPending = (error) => {
+    if (failure) return;
+    failure = error;
+    for (const [id, waiter] of pending) {
+      clearTimeout(waiter.timer);
+      pending.delete(id);
+      waiter.reject(error);
+    }
+  };
+
+  child.on("error", (error) => {
+    rejectPending(new Error(`codex app-server failed to start: ${error.code || error.message}`));
+  });
+  child.on("exit", (code, signal) => {
+    const why = signal ? `signal ${signal}` : `code ${code}`;
+    const detail = stderr.trim().slice(-500);
+    rejectPending(
+      new Error(
+        detail ? `codex app-server exited (${why}): ${detail}` : `codex app-server exited (${why})`,
+      ),
+    );
+  });
+
   const rl = createInterface({ input: child.stdout });
   rl.on("line", (line) => {
     const trimmed = line.trim();
@@ -133,13 +182,18 @@ function connect(bin) {
     }
     const waiter = message.id == null ? undefined : pending.get(message.id);
     if (!waiter) return;
+    clearTimeout(waiter.timer);
     pending.delete(message.id);
-    waiter(message);
+    waiter.resolve(message);
   });
 
   const request = (id, method, params) =>
     new Promise((resolve, reject) => {
       assertProbeMethod(method);
+      if (failure) {
+        reject(failure);
+        return;
+      }
       const timer = setTimeout(() => {
         pending.delete(id);
         const detail = stderr.trim().slice(-500);
@@ -149,21 +203,20 @@ function connect(bin) {
           ),
         );
       }, 20_000);
-      pending.set(id, (message) => {
-        clearTimeout(timer);
-        resolve(message);
-      });
+      pending.set(id, { timer, resolve, reject });
       child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
 
   const notify = (method, params) => {
     assertProbeMethod(method);
+    if (failure) throw failure;
     child.stdin.write(`${JSON.stringify({ method, params })}\n`);
   };
 
   const stop = () => {
     rl.close();
-    if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+    if (failure || child.exitCode != null || child.signalCode != null) return;
+    child.kill("SIGTERM");
   };
 
   return { request, notify, stop, child };
