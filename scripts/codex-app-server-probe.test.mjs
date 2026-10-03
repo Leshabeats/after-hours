@@ -78,6 +78,29 @@ describe("codex app-server probe", () => {
     assert.equal(summary.originators["Codex Desktop"], 1);
   });
 
+  it("redacts a custom source path and keeps atlas", () => {
+    const summary = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        source: { custom: "/Users/alice/private/0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c22" },
+        originator: "Codex Desktop",
+        status: { type: "idle" },
+      },
+      {
+        id: "also-not-a-uuid",
+        source: { custom: "atlas" },
+        originator: "Codex Desktop",
+        status: { type: "idle" },
+      },
+    ]);
+    const json = JSON.stringify(summary);
+    assert.equal(json.includes("alice"), false);
+    assert.equal(json.includes("/Users"), false);
+    assert.equal(json.includes("0199a0e0"), false);
+    assert.equal(summary.sources["[redacted]"], 1);
+    assert.equal(summary.sources["custom:atlas"], 1);
+  });
+
   it("counts originators that collide with object prototype names", () => {
     const summary = summarizeThreads([
       { originator: "constructor", source: "cli", status: { type: "idle" } },

@@ -21,10 +21,22 @@ export function assertProbeMethod(method) {
   }
 }
 
+function publicLabel(value) {
+  const text = String(value);
+  const redacted = redactDiagnostic(text).replace(
+    /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    "[redacted]",
+  );
+  return redacted === text ? text : "[redacted]";
+}
+
 function sourceLabel(source) {
   if (typeof source === "string") return source;
   if (source && typeof source === "object") {
-    if (typeof source.custom === "string") return `custom:${source.custom}`;
+    if (typeof source.custom === "string") {
+      const label = publicLabel(source.custom);
+      return label === "[redacted]" ? label : `custom:${label}`;
+    }
     if (source.subAgent) return "subAgent";
   }
   return "missing";
@@ -47,12 +59,7 @@ function bump(counts, key) {
 
 function originLabel(origin) {
   if (origin == null) return "null";
-  const text = String(origin);
-  const redacted = redactDiagnostic(text).replace(
-    /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-    "[redacted]",
-  );
-  return redacted === text ? text : "[redacted]";
+  return publicLabel(origin);
 }
 
 /** Counts only. Thread titles, previews, paths, and ids are not copied. */
