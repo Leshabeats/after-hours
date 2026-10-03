@@ -430,6 +430,73 @@ describe("codex app-server probe", () => {
     assert.equal(spacedSummary.originators["[redacted]"], 2);
     assert.equal(spacedSummary.sources["[redacted]"], 2);
     assert.equal(redactDiagnostic("failed not\\n later"), "failed not\\n later");
+    const threeWords = redactDiagnostic("see sessions\\Jane Mary Doe.jsonl later");
+    const secretName = redactDiagnostic("see PrivateProject\\My Secret Name.txt later");
+    const secretFile = redactDiagnostic("see sessions\\My Secret file.txt later");
+    const secretFolder = redactDiagnostic("see sessions\\My Secret Folder\\key.txt later");
+    const programFilesPath = redactDiagnostic("see sessions\\Program Files (x86)\\a.txt later");
+    const missing = redactDiagnostic("Missing sessions\\Jane Doe.jsonl");
+    const person = redactDiagnostic("see Maria Jose Garcia\\secrets\\key.txt later");
+    const documents = redactDiagnostic("see my documents\\secrets\\key.txt later");
+    for (const value of [
+      threeWords,
+      secretName,
+      secretFile,
+      secretFolder,
+      programFilesPath,
+      person,
+      documents,
+    ]) {
+      assert.equal(value.startsWith("see "), true);
+      assert.equal(value.includes("later"), true);
+      assert.equal(value.includes("Jane"), false);
+      assert.equal(value.includes("Mary"), false);
+      assert.equal(value.includes("sessions"), false);
+      assert.equal(value.includes("PrivateProject"), false);
+      assert.equal(value.includes("Secret"), false);
+      assert.equal(value.includes("Folder"), false);
+      assert.equal(value.includes("Program"), false);
+      assert.equal(value.includes("Files"), false);
+      assert.equal(value.includes("x86"), false);
+      assert.equal(value.includes("Maria"), false);
+      assert.equal(value.includes("Jose"), false);
+      assert.equal(value.includes("Garcia"), false);
+      assert.equal(value.includes("documents"), false);
+      assert.equal(value.includes("my "), false);
+    }
+    assert.equal(missing.startsWith("Missing "), true);
+    assert.equal(missing.includes("sessions"), false);
+    assert.equal(missing.includes("Jane"), false);
+    assert.equal(stderrDetail("see sessions\\Jane Mary Doe.jsonl later").includes("Jane"), false);
+    const longName = summarizeThreads([
+      {
+        source: { custom: "sessions\\Jane Mary Doe.jsonl" },
+        originator: "sessions\\Jane Mary Doe.jsonl",
+        status: { type: "idle" },
+      },
+    ]);
+    const longNameJson = JSON.stringify(longName);
+    assert.equal(longNameJson.includes("Jane"), false);
+    assert.equal(longNameJson.includes("sessions"), false);
+    assert.equal(longName.originators["[redacted]"], 1);
+    assert.equal(longName.sources["[redacted]"], 1);
+    const posix = redactDiagnostic("see src/private/key.txt later");
+    assert.equal(posix, "see [redacted] later");
+    const posixSummary = summarizeThreads([
+      {
+        source: { custom: "src/private/key.txt" },
+        originator: "src/private/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(posixSummary).includes("private"), false);
+    assert.equal(posixSummary.originators["[redacted]"], 1);
+    const version = "codex_cli_rs/0.159.0 (Linux 6.12.94; x86_64)";
+    assert.equal(redactDiagnostic(version), version);
+    const chained = `a:${"a:".repeat(20000)}a`;
+    const started = Date.now();
+    assert.equal(redactDiagnostic(chained), chained);
+    assert.equal(Date.now() - started < 1000, true);
     const relativeSummary = summarizeThreads([
       {
         source: { custom: "PrivateProject\\secrets\\key.txt" },

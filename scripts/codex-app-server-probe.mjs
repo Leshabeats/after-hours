@@ -290,27 +290,36 @@ function isPathStart(text, index) {
   ) {
     return true;
   }
-  return isRelativeWindowsPath(text, index);
+  return isRelativeWindowsPath(text, index) || isRelativePosixPath(text, index);
 }
 
-function nextTokenContinuesPath(text, cursor) {
-  let look = cursor + 1;
-  while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
-  for (; look < text.length; look += 1) {
-    const next = text[look];
-    if (
-      next === "\n" ||
-      next === "\r" ||
-      next === "`" ||
-      next === '"' ||
-      next === " " ||
-      next === "\t"
-    ) {
-      return false;
+let pathMarkText = null;
+let pathMark = null;
+
+/** One reverse pass per text. A later `\\` or `.` stays visible without rescanning each suffix. */
+function pathMarkFrom(text, index) {
+  if (pathMarkText !== text) {
+    pathMarkText = text;
+    pathMark = new Uint8Array(text.length);
+    let mark = 0;
+    for (let cursor = text.length - 1; cursor >= 0; cursor -= 1) {
+      const char = text[cursor];
+      if (
+        char === "\n" ||
+        char === "\r" ||
+        char === "`" ||
+        char === '"' ||
+        char === ":" ||
+        char === "="
+      ) {
+        mark = 0;
+      } else if (char === "\\" || char === ".") {
+        mark = 1;
+      }
+      pathMark[cursor] = mark;
     }
-    if (next === "\\" || next === ".") return true;
   }
-  return false;
+  return index < text.length && pathMark[index] === 1;
 }
 
 function relativeWindowsBody(text, index) {
@@ -318,14 +327,23 @@ function relativeWindowsBody(text, index) {
   let componentHasDot = false;
   for (let cursor = index; cursor < text.length; cursor += 1) {
     const char = text[cursor];
-    if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
+    if (
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === ":" ||
+      char === "="
+    ) {
+      break;
+    }
     if (char === "\\") {
       separators += 1;
       componentHasDot = false;
       continue;
     }
     if (char === " " || char === "\t") {
-      if (separators === 0 || !nextTokenContinuesPath(text, cursor)) break;
+      if (separators === 0 || !pathMarkFrom(text, cursor)) break;
       continue;
     }
     if (char === "." && separators >= 1) componentHasDot = true;
@@ -333,18 +351,88 @@ function relativeWindowsBody(text, index) {
   return separators >= 2 || (separators >= 1 && componentHasDot);
 }
 
+function nextWordIndex(text, index) {
+  let cursor = index;
+  while (cursor < text.length && text[cursor] !== " " && text[cursor] !== "\t") {
+    const char = text[cursor];
+    if (
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === ":" ||
+      char === "="
+    ) {
+      return -1;
+    }
+    cursor += 1;
+  }
+  if (text[cursor] !== " " && text[cursor] !== "\t") return -1;
+  while (text[cursor] === " " || text[cursor] === "\t") cursor += 1;
+  return /[A-Za-z0-9]/.test(text[cursor] ?? "") ? cursor : -1;
+}
+
+function hasPriorWord(text, index) {
+  let cursor = index - 1;
+  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) cursor -= 1;
+  return cursor >= 0 && /[A-Za-z0-9]/.test(text[cursor]);
+}
+
 function isRelativeWindowsPath(text, index) {
   if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
   if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
   if (relativeWindowsBody(text, index)) return true;
-  if (text[index] === text[index].toLowerCase()) return false;
+  if (!hasPriorWord(text, index)) return false;
+  let cursor = nextWordIndex(text, index);
+  while (cursor >= 0) {
+    if (relativeWindowsBody(text, cursor)) return true;
+    cursor = nextWordIndex(text, cursor);
+  }
+  return false;
+}
+
+/** A version slash such as `codex_cli_rs/0.159.0` is one slash and a numeric tail. */
+function isVersionSlash(text, index) {
   let cursor = index;
-  while (cursor < text.length && text[cursor] !== " " && text[cursor] !== "\t") cursor += 1;
-  if (text[cursor] !== " " && text[cursor] !== "\t") return false;
-  let next = cursor + 1;
-  while (text[next] === " " || text[next] === "\t") next += 1;
-  if (!/[A-Za-z0-9]/.test(text[next] ?? "")) return false;
-  return relativeWindowsBody(text, next);
+  if (!/\d/.test(text[cursor] ?? "")) return false;
+  while (/\d/.test(text[cursor] ?? "")) cursor += 1;
+  if (text[cursor] !== ".") return false;
+  cursor += 1;
+  return /\d/.test(text[cursor] ?? "");
+}
+
+function isRelativePosixPath(text, index) {
+  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
+  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
+  let slashes = 0;
+  let version = false;
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === " " ||
+      char === "\t" ||
+      char === ":" ||
+      char === "," ||
+      char === ";" ||
+      char === "(" ||
+      char === ")" ||
+      char === "'" ||
+      char === "="
+    ) {
+      break;
+    }
+    if (char === "\\") return false;
+    if (char === "/") {
+      slashes += 1;
+      if (slashes === 1 && isVersionSlash(text, cursor + 1)) version = true;
+      if (slashes >= 2) return true;
+    }
+  }
+  return slashes === 1 && !version;
 }
 
 function pathEnd(text, index) {
@@ -469,7 +557,12 @@ export function redactDiagnostic(value) {
       continue;
     }
     const plainEnd = plainSchemeEnd(text, index);
-    if (plainEnd > index && text[plainEnd] !== ":" && !isRelativeWindowsPath(text, index)) {
+    if (
+      plainEnd > index &&
+      text[plainEnd] !== ":" &&
+      !isRelativeWindowsPath(text, index) &&
+      !isRelativePosixPath(text, index)
+    ) {
       redacted += text.slice(index, plainEnd);
       index = plainEnd;
       continue;
