@@ -295,6 +295,30 @@ describe("codex app-server probe", () => {
     assert.equal(spacedFile.includes("afterwards"), true);
   });
 
+  it("redacts a quoted path through every spaced word", () => {
+    const filename = redactDiagnostic(
+      "failed to resolve rollout path `/tmp/My Private Project.jsonl`: file does not exist",
+    );
+    const home = redactDiagnostic(
+      "failed to resolve rollout path `C:\\Users\\Jane Doe`: file does not exist",
+    );
+    const notes = redactDiagnostic(
+      "missing C:\\Users\\Mary Ann Smith\\My Private Notes.jsonl afterwards",
+    );
+    assert.equal(filename.includes("Private"), false);
+    assert.equal(filename.includes("Project"), false);
+    assert.equal(filename.includes("file does not exist"), true);
+    assert.equal(home.includes("Jane"), false);
+    assert.equal(home.includes("Doe"), false);
+    assert.equal(home.includes("file does not exist"), true);
+    assert.equal(notes.includes("Mary"), false);
+    assert.equal(notes.includes("Ann"), false);
+    assert.equal(notes.includes("Smith"), false);
+    assert.equal(notes.includes("Private"), false);
+    assert.equal(notes.includes("Notes"), false);
+    assert.equal(notes.includes("afterwards"), true);
+  });
+
   it("reads rate limits when the thread list fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "list-error.mjs");

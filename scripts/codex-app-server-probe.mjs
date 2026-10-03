@@ -175,11 +175,15 @@ function pathEnd(text, index) {
     if (char === "`" || char === '"' || char === "\n" || char === "\r") break;
     if (char === " " || char === "\t") {
       const rest = text.slice(end + 1);
-      const delimiter = rest.search(/[`"\n\r]/);
-      const horizon = delimiter === -1 ? rest : rest.slice(0, delimiter);
-      const next = horizon.split(/[\s`"]/, 1)[0];
-      const separatorAhead = horizon.includes("/") || horizon.includes("\\");
-      if (!separatorAhead && !next.includes(".")) break;
+      const lineEnd = rest.search(/[\n\r]/);
+      const line = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
+      if (line.search(/[`"]/) !== -1) {
+        end += 1;
+        continue;
+      }
+      const separatorAhead = line.includes("/") || line.includes("\\");
+      const dotAhead = line.split(/\s+/).some((token) => token.includes("."));
+      if (!separatorAhead && !dotAhead) break;
     }
     end += 1;
   }
