@@ -21,8 +21,25 @@ export function assertProbeMethod(method) {
   }
 }
 
+function labelHasUriPath(text) {
+  const scheme = /([A-Za-z][A-Za-z0-9+.-]*):\/\//g;
+  let match;
+  while ((match = scheme.exec(text))) {
+    if (/[A-Za-z0-9]/.test(text[match.index - 1] ?? "")) continue;
+    if (match[1].toLowerCase() === "file") continue;
+    let cursor = match.index + match[0].length;
+    if (cursor >= text.length || text[cursor] === "/" || text[cursor] === "\\") continue;
+    while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) {
+      if (text[cursor] === "/" || text[cursor] === "\\") return true;
+      cursor += 1;
+    }
+  }
+  return false;
+}
+
 function publicLabel(value) {
   const text = String(value);
+  if (labelHasUriPath(text)) return "[redacted]";
   const redacted = redactDiagnostic(text).replace(
     /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
     "[redacted]",
@@ -171,21 +188,46 @@ function readOptions(argv) {
   return options;
 }
 
-/** A remote URI stays intact, including the path after the host. file:// is a local path. */
+/** Copy a remote URI with a real host. Stop before a colon that starts a local path. */
 function remoteUriEnd(text, index) {
   if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return -1;
   const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text.slice(index));
   if (!match || match[1].toLowerCase() === "file") return -1;
   let cursor = index + match[0].length;
-  while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) cursor += 1;
+  if (cursor >= text.length || /[/\\\s"'`<>]/.test(text[cursor])) return -1;
+  while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) {
+    if (text[cursor] === ":") {
+      const next = text[cursor + 1] ?? "";
+      const after = text[cursor + 2] ?? "";
+      if (
+        next === "/" ||
+        next === "\\" ||
+        (/[A-Za-z]/.test(next) && (after === "/" || after === "\\"))
+      ) {
+        return cursor;
+      }
+    }
+    cursor += 1;
+  }
   return cursor;
 }
 
+function isEmptyHostPath(text, index) {
+  if (text[index] !== "/" && text[index] !== "\\") return false;
+  return /(?:^|[^A-Za-z0-9])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:\/\/$/i.test(text.slice(0, index));
+}
+
 function isPathStart(text, index) {
+  if (isEmptyHostPath(text, index)) return true;
   if (text.startsWith("~/", index)) return true;
   const previous = text[index - 1];
   if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     return true;
+  }
+  if (text[index] === "\\" && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
+    let cursor = index + 1;
+    while (cursor < text.length && !'\\/ \t\n\r`"'.includes(text[cursor])) cursor += 1;
+    if (text[cursor] === "\\" || text[cursor] === "/") return true;
   }
   if (
     text.slice(index, index + 7).toLowerCase() === "file://" &&

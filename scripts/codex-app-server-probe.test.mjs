@@ -357,6 +357,25 @@ describe("codex app-server probe", () => {
     assert.equal(programFiles.includes("x86"), false);
     assert.equal(programFiles.includes("Codex"), false);
     assert.equal(programFiles.includes("after"), true);
+    const rooted = redactDiagnostic("see \\Users\\Alice\\.codex\\sessions\\rollout.jsonl later");
+    const escape = redactDiagnostic("failed \\n later");
+    assert.equal(rooted.includes("Alice"), false);
+    assert.equal(rooted.includes("Users"), false);
+    assert.equal(rooted.includes(".codex"), false);
+    assert.equal(rooted.includes("later"), true);
+    assert.equal(rooted.startsWith("see "), true);
+    assert.equal(escape, "failed \\n later");
+    const summary = summarizeThreads([
+      {
+        source: { custom: "\\Users\\Alice\\.codex\\sessions\\rollout.jsonl" },
+        originator: "\\Users\\Alice\\.codex\\sessions\\rollout.jsonl",
+        status: { type: "idle" },
+      },
+    ]);
+    const json = JSON.stringify(summary);
+    assert.equal(json.includes("Alice"), false);
+    assert.equal(summary.originators["[redacted]"], 1);
+    assert.equal(summary.sources["[redacted]"], 1);
   });
 
   it("redacts an apostrophe in a profile name and a spaced final filename", () => {
@@ -448,11 +467,55 @@ describe("codex app-server probe", () => {
   it("keeps a remote URL path and the text after it", () => {
     const failure = redactDiagnostic("https://api.openai.com/v1/responses failed with 500");
     const mixed = redactDiagnostic("https://api.openai.com/v1/responses then /Users/me/secret");
+    const port = redactDiagnostic("https://api.openai.com:443/v1/responses failed");
+    const glued = redactDiagnostic(
+      "https://api.openai.com/v1/responses:/Users/jane/.codex/sessions/rollout.jsonl",
+    );
+    const drive = redactDiagnostic(
+      "https://api.openai.com/v1/responses:C:\\Users\\Jane\\.codex\\sessions\\rollout.jsonl",
+    );
+    const emptyHost = redactDiagnostic("http:///Users/Jane/.codex/sessions/rollout.jsonl");
     assert.equal(failure, "https://api.openai.com/v1/responses failed with 500");
     assert.equal(mixed.includes("https://api.openai.com/v1/responses"), true);
     assert.equal(mixed.includes("then"), true);
     assert.equal(mixed.includes("/Users"), false);
     assert.equal(mixed.includes("secret"), false);
+    assert.equal(port, "https://api.openai.com:443/v1/responses failed");
+    assert.equal(glued.includes("jane"), false);
+    assert.equal(glued.includes(".codex"), false);
+    assert.equal(glued.includes("rollout"), false);
+    assert.equal(glued.startsWith("https://api.openai.com/v1/responses:"), true);
+    assert.equal(drive.includes("Jane"), false);
+    assert.equal(drive.includes("rollout"), false);
+    assert.equal(drive.startsWith("https://api.openai.com/v1/responses:"), true);
+    assert.equal(emptyHost.includes("Users"), false);
+    assert.equal(emptyHost.includes("Jane"), false);
+    assert.equal(emptyHost.startsWith("http://"), true);
+  });
+
+  it("redacts a remote URL path in an originator or custom source", () => {
+    const summary = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        source: { custom: "https://example.com/alice/private-source" },
+        originator: "https://chatgpt.com/c/secret-thread-id",
+        status: { type: "idle" },
+      },
+      {
+        id: "also-not-a-uuid",
+        source: { custom: "atlas" },
+        originator: "https://example.com",
+        status: { type: "idle" },
+      },
+    ]);
+    const json = JSON.stringify(summary);
+    assert.equal(json.includes("secret-thread-id"), false);
+    assert.equal(json.includes("private-source"), false);
+    assert.equal(json.includes("alice"), false);
+    assert.equal(summary.originators["[redacted]"], 1);
+    assert.equal(summary.originators["https://example.com"], 1);
+    assert.equal(summary.sources["[redacted]"], 1);
+    assert.equal(summary.sources["custom:atlas"], 1);
   });
 
   it("redacts a long spaced path without a quadratic scan", () => {
