@@ -490,21 +490,36 @@ export function shouldKillChild(child) {
   return child?.exitCode == null && child?.signalCode == null && child?.pid != null;
 }
 
-export function terminateChild(child, platform = process.platform, launch = spawn) {
+function killDirect(child) {
   if (!shouldKillChild(child)) return false;
   try {
-    if (platform === "win32") {
-      const killer = launch("taskkill", ["/pid", String(child.pid), "/t"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      killer?.unref?.();
-    } else {
-      child.kill("SIGTERM");
-    }
+    child.kill("SIGTERM");
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
+  return true;
+}
+
+export function terminateChild(child, platform = process.platform, launch = spawn) {
+  if (!shouldKillChild(child)) return false;
+  if (platform !== "win32") return killDirect(child);
+  let killer;
+  try {
+    killer = launch("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } catch {
+    return killDirect(child);
+  }
+  if (!killer || typeof killer.on !== "function") return true;
+  killer.on("error", () => {
+    killDirect(child);
+  });
+  killer.on("exit", (code) => {
+    if (code) killDirect(child);
+  });
+  killer.unref?.();
   return true;
 }
 

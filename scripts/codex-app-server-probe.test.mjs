@@ -1043,7 +1043,7 @@ describe("codex app-server probe", () => {
       },
     };
     assert.equal(shouldKillChild(live), true);
-    assert.equal(terminateChild(live), true);
+    assert.equal(terminateChild(live, "linux"), true);
     assert.deepEqual(signals, ["SIGTERM"]);
     const ended = [];
     const killed = [];
@@ -1069,38 +1069,82 @@ describe("codex app-server probe", () => {
       true,
     );
     assert.deepEqual(ended, ["end"]);
-    assert.deepEqual(killed, [["taskkill", "/pid", "9", "/t"]]);
-    assert.equal(terminateChild({ pid: null, exitCode: null, signalCode: null, kill() {} }), false);
-    assert.equal(terminateChild({ pid: 4, exitCode: 0, signalCode: null, kill() {} }), false);
+    assert.deepEqual(killed, [["taskkill", "/pid", "9", "/t", "/f"]]);
+    const fallback = [];
+    const failed = new EventEmitter();
+    terminateChild(
+      {
+        pid: 8,
+        exitCode: null,
+        signalCode: null,
+        kill(signal) {
+          fallback.push(signal);
+        },
+      },
+      "win32",
+      () => failed,
+    );
+    failed.emit("exit", 1);
+    assert.deepEqual(fallback, ["SIGTERM"]);
+    const thrown = [];
+    terminateChild(
+      {
+        pid: 7,
+        exitCode: null,
+        signalCode: null,
+        kill(signal) {
+          thrown.push(signal);
+        },
+      },
+      "win32",
+      () => {
+        throw new Error("no taskkill");
+      },
+    );
+    assert.deepEqual(thrown, ["SIGTERM"]);
     assert.equal(
-      terminateChild({ pid: 4, exitCode: null, signalCode: "SIGTERM", kill() {} }),
+      terminateChild({ pid: null, exitCode: null, signalCode: null, kill() {} }, "linux"),
       false,
     );
     assert.equal(
-      terminateChild({
-        pid: 4,
-        exitCode: null,
-        signalCode: null,
-        kill() {
-          const error = new Error("gone");
-          error.code = "ESRCH";
-          throw error;
-        },
-      }),
-      true,
+      terminateChild({ pid: 4, exitCode: 0, signalCode: null, kill() {} }, "linux"),
+      false,
     );
-    assert.throws(
-      () =>
-        terminateChild({
+    assert.equal(
+      terminateChild({ pid: 4, exitCode: null, signalCode: "SIGTERM", kill() {} }, "linux"),
+      false,
+    );
+    assert.equal(
+      terminateChild(
+        {
           pid: 4,
           exitCode: null,
           signalCode: null,
           kill() {
-            const error = new Error("denied");
-            error.code = "EPERM";
+            const error = new Error("gone");
+            error.code = "ESRCH";
             throw error;
           },
-        }),
+        },
+        "linux",
+      ),
+      true,
+    );
+    assert.throws(
+      () =>
+        terminateChild(
+          {
+            pid: 4,
+            exitCode: null,
+            signalCode: null,
+            kill() {
+              const error = new Error("denied");
+              error.code = "EPERM";
+              throw error;
+            },
+          },
+          "linux",
+        ),
       /denied/,
     );
   });
