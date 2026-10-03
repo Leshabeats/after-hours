@@ -128,13 +128,22 @@ function readOptions(argv) {
   return options;
 }
 
-function rpcError(message) {
-  const text = message?.message ?? message?.code ?? "request failed";
-  return { error: String(text) };
+/** Drop local paths and thread ids from text that may be printed. */
+export function redactDiagnostic(value) {
+  return String(value ?? "")
+    .replace(/(?:\/|[A-Za-z]:\\)(?:[^/\s\\]+[\\/])+[^/\s\\]+|~\/[^\s"'`,;)]+/g, "[redacted]")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted]");
 }
 
-function connect(bin) {
-  const child = spawn(bin, ["app-server", "--listen", "stdio://"], {
+function rpcError(message) {
+  const text = redactDiagnostic(message?.message ?? "");
+  if (message?.code != null && text) return { error: `${message.code}: ${text}` };
+  if (message?.code != null) return { error: String(message.code) };
+  return { error: text || "request failed" };
+}
+
+function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
+  const child = spawn(bin, args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stderr = "";
@@ -158,11 +167,12 @@ function connect(bin) {
   };
 
   child.on("error", (error) => {
-    rejectPending(new Error(`codex app-server failed to start: ${error.code || error.message}`));
+    const reason = error.code || redactDiagnostic(error.message);
+    rejectPending(new Error(`codex app-server failed to start: ${reason}`));
   });
   child.on("exit", (code, signal) => {
     const why = signal ? `signal ${signal}` : `code ${code}`;
-    const detail = stderr.trim().slice(-500);
+    const detail = redactDiagnostic(stderr.trim().slice(-500));
     rejectPending(
       new Error(
         detail ? `codex app-server exited (${why}): ${detail}` : `codex app-server exited (${why})`,
@@ -196,7 +206,7 @@ function connect(bin) {
       }
       const timer = setTimeout(() => {
         pending.delete(id);
-        const detail = stderr.trim().slice(-500);
+        const detail = redactDiagnostic(stderr.trim().slice(-500));
         reject(
           new Error(
             detail ? `timeout waiting for ${method}: ${detail}` : `timeout waiting for ${method}`,
@@ -224,10 +234,11 @@ function connect(bin) {
 
 export async function runProbe({
   bin = process.env.CODEX_BIN || "codex",
+  args,
   pages = 1,
   limit = 20,
 } = {}) {
-  const client = connect(bin);
+  const client = connect(bin, args);
   try {
     const init = await client.request(1, "initialize", {
       clientInfo: {
@@ -246,6 +257,8 @@ export async function runProbe({
       const listed = await client.request(2 + page, "thread/list", {
         limit,
         sourceKinds: INTERACTIVE_SOURCES,
+        modelProviders: [],
+        useStateDbOnly: true,
         ...(cursor ? { cursor } : {}),
       });
       if (listed.error) {

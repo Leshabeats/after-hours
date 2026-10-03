@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   assertProbeMethod,
+  redactDiagnostic,
   runProbe,
   summarizeRateLimits,
   summarizeThreads,
@@ -144,9 +148,30 @@ describe("codex app-server probe", () => {
   });
 
   it("reports a process that exits before the handshake", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "exit0.mjs");
+    writeFileSync(helper, "process.exit(0);\n");
     const started = Date.now();
-    await assert.rejects(() => runProbe({ bin: "/usr/bin/true" }), /exited \(code 0\)/);
-    assert.ok(Date.now() - started < 5_000);
+    try {
+      await assert.rejects(
+        () => runProbe({ bin: process.execPath, args: [helper] }),
+        /exited \(code 0\)/,
+      );
+      assert.ok(Date.now() - started < 5_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts local paths and thread ids from diagnostics", () => {
+    const text = redactDiagnostic(
+      "missing /Users/me/.codex/sessions/rollout.jsonl id 0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c11 and C:\\Users\\me\\.codex\\a.jsonl",
+    );
+    assert.equal(text.includes("/Users"), false);
+    assert.equal(text.includes("0199a0e0"), false);
+    assert.equal(text.includes("C:\\Users"), false);
+    assert.equal(text.includes("[redacted]"), true);
+    assert.equal(text.startsWith("missing "), true);
   });
 
   it("refuses a model turn", () => {

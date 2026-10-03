@@ -59,7 +59,7 @@
 node scripts/codex-app-server-probe.mjs
 ```
 
-Скрипт делает `initialize`, `thread/list` и `account/rateLimits/read`. `turn/start` и `thread/start` он отклоняет. В вывод не попадают id чатов, тексты, пути и id аккаунта. Процент лимита печатается только локально.
+Скрипт делает `initialize`, `thread/list` и `account/rateLimits/read`. Список читает только state DB (`useStateDbOnly`) и все провайдеры (`modelProviders: []`). `turn/start` и `thread/start` он отклоняет. В вывод не попадают id чатов, тексты, пути и id аккаунта; то же вычищается из текста ошибок. Процент лимита печатается только локально.
 
 Проверка без Codex: `node --test scripts/codex-app-server-probe.test.mjs`.
 
