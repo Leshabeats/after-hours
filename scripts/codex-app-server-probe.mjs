@@ -293,9 +293,27 @@ function isPathStart(text, index) {
   return isRelativeWindowsPath(text, index);
 }
 
-function isRelativeWindowsPath(text, index) {
-  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
-  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
+function nextTokenContinuesPath(text, cursor) {
+  let look = cursor + 1;
+  while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
+  for (; look < text.length; look += 1) {
+    const next = text[look];
+    if (
+      next === "\n" ||
+      next === "\r" ||
+      next === "`" ||
+      next === '"' ||
+      next === " " ||
+      next === "\t"
+    ) {
+      return false;
+    }
+    if (next === "\\" || next === ".") return true;
+  }
+  return false;
+}
+
+function relativeWindowsBody(text, index) {
   let separators = 0;
   let componentHasDot = false;
   for (let cursor = index; cursor < text.length; cursor += 1) {
@@ -307,31 +325,26 @@ function isRelativeWindowsPath(text, index) {
       continue;
     }
     if (char === " " || char === "\t") {
-      if (separators === 0) break;
-      let later = false;
-      for (let look = cursor + 1; look < text.length; look += 1) {
-        const next = text[look];
-        if (
-          next === "\n" ||
-          next === "\r" ||
-          next === "`" ||
-          next === '"' ||
-          next === " " ||
-          next === "\t"
-        ) {
-          break;
-        }
-        if (next === "\\") {
-          later = true;
-          break;
-        }
-      }
-      if (!later) break;
+      if (separators === 0 || !nextTokenContinuesPath(text, cursor)) break;
       continue;
     }
     if (char === "." && separators >= 1) componentHasDot = true;
   }
   return separators >= 2 || (separators >= 1 && componentHasDot);
+}
+
+function isRelativeWindowsPath(text, index) {
+  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
+  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
+  if (relativeWindowsBody(text, index)) return true;
+  if (text[index] === text[index].toLowerCase()) return false;
+  let cursor = index;
+  while (cursor < text.length && text[cursor] !== " " && text[cursor] !== "\t") cursor += 1;
+  if (text[cursor] !== " " && text[cursor] !== "\t") return false;
+  let next = cursor + 1;
+  while (text[next] === " " || text[next] === "\t") next += 1;
+  if (!/[A-Za-z0-9]/.test(text[next] ?? "")) return false;
+  return relativeWindowsBody(text, next);
 }
 
 function pathEnd(text, index) {

@@ -389,6 +389,46 @@ describe("codex app-server probe", () => {
     assert.equal(relative.includes("key"), false);
     assert.equal(relative.includes("later"), true);
     assert.equal(relative.startsWith("see "), true);
+    const spacedFile = redactDiagnostic("see sessions\\Jane Doe.jsonl later");
+    const quoted = redactDiagnostic(
+      "failed to resolve rollout path `PrivateProject\\My Secrets.txt`: missing",
+    );
+    const spacedFolder = redactDiagnostic("see Jane Doe\\secrets\\key.txt later");
+    for (const value of [spacedFile, quoted, spacedFolder]) {
+      assert.equal(value.includes("Jane"), false);
+      assert.equal(value.includes("PrivateProject"), false);
+      assert.equal(value.includes("sessions"), false);
+      assert.equal(value.includes("Secrets"), false);
+      assert.equal(value.includes("secrets"), false);
+      assert.equal(value.includes("jsonl"), false);
+      assert.equal(value.includes("key"), false);
+    }
+    assert.equal(spacedFile.startsWith("see "), true);
+    assert.equal(spacedFile.includes("later"), true);
+    assert.equal(spacedFolder.startsWith("see "), true);
+    assert.equal(spacedFolder.includes("later"), true);
+    assert.equal(quoted.includes("missing"), true);
+    assert.equal(stderrDetail("see sessions\\Jane Doe.jsonl later").includes("Jane"), false);
+    const spacedSummary = summarizeThreads([
+      {
+        source: { custom: "sessions\\Jane Doe.jsonl" },
+        originator: "sessions\\Jane Doe.jsonl",
+        status: { type: "idle" },
+      },
+      {
+        source: { custom: "PrivateProject\\My Secrets.txt" },
+        originator: "Jane Doe\\secrets\\key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const spacedNameJson = JSON.stringify(spacedSummary);
+    assert.equal(spacedNameJson.includes("Jane"), false);
+    assert.equal(spacedNameJson.includes("sessions"), false);
+    assert.equal(spacedNameJson.includes("PrivateProject"), false);
+    assert.equal(spacedNameJson.includes("Secrets"), false);
+    assert.equal(spacedNameJson.includes("secrets"), false);
+    assert.equal(spacedSummary.originators["[redacted]"], 2);
+    assert.equal(spacedSummary.sources["[redacted]"], 2);
     assert.equal(redactDiagnostic("failed not\\n later"), "failed not\\n later");
     const relativeSummary = summarizeThreads([
       {
