@@ -464,6 +464,49 @@ describe("codex app-server probe", () => {
       assert.equal(value.includes("documents"), false);
       assert.equal(value.includes("my "), false);
     }
+    const opened = redactDiagnostic("Cannot open sessions\\Jane Doe.jsonl because it is locked");
+    assert.equal(opened.startsWith("Cannot open "), true);
+    assert.equal(opened.includes("because it is locked"), true);
+    assert.equal(opened.includes("sessions"), false);
+    assert.equal(opened.includes("Jane"), false);
+    const readMissing = redactDiagnostic("failed to read Missing sessions\\Jane Doe.jsonl");
+    assert.equal(readMissing.startsWith("failed to read Missing "), true);
+    assert.equal(readMissing.includes("sessions"), false);
+    assert.equal(redactDiagnostic("my documents\\secrets\\key.txt"), "[redacted]");
+    assert.equal(redactDiagnostic("Maria Jose Garcia\\secrets\\key.txt"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("read/write error on thread list"),
+      "read/write error on thread list",
+    );
+    assert.equal(
+      redactDiagnostic("I/O error while listing threads"),
+      "I/O error while listing threads",
+    );
+    assert.equal(redactDiagnostic("TCP/IP failed"), "TCP/IP failed");
+    assert.equal(redactDiagnostic("read and/or write the file"), "read and/or write the file");
+    assert.equal(redactDiagnostic("node/v22.0.0"), "node/v22.0.0");
+    assert.equal(redactDiagnostic("\\secret").includes("secret"), false);
+    assert.equal(redactDiagnostic("\\Private Folder").includes("Private"), false);
+    assert.equal(redactDiagnostic("\\Private Folder").includes("Folder"), false);
+    const rootSummary = summarizeThreads([
+      {
+        source: { custom: "\\secret" },
+        originator: "\\Private Folder",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(rootSummary).includes("secret"), false);
+    assert.equal(JSON.stringify(rootSummary).includes("Private"), false);
+    assert.equal(rootSummary.originators["[redacted]"], 1);
+    assert.equal(rootSummary.sources["[redacted]"], 1);
+    const prose = `${"word ".repeat(8000)}end`;
+    const proseStarted = Date.now();
+    assert.equal(redactDiagnostic(prose), prose);
+    assert.equal(Date.now() - proseStarted < 1000, true);
+    const versions = "a/1.0.0 ".repeat(4000);
+    const versionStarted = Date.now();
+    assert.equal(redactDiagnostic(versions), versions);
+    assert.equal(Date.now() - versionStarted < 1000, true);
     assert.equal(missing.startsWith("Missing "), true);
     assert.equal(missing.includes("sessions"), false);
     assert.equal(missing.includes("Jane"), false);

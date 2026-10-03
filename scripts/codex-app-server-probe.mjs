@@ -225,7 +225,14 @@ function remoteUriEnd(text, index) {
 
 function isEmptyHostPath(text, index) {
   if (text[index] !== "/" && text[index] !== "\\") return false;
-  return /(?:^|[^A-Za-z0-9])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:\/\/$/i.test(text.slice(0, index));
+  if (text[index - 1] !== "/" || text[index - 2] !== "/" || text[index - 3] !== ":") return false;
+  let end = index - 4;
+  let start = end;
+  while (start >= 0 && /[A-Za-z0-9+.-]/.test(text[start])) start -= 1;
+  start += 1;
+  if (start > end || !/[A-Za-z]/.test(text[start] ?? "")) return false;
+  if (/[A-Za-z0-9]/.test(text[start - 1] ?? "")) return false;
+  return text.slice(start, end + 1).toLowerCase() !== "file";
 }
 
 function isTildePath(text, index) {
@@ -259,14 +266,18 @@ function isPathStart(text, index) {
   if (text[index] === "\\" && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     let firstDot = false;
     let inFirst = true;
+    let firstLength = 0;
     for (let cursor = index + 1; cursor < text.length; cursor += 1) {
       const char = text[cursor];
       if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
       if (char === "\\" || char === "/") return true;
       if (char === " " || char === "\t") inFirst = false;
-      else if (inFirst && char === ".") firstDot = true;
+      else if (inFirst) {
+        firstLength += 1;
+        if (char === ".") firstDot = true;
+      }
     }
-    if (firstDot) return true;
+    if (firstDot || firstLength >= 2) return true;
   }
   if (
     text.slice(index, index + 7).toLowerCase() === "file://" &&
@@ -351,11 +362,16 @@ function relativeWindowsBody(text, index) {
   return separators >= 2 || (separators >= 1 && componentHasDot);
 }
 
-function nextWordIndex(text, index) {
-  let cursor = index;
-  while (cursor < text.length && text[cursor] !== " " && text[cursor] !== "\t") {
+function isWordStart(text, index) {
+  return /[A-Za-z0-9]/.test(text[index] ?? "") && !/[A-Za-z0-9]/.test(text[index - 1] ?? "");
+}
+
+function wordTokenHas(text, index, mark) {
+  for (let cursor = index; cursor < text.length; cursor += 1) {
     const char = text[cursor];
     if (
+      char === " " ||
+      char === "\t" ||
       char === "\n" ||
       char === "\r" ||
       char === "`" ||
@@ -363,37 +379,80 @@ function nextWordIndex(text, index) {
       char === ":" ||
       char === "="
     ) {
-      return -1;
+      return false;
     }
-    cursor += 1;
-  }
-  if (text[cursor] !== " " && text[cursor] !== "\t") return -1;
-  while (text[cursor] === " " || text[cursor] === "\t") cursor += 1;
-  return /[A-Za-z0-9]/.test(text[cursor] ?? "") ? cursor : -1;
-}
-
-function hasPriorWord(text, index) {
-  let cursor = index - 1;
-  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) cursor -= 1;
-  return cursor >= 0 && /[A-Za-z0-9]/.test(text[cursor]);
-}
-
-function isRelativeWindowsPath(text, index) {
-  if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
-  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
-  if (relativeWindowsBody(text, index)) return true;
-  if (!hasPriorWord(text, index)) return false;
-  let cursor = nextWordIndex(text, index);
-  while (cursor >= 0) {
-    if (relativeWindowsBody(text, cursor)) return true;
-    cursor = nextWordIndex(text, cursor);
+    if (char === mark) return true;
   }
   return false;
 }
 
-/** A version slash such as `codex_cli_rs/0.159.0` is one slash and a numeric tail. */
+function wordsStayOnOneLine(text, left, right) {
+  for (let cursor = left; cursor < right; cursor += 1) {
+    const char = text[cursor];
+    if (
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === ":" ||
+      char === "=" ||
+      char === "~" ||
+      char === "/"
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+let windowsStartText = null;
+let windowsStarts = null;
+
+/** One pass over word starts. A later path must not pull in every earlier word. */
+function windowsPathStarts(text) {
+  if (windowsStartText === text) return windowsStarts;
+  windowsStartText = text;
+  windowsStarts = new Uint8Array(text.length);
+  if (!text.includes("\\")) return windowsStarts;
+  const words = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (isWordStart(text, index)) words.push(index);
+  }
+  const body = words.map((index) => relativeWindowsBody(text, index));
+  for (let index = 0; index < words.length; index += 1) {
+    if (!body[index]) continue;
+    const start = words[index];
+    windowsStarts[start] = 1;
+    const upper = text[start] !== text[start].toLowerCase();
+    const dottedToken = wordTokenHas(text, start, "\\") && wordTokenHas(text, start, ".");
+    let previous = index - 1;
+    if (upper) {
+      while (previous >= 0 && !body[previous] && wordsStayOnOneLine(text, words[previous], start)) {
+        const word = words[previous];
+        if (text[word] === text[word].toLowerCase()) break;
+        windowsStarts[word] = 1;
+        previous -= 1;
+      }
+      continue;
+    }
+    if (!dottedToken || previous < 0 || body[previous]) continue;
+    const word = words[previous];
+    if (!wordsStayOnOneLine(text, word, start)) continue;
+    if (text[word] !== text[word].toLowerCase()) continue;
+    windowsStarts[word] = 1;
+  }
+  return windowsStarts;
+}
+
+function isRelativeWindowsPath(text, index) {
+  if (!isWordStart(text, index)) return false;
+  return windowsPathStarts(text)[index] === 1;
+}
+
+/** A version slash such as `codex_cli_rs/0.159.0` or `node/v22.0.0`. */
 function isVersionSlash(text, index) {
   let cursor = index;
+  if (text[cursor] === "v" || text[cursor] === "V") cursor += 1;
   if (!/\d/.test(text[cursor] ?? "")) return false;
   while (/\d/.test(text[cursor] ?? "")) cursor += 1;
   if (text[cursor] !== ".") return false;
@@ -405,6 +464,7 @@ function isRelativePosixPath(text, index) {
   if (!/[A-Za-z0-9]/.test(text[index] ?? "")) return false;
   if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return false;
   let slashes = 0;
+  let sawDot = false;
   let version = false;
   for (let cursor = index; cursor < text.length; cursor += 1) {
     const char = text[cursor];
@@ -430,9 +490,11 @@ function isRelativePosixPath(text, index) {
       slashes += 1;
       if (slashes === 1 && isVersionSlash(text, cursor + 1)) version = true;
       if (slashes >= 2) return true;
+    } else if (char === "." && slashes >= 1) {
+      sawDot = true;
     }
   }
-  return slashes === 1 && !version;
+  return slashes === 1 && sawDot && !version;
 }
 
 function pathEnd(text, index) {
