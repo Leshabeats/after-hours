@@ -183,7 +183,14 @@ function pathEnd(text, index) {
       }
       const separatorAhead = line.includes("/") || line.includes("\\");
       const dotAhead = line.split(/\s+/).some((token) => token.includes("."));
-      if (!separatorAhead && !dotAhead) break;
+      if (separatorAhead || dotAhead) {
+        end += 1;
+        continue;
+      }
+      const segment = text.slice(index, end);
+      const lastSeparator = Math.max(segment.lastIndexOf("/"), segment.lastIndexOf("\\"));
+      const current = lastSeparator === -1 ? segment : segment.slice(lastSeparator + 1);
+      if (current.includes(".")) break;
     }
     end += 1;
   }
@@ -365,6 +372,7 @@ export async function runProbe({
       threads: {
         ...summarizeThreads([...active.threads, ...archivedThreads]),
         more: active.more || (!archived.error && archived.more),
+        scope: "interactive",
         archivedIncluded: !archived.error,
         ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
       },
@@ -380,7 +388,7 @@ async function main() {
   if (options.help) {
     process.stdout.write(
       "Usage: node scripts/codex-app-server-probe.mjs [--pages N] [--limit N]\n" +
-        "Reads stored thread counts, including archived threads, and account rate limits. Does not start a model turn.\n",
+        "Reads interactive stored thread counts (cli, vscode, exec, appServer, unknown), including archived threads. Sub-agent threads are not included. Does not start a model turn.\n",
     );
     return;
   }

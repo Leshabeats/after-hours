@@ -319,6 +319,18 @@ describe("codex app-server probe", () => {
     assert.equal(notes.includes("afterwards"), true);
   });
 
+  it("redacts an extensionless folder name that contains spaces", () => {
+    const folder = redactDiagnostic("permission denied: /tmp/Private Folder");
+    const longer = redactDiagnostic("permission denied: /tmp/My Private Folder");
+    assert.equal(folder.includes("Private"), false);
+    assert.equal(folder.includes("Folder"), false);
+    assert.equal(folder.includes("permission denied:"), true);
+    assert.equal(longer.includes("My"), false);
+    assert.equal(longer.includes("Private"), false);
+    assert.equal(longer.includes("Folder"), false);
+    assert.equal(longer.startsWith("permission denied:"), true);
+  });
+
   it("reads rate limits when the thread list fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "list-error.mjs");
@@ -395,6 +407,7 @@ describe("codex app-server probe", () => {
       const summary = await runProbe({ bin: process.execPath, args: [helper] });
       assert.equal(summary.threads.count, 2);
       assert.equal(summary.threads.uuidIds, 2);
+      assert.equal(summary.threads.scope, "interactive");
       assert.equal(summary.threads.archivedIncluded, true);
       assert.equal(summary.threads.more, false);
       assert.equal(summary.threads.originators["live-origin"], 1);
