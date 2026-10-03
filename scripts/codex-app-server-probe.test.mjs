@@ -10,6 +10,7 @@ import {
   bindStdin,
   formatFailure,
   shouldKillChild,
+  stopChild,
   terminateChild,
   redactDiagnostic,
   retainStderr,
@@ -593,6 +594,11 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("алиса@example.com"), "[redacted]");
     assert.equal(redactDiagnostic("alice@пример.рф"), "[redacted]");
     assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
+    assert.equal(redactDiagnostic("alice@example.xn--p1ai"), "[redacted]");
+    const punycode = redactDiagnostic("wrote alice@example.xn--p1ai later");
+    assert.equal(punycode.includes("alice"), false);
+    assert.equal(punycode.includes("xn--"), false);
+    assert.equal(punycode.includes("later"), true);
     const apostrophe = redactDiagnostic("wrote o'brien@example.com later");
     assert.equal(apostrophe.includes("brien"), false);
     assert.equal(apostrophe.includes("o'"), false);
@@ -1039,6 +1045,31 @@ describe("codex app-server probe", () => {
     assert.equal(shouldKillChild(live), true);
     assert.equal(terminateChild(live), true);
     assert.deepEqual(signals, ["SIGTERM"]);
+    const ended = [];
+    const killed = [];
+    const windows = {
+      pid: 9,
+      exitCode: null,
+      signalCode: null,
+      stdin: {
+        destroyed: false,
+        end() {
+          ended.push("end");
+        },
+      },
+      kill() {
+        killed.push("kill");
+      },
+    };
+    assert.equal(
+      stopChild(windows, "win32", (command, args) => {
+        killed.push([command, ...args]);
+        return { unref() {} };
+      }),
+      true,
+    );
+    assert.deepEqual(ended, ["end"]);
+    assert.deepEqual(killed, [["taskkill", "/pid", "9", "/t"]]);
     assert.equal(terminateChild({ pid: null, exitCode: null, signalCode: null, kill() {} }), false);
     assert.equal(terminateChild({ pid: 4, exitCode: 0, signalCode: null, kill() {} }), false);
     assert.equal(

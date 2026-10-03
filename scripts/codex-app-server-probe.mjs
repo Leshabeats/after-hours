@@ -433,6 +433,11 @@ export function redactDiagnostic(value) {
 const EMAIL_LOCAL = /[\p{L}0-9._%+\-'\u2019]/u;
 const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
 const EMAIL_TLD = /^\p{L}+$/u;
+const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
+
+function isEmailTld(label) {
+  return EMAIL_TLD.test(label) || EMAIL_PUNYCODE_TLD.test(label);
+}
 
 /** Find addresses from each @. A greedy local-part regex retries every character of a long line. */
 function redactEmails(text) {
@@ -466,7 +471,7 @@ function emailEnd(text, at, domain) {
     if (dot <= at + 1) continue;
     const labelEnd = index + 1 < dots.length ? dots[index + 1] : domain;
     const tld = text.slice(dot + 1, labelEnd);
-    if (tld.length < 2 || !EMAIL_TLD.test(tld)) continue;
+    if (tld.length < 2 || !isEmailTld(tld)) continue;
     if (text[labelEnd] === "@") continue;
     return labelEnd;
   }
@@ -485,14 +490,34 @@ export function shouldKillChild(child) {
   return child?.exitCode == null && child?.signalCode == null && child?.pid != null;
 }
 
-export function terminateChild(child) {
+export function terminateChild(child, platform = process.platform, launch = spawn) {
   if (!shouldKillChild(child)) return false;
   try {
-    child.kill("SIGTERM");
+    if (platform === "win32") {
+      const killer = launch("taskkill", ["/pid", String(child.pid), "/t"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer?.unref?.();
+    } else {
+      child.kill("SIGTERM");
+    }
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
   return true;
+}
+
+export function stopChild(child, platform = process.platform, launch = spawn) {
+  const stdin = child?.stdin;
+  if (stdin && !stdin.destroyed) {
+    try {
+      stdin.end();
+    } catch (error) {
+      if (error?.code !== "EPIPE" && error?.code !== "ERR_STREAM_DESTROYED") throw error;
+    }
+  }
+  return terminateChild(child, platform, launch);
 }
 
 export function bindStdin(stdin, rejectPending) {
@@ -613,7 +638,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
 
   const stop = () => {
     rl.close();
-    terminateChild(child);
+    stopChild(child);
   };
 
   return { request, notify, stop, child };
