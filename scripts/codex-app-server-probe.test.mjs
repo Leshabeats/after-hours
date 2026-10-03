@@ -123,6 +123,7 @@ describe("codex app-server probe", () => {
         rateLimitReachedType: null,
         spendControlReached: null,
         individualRemainingPercent: null,
+        credits: null,
       },
       {
         limitId: "extra",
@@ -131,6 +132,7 @@ describe("codex app-server probe", () => {
         rateLimitReachedType: null,
         spendControlReached: null,
         individualRemainingPercent: null,
+        credits: null,
       },
     ]);
     assert.equal(JSON.stringify(summary).includes("pro"), false);
@@ -173,6 +175,29 @@ describe("codex app-server probe", () => {
     assert.equal(summary.buckets[0].spendControlReached, true);
     assert.equal(summary.buckets[0].individualRemainingPercent, 0);
     assert.equal(JSON.stringify(summary).includes("usd-secret"), false);
+  });
+
+  it("keeps credit flags and drops the balance when the window is exhausted", () => {
+    const summary = summarizeRateLimits({
+      ordinaryUsageAllowed: false,
+      rateLimits: {
+        primary: { usedPercent: 100, windowDurationMins: 60, resetsAt: 1 },
+        secondary: null,
+        credits: { hasCredits: true, unlimited: false, balance: "secret-balance" },
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: "codex",
+          primary: { usedPercent: 100, windowDurationMins: 60, resetsAt: 1 },
+          credits: { hasCredits: false, unlimited: true, balance: "secret-balance" },
+        },
+      },
+    });
+
+    assert.equal(summary.ordinaryUsageAllowed, false);
+    assert.deepEqual(summary.credits, { hasCredits: true, unlimited: false });
+    assert.deepEqual(summary.buckets[0].credits, { hasCredits: false, unlimited: true });
+    assert.equal(JSON.stringify(summary).includes("secret-balance"), false);
   });
 
   it("treats a missing limit window as unavailable", () => {
@@ -256,6 +281,20 @@ describe("codex app-server probe", () => {
     assert.equal(programFiles.includes("after"), true);
   });
 
+  it("redacts an apostrophe in a profile name and a spaced final filename", () => {
+    const named = redactDiagnostic(
+      "failed to resolve rollout path `C:\\Users\\O'Brien\\.codex\\sessions\\rollout.jsonl`: file does not exist",
+    );
+    const spacedFile = redactDiagnostic("missing /tmp/Private Project.jsonl afterwards");
+    assert.equal(named.includes("Brien"), false);
+    assert.equal(named.includes(".codex"), false);
+    assert.equal(named.includes("file does not exist"), true);
+    assert.equal(spacedFile.includes("Private"), false);
+    assert.equal(spacedFile.includes("Project"), false);
+    assert.equal(spacedFile.includes(".jsonl"), false);
+    assert.equal(spacedFile.includes("afterwards"), true);
+  });
+
   it("reads rate limits when the thread list fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "list-error.mjs");
@@ -290,6 +329,103 @@ describe("codex app-server probe", () => {
       assert.equal(summary.rateLimits.individualRemainingPercent, 0);
       assert.equal(summary.rateLimits.primary.usedPercent, 10);
       assert.equal(JSON.stringify(summary).includes("usd-secret"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts archived threads together with the active slice", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "archived.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    const archived = message.params && message.params.archived === true;",
+        "    const thread = {",
+        '      id: archived ? "0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c22" : "0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c11",',
+        '      source: "cli",',
+        '      originator: archived ? "archived-origin" : "live-origin",',
+        '      status: { type: "idle" },',
+        "    };",
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [thread], nextCursor: null } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: null } } }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.threads.count, 2);
+      assert.equal(summary.threads.uuidIds, 2);
+      assert.equal(summary.threads.archivedIncluded, true);
+      assert.equal(summary.threads.more, false);
+      assert.equal(summary.threads.originators["live-origin"], 1);
+      assert.equal(summary.threads.originators["archived-origin"], 1);
+      assert.equal(JSON.stringify(summary).includes("0199a0e0"), false);
+      assert.equal(summary.rateLimits.primary, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the active count when the archived slice fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "archived-error.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    if (message.params && message.params.archived === true) {",
+        "      process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32603, message: 'archived /tmp/secret-archive.jsonl' } }) + '\\n');",
+        "      return;",
+        "    }",
+        "    const thread = {",
+        '      id: "0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c11",',
+        '      source: "cli",',
+        '      originator: "live-origin",',
+        '      status: { type: "idle" },',
+        "    };",
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [thread], nextCursor: null } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: { usedPercent: 4, windowDurationMins: 60, resetsAt: null } } } }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.threads.count, 1);
+      assert.equal(summary.threads.archivedIncluded, false);
+      assert.match(summary.threads.archivedError, /^-32603: /);
+      assert.equal(summary.threads.archivedError.includes("secret-archive"), false);
+      assert.equal(summary.threads.originators["live-origin"], 1);
+      assert.equal(summary.rateLimits.primary.usedPercent, 4);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -84,6 +84,15 @@ function spendControlOf(snapshot) {
   };
 }
 
+function creditsOf(snapshot) {
+  const credits = snapshot?.credits;
+  if (!credits || typeof credits !== "object" || Array.isArray(credits)) return null;
+  return {
+    hasCredits: typeof credits.hasCredits === "boolean" ? credits.hasCredits : null,
+    unlimited: typeof credits.unlimited === "boolean" ? credits.unlimited : null,
+  };
+}
+
 function summarizeBucket(key, snapshot) {
   const limits = snapshot && typeof snapshot === "object" ? snapshot : {};
   return {
@@ -92,6 +101,7 @@ function summarizeBucket(key, snapshot) {
     secondary: windowOf(limits.secondary),
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
     ...spendControlOf(limits),
+    credits: creditsOf(limits),
   };
 }
 
@@ -117,6 +127,7 @@ export function summarizeRateLimits(result) {
     secondary: windowOf(limits.secondary),
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
     ...spendControlOf(limits),
+    credits: creditsOf(limits),
     buckets,
   };
 }
@@ -161,12 +172,14 @@ function pathEnd(text, index) {
   let end = index;
   while (end < text.length) {
     const char = text[end];
-    if (char === "`" || char === "'" || char === '"' || char === "\n" || char === "\r") break;
+    if (char === "`" || char === '"' || char === "\n" || char === "\r") break;
     if (char === " " || char === "\t") {
       const rest = text.slice(end + 1);
-      const delimiter = rest.search(/[`'"\n\r]/);
+      const delimiter = rest.search(/[`"\n\r]/);
       const horizon = delimiter === -1 ? rest : rest.slice(0, delimiter);
-      if (!horizon.includes("/") && !horizon.includes("\\")) break;
+      const next = horizon.split(/[\s`"]/, 1)[0];
+      const separatorAhead = horizon.includes("/") || horizon.includes("\\");
+      if (!separatorAhead && !next.includes(".")) break;
     }
     end += 1;
   }
@@ -290,6 +303,28 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   return { request, notify, stop, child };
 }
 
+async function listThreads(client, { pages, limit, archived, idBase }) {
+  const threads = [];
+  let more = false;
+  let cursor = null;
+  for (let page = 0; page < pages; page += 1) {
+    const listed = await client.request(idBase + page, "thread/list", {
+      limit,
+      sourceKinds: INTERACTIVE_SOURCES,
+      modelProviders: [],
+      useStateDbOnly: true,
+      archived,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (listed.error) return { error: listed.error, threads, more };
+    threads.push(...(listed.result?.data ?? []));
+    cursor = listed.result?.nextCursor ?? null;
+    more = Boolean(cursor);
+    if (!cursor) break;
+  }
+  return { error: null, threads, more };
+}
+
 export async function runProbe({
   bin = process.env.CODEX_BIN || "codex",
   args,
@@ -308,35 +343,27 @@ export async function runProbe({
     client.notify("initialized", {});
     if (init.error) return { userAgent: null, threads: rpcError(init.error), rateLimits: null };
 
-    const threads = [];
-    let more = false;
-    let cursor = null;
-    for (let page = 0; page < pages; page += 1) {
-      const listed = await client.request(2 + page, "thread/list", {
-        limit,
-        sourceKinds: INTERACTIVE_SOURCES,
-        modelProviders: [],
-        useStateDbOnly: true,
-        ...(cursor ? { cursor } : {}),
-      });
-      if (listed.error) {
-        const limits = await client.request(100, "account/rateLimits/read", {});
-        return {
-          userAgent: init.result?.userAgent ?? null,
-          threads: rpcError(listed.error),
-          rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
-        };
-      }
-      threads.push(...(listed.result?.data ?? []));
-      cursor = listed.result?.nextCursor ?? null;
-      more = Boolean(cursor);
-      if (!cursor) break;
+    const active = await listThreads(client, { pages, limit, archived: false, idBase: 2 });
+    if (active.error) {
+      const limits = await client.request(100, "account/rateLimits/read", {});
+      return {
+        userAgent: init.result?.userAgent ?? null,
+        threads: rpcError(active.error),
+        rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
+      };
     }
+    const archived = await listThreads(client, { pages, limit, archived: true, idBase: 20 });
 
     const limits = await client.request(100, "account/rateLimits/read", {});
+    const archivedThreads = archived.error ? [] : archived.threads;
     return {
       userAgent: init.result?.userAgent ?? null,
-      threads: { ...summarizeThreads(threads), more },
+      threads: {
+        ...summarizeThreads([...active.threads, ...archivedThreads]),
+        more: active.more || (!archived.error && archived.more),
+        archivedIncluded: !archived.error,
+        ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
+      },
       rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
     };
   } finally {
@@ -349,13 +376,15 @@ async function main() {
   if (options.help) {
     process.stdout.write(
       "Usage: node scripts/codex-app-server-probe.mjs [--pages N] [--limit N]\n" +
-        "Reads stored thread counts and account rate limits. Does not start a model turn.\n",
+        "Reads stored thread counts, including archived threads, and account rate limits. Does not start a model turn.\n",
     );
     return;
   }
   const summary = await runProbe(options);
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-  if (summary.threads?.error || summary.rateLimits?.error) process.exitCode = 1;
+  if (summary.threads?.error || summary.threads?.archivedError || summary.rateLimits?.error) {
+    process.exitCode = 1;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

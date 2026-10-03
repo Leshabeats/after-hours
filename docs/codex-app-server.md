@@ -59,7 +59,7 @@
 node scripts/codex-app-server-probe.mjs
 ```
 
-Скрипт делает `initialize`, `thread/list` и `account/rateLimits/read`. Список читает только state DB (`useStateDbOnly`) и все провайдеры (`modelProviders: []`). Ошибка списка не отменяет чтение лимита. `turn/start` и `thread/start` он отклоняет. В вывод не попадают id чатов, тексты, пути и id аккаунта; то же вычищается из текста ошибок, включая UNC и пути с пробелами. Процент лимита печатается только локально. Сводка лимита хранит `spendControlReached` и остаток индивидуального лимита; если поля нет, это `null`.
+Скрипт делает `initialize`, `thread/list` и `account/rateLimits/read`. Список читает только state DB (`useStateDbOnly`) и все провайдеры (`modelProviders: []`). Обычные и архивные треды запрашиваются отдельно: без `archived: true` сервер архив не отдаёт. Ошибка обычного списка не отменяет чтение лимита; ошибка архивного списка остаётся в `archivedError`, а уже прочитанные обычные треды не выбрасываются. `turn/start` и `thread/start` он отклоняет. В вывод не попадают id чатов, тексты, пути и id аккаунта; то же вычищается из текста ошибок, включая UNC, апостроф в имени и пробел в последнем компоненте пути. Процент лимита печатается только локально. Сводка лимита хранит `spendControlReached`, остаток индивидуального лимита и флаги `credits.hasCredits` / `credits.unlimited` без баланса; если поля нет, это `null`.
 
 Проверка без Codex: `node --test scripts/codex-app-server-probe.test.mjs`.
 
