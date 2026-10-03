@@ -40,10 +40,7 @@ function labelHasUriPath(text) {
 function publicLabel(value) {
   const text = String(value);
   if (labelHasUriPath(text)) return "[redacted]";
-  const redacted = redactDiagnostic(text).replace(
-    /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-    "[redacted]",
-  );
+  const redacted = redactDiagnostic(text);
   return redacted === text ? text : "[redacted]";
 }
 
@@ -75,7 +72,6 @@ function bump(counts, key) {
 }
 
 function originLabel(origin) {
-  if (origin == null) return "null";
   return publicLabel(origin);
 }
 
@@ -84,10 +80,12 @@ export function summarizeThreads(threads) {
   const sources = emptyCounts();
   const originators = emptyCounts();
   const statuses = emptyCounts();
+  let missingOriginators = 0;
   let uuidIds = 0;
   for (const thread of threads) {
     bump(sources, sourceLabel(thread?.source));
-    bump(originators, originLabel(thread?.originator));
+    if (thread?.originator == null) missingOriginators += 1;
+    else bump(originators, originLabel(thread.originator));
     bump(statuses, statusLabel(thread?.status));
     if (typeof thread?.id === "string" && UUID.test(thread.id)) uuidIds += 1;
   }
@@ -95,6 +93,7 @@ export function summarizeThreads(threads) {
     count: threads.length,
     uuidIds,
     sources,
+    missingOriginators,
     originators,
     statuses,
   };
@@ -202,6 +201,7 @@ function remoteUriEnd(text, index) {
       if (
         next === "/" ||
         next === "\\" ||
+        (next === "~" && (after === "/" || after === "\\")) ||
         (/[A-Za-z]/.test(next) && (after === "/" || after === "\\"))
       ) {
         return cursor;
@@ -219,15 +219,17 @@ function isEmptyHostPath(text, index) {
 
 function isPathStart(text, index) {
   if (isEmptyHostPath(text, index)) return true;
-  if (text.startsWith("~/", index)) return true;
+  if (text.startsWith("~/", index) || text.startsWith("~\\", index)) return true;
   const previous = text[index - 1];
   if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     return true;
   }
   if (text[index] === "\\" && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
-    let cursor = index + 1;
-    while (cursor < text.length && !'\\/ \t\n\r`"'.includes(text[cursor])) cursor += 1;
-    if (text[cursor] === "\\" || text[cursor] === "/") return true;
+    for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
+      if (char === "\\" || char === "/") return true;
+    }
   }
   if (
     text.slice(index, index + 7).toLowerCase() === "file://" &&
@@ -334,14 +336,39 @@ export function stderrDetail(value) {
   return redactDiagnostic(String(value ?? "").trim()).slice(-500);
 }
 
-/** Drop local paths and thread ids from text that may be printed. */
+function cutAt(text, marks) {
+  let end = text.length;
+  for (const mark of marks) {
+    const at = text.indexOf(mark);
+    if (at !== -1 && at < end) end = at;
+  }
+  return end;
+}
+
+/** Keep the scheme, host, port, and path. Drop userinfo, query, and fragment. */
+function shareableUri(uri) {
+  const scheme = uri.indexOf("://");
+  if (scheme < 0) return uri;
+  const rest = uri.slice(scheme + 3);
+  const authorityEnd = cutAt(rest, ["/", "?", "#"]);
+  const authority = rest.slice(0, authorityEnd);
+  const at = authority.lastIndexOf("@");
+  const host = at === -1 ? authority : authority.slice(at + 1);
+  const path =
+    rest[authorityEnd] === "/"
+      ? rest.slice(authorityEnd, authorityEnd + cutAt(rest.slice(authorityEnd), ["?", "#"]))
+      : "";
+  return `${uri.slice(0, scheme + 3)}${host}${path}`;
+}
+
+/** Drop local paths, emails, and thread ids from text that may be printed. */
 export function redactDiagnostic(value) {
   const text = String(value ?? "");
   let redacted = "";
   for (let index = 0; index < text.length;) {
     const uriEnd = remoteUriEnd(text, index);
     if (uriEnd > index) {
-      redacted += text.slice(index, uriEnd);
+      redacted += shareableUri(text.slice(index, uriEnd));
       index = uriEnd;
       continue;
     }
@@ -354,10 +381,9 @@ export function redactDiagnostic(value) {
     redacted += "[redacted]";
     index = Math.max(end, index + 1);
   }
-  return redacted.replace(
-    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
-    "[redacted]",
-  );
+  return redacted
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted]")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted]");
 }
 
 function rpcError(message) {

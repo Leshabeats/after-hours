@@ -44,7 +44,8 @@ describe("codex app-server probe", () => {
         count: 2,
         uuidIds: 1,
         sources: { vscode: 1, subAgent: 1 },
-        originators: { "Codex Desktop": 1, null: 1 },
+        missingOriginators: 1,
+        originators: { "Codex Desktop": 1 },
         statuses: { notLoaded: 1, "active:waitingOnUserInput": 1 },
       }),
     );
@@ -80,6 +81,16 @@ describe("codex app-server probe", () => {
     assert.equal(json.includes("example.com"), false);
     assert.equal(summary.originators["[redacted]"], 2);
     assert.equal(summary.originators["Codex Desktop"], 1);
+  });
+
+  it("counts a missing originator apart from the label null", () => {
+    const summary = summarizeThreads([
+      { originator: null, source: "cli", status: { type: "idle" } },
+      { source: "cli", status: { type: "idle" } },
+      { originator: "null", source: "cli", status: { type: "idle" } },
+    ]);
+    assert.equal(summary.missingOriginators, 2);
+    assert.equal(summary.originators.null, 1);
   });
 
   it("redacts a custom source path and keeps atlas", () => {
@@ -376,6 +387,26 @@ describe("codex app-server probe", () => {
     assert.equal(json.includes("Alice"), false);
     assert.equal(summary.originators["[redacted]"], 1);
     assert.equal(summary.sources["[redacted]"], 1);
+    const spaced = redactDiagnostic(
+      "see \\Documents and Settings\\Jane\\.codex\\sessions\\rollout.jsonl later",
+    );
+    const summarySpaced = summarizeThreads([
+      {
+        source: { custom: "\\Program Files\\Codex\\sessions\\rollout.jsonl" },
+        originator: "\\Documents and Settings\\Jane\\.codex\\sessions\\rollout.jsonl",
+        status: { type: "idle" },
+      },
+    ]);
+    const spacedJson = JSON.stringify(summarySpaced);
+    assert.equal(spaced.includes("Documents"), false);
+    assert.equal(spaced.includes("Jane"), false);
+    assert.equal(spaced.includes(".codex"), false);
+    assert.equal(spaced.includes("later"), true);
+    assert.equal(spacedJson.includes("Documents"), false);
+    assert.equal(spacedJson.includes("Program"), false);
+    assert.equal(spacedJson.includes("Jane"), false);
+    assert.equal(summarySpaced.originators["[redacted]"], 1);
+    assert.equal(summarySpaced.sources["[redacted]"], 1);
   });
 
   it("redacts an apostrophe in a profile name and a spaced final filename", () => {
@@ -491,6 +522,32 @@ describe("codex app-server probe", () => {
     assert.equal(emptyHost.includes("Users"), false);
     assert.equal(emptyHost.includes("Jane"), false);
     assert.equal(emptyHost.startsWith("http://"), true);
+    const home = redactDiagnostic(
+      "https://api.openai.com/v1/responses:~/.codex/sessions/rollout.jsonl later",
+    );
+    const homeWindows = redactDiagnostic(
+      "https://api.openai.com/v1/responses:~\\Users\\Jane\\.codex\\sessions\\rollout.jsonl later",
+    );
+    const homeSpaced = redactDiagnostic(
+      "https://api.openai.com/v1/responses:~/Jane Doe/.codex/sessions/rollout.jsonl later",
+    );
+    const homeDrive = redactDiagnostic(
+      "https://api.openai.com/v1/responses:C:\\Documents and Settings\\Jane\\.codex\\sessions\\rollout.jsonl later",
+    );
+    for (const value of [home, homeWindows, homeSpaced, homeDrive]) {
+      assert.equal(value.includes("Jane"), false);
+      assert.equal(value.includes(".codex"), false);
+      assert.equal(value.includes("rollout"), false);
+      assert.equal(value.includes("later"), true);
+      assert.equal(value.startsWith("https://api.openai.com/v1/responses:"), true);
+    }
+    const signed = redactDiagnostic(
+      "https://user:password@example.com/v1?token=secret#session=hidden failed",
+    );
+    assert.equal(signed, "https://example.com/v1 failed");
+    const mailed = redactDiagnostic("auth failed for alice@example.com");
+    assert.equal(mailed, "auth failed for [redacted]");
+    assert.equal(stderrDetail("alice@example.com").includes("@"), false);
   });
 
   it("redacts a remote URL path in an originator or custom source", () => {
