@@ -309,6 +309,21 @@ function rpcError(message) {
   return { error: text || "request failed" };
 }
 
+/** A stdin failure still leaves a live pid. Only a finished child or a failed spawn is left alone. */
+export function shouldKillChild(child) {
+  return child?.exitCode == null && child?.signalCode == null && child?.pid != null;
+}
+
+export function terminateChild(child) {
+  if (!shouldKillChild(child)) return false;
+  try {
+    child.kill("SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  return true;
+}
+
 export function bindStdin(stdin, rejectPending) {
   stdin.on("error", (error) => {
     rejectPending(new Error(`codex app-server stdin failed: ${error?.code || "unknown"}`));
@@ -399,8 +414,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
 
   const stop = () => {
     rl.close();
-    if (failure || child.exitCode != null || child.signalCode != null) return;
-    child.kill("SIGTERM");
+    terminateChild(child);
   };
 
   return { request, notify, stop, child };

@@ -7,6 +7,8 @@ import { describe, it } from "node:test";
 import {
   assertProbeMethod,
   bindStdin,
+  shouldKillChild,
+  terminateChild,
   redactDiagnostic,
   retainStderr,
   runProbe,
@@ -755,6 +757,54 @@ describe("codex app-server probe", () => {
     });
     stdin.emit("error", { code: "EPIPE" });
     assert.match(rejected.message, /stdin failed: EPIPE/);
+  });
+
+  it("kills a live child after stdin fails and leaves a finished child alone", () => {
+    const signals = [];
+    const live = {
+      pid: 4,
+      exitCode: null,
+      signalCode: null,
+      kill(signal) {
+        signals.push(signal);
+      },
+    };
+    assert.equal(shouldKillChild(live), true);
+    assert.equal(terminateChild(live), true);
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(terminateChild({ pid: null, exitCode: null, signalCode: null, kill() {} }), false);
+    assert.equal(terminateChild({ pid: 4, exitCode: 0, signalCode: null, kill() {} }), false);
+    assert.equal(
+      terminateChild({ pid: 4, exitCode: null, signalCode: "SIGTERM", kill() {} }),
+      false,
+    );
+    assert.equal(
+      terminateChild({
+        pid: 4,
+        exitCode: null,
+        signalCode: null,
+        kill() {
+          const error = new Error("gone");
+          error.code = "ESRCH";
+          throw error;
+        },
+      }),
+      true,
+    );
+    assert.throws(
+      () =>
+        terminateChild({
+          pid: 4,
+          exitCode: null,
+          signalCode: null,
+          kill() {
+            const error = new Error("denied");
+            error.code = "EPERM";
+            throw error;
+          },
+        }),
+      /denied/,
+    );
   });
 
   it("refuses a model turn", () => {
