@@ -211,6 +211,31 @@ function pathEnd(text, index) {
   return end;
 }
 
+const STDERR_LINE_LIMIT = 100_000;
+
+/**
+ * Keep raw stderr only until a line can be redacted whole.
+ * A rolling slice of the raw bytes can drop the leading `/` of a long path.
+ */
+export function retainStderr(state, chunk) {
+  state.pending += String(chunk ?? "");
+  const breakAt = Math.max(state.pending.lastIndexOf("\n"), state.pending.lastIndexOf("\r"));
+  if (breakAt !== -1) {
+    const complete = state.pending.slice(0, breakAt + 1);
+    state.pending = state.pending.slice(breakAt + 1);
+    state.safe = `${state.safe}${redactDiagnostic(complete)}`.slice(-2000);
+  }
+  if (state.pending.length > STDERR_LINE_LIMIT) {
+    state.safe = `${state.safe}${redactDiagnostic(state.pending)}`.slice(-2000);
+    state.pending = "";
+  }
+  return state;
+}
+
+export function stderrText(state) {
+  return `${state?.safe ?? ""}${state?.pending ?? ""}`;
+}
+
 /** Redact the whole stderr buffer, then keep the tail. A slice taken first can start mid-path. */
 export function stderrDetail(value) {
   return redactDiagnostic(String(value ?? "").trim()).slice(-500);
@@ -247,12 +272,12 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const child = spawn(bin, args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let stderr = "";
+  const stderrState = { safe: "", pending: "" };
   let failure = null;
   const pending = new Map();
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
-    stderr = `${stderr}${chunk}`.slice(-2000);
+    retainStderr(stderrState, chunk);
   });
   child.stderr.on("error", () => {});
   child.stdin.on("error", () => {});
@@ -273,7 +298,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   });
   child.on("exit", (code, signal) => {
     const why = signal ? `signal ${signal}` : `code ${code}`;
-    const detail = stderrDetail(stderr);
+    const detail = stderrDetail(stderrText(stderrState));
     rejectPending(
       new Error(
         detail ? `codex app-server exited (${why}): ${detail}` : `codex app-server exited (${why})`,
@@ -307,7 +332,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       }
       const timer = setTimeout(() => {
         pending.delete(id);
-        const detail = stderrDetail(stderr);
+        const detail = stderrDetail(stderrText(stderrState));
         reject(
           new Error(
             detail ? `timeout waiting for ${method}: ${detail}` : `timeout waiting for ${method}`,

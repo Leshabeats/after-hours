@@ -6,8 +6,10 @@ import { describe, it } from "node:test";
 import {
   assertProbeMethod,
   redactDiagnostic,
+  retainStderr,
   runProbe,
   stderrDetail,
+  stderrText,
   summarizeRateLimits,
   summarizeThreads,
 } from "./codex-app-server-probe.mjs";
@@ -388,6 +390,24 @@ describe("codex app-server probe", () => {
     assert.equal(detail.includes("Doe"), false);
     assert.equal(detail.includes(".codex"), false);
     assert.equal(detail.length <= 500, true);
+  });
+
+  it("redacts a long path before the stderr buffer drops its prefix", () => {
+    const path = `/${"n".repeat(2500)}Jane Doe secret`;
+    const cut = path.slice(-2000);
+    assert.equal(cut.includes("/"), false);
+    assert.equal(redactDiagnostic(cut).includes("Jane"), true);
+    const state = retainStderr({ safe: "", pending: "" }, `${path}\n`);
+    const detail = stderrDetail(stderrText(state));
+    assert.equal(detail.includes("Jane"), false);
+    assert.equal(detail.includes("secret"), false);
+    const split = { safe: "", pending: "" };
+    retainStderr(split, path.slice(0, 1500));
+    retainStderr(split, `${path.slice(1500)}\n`);
+    const splitDetail = stderrDetail(stderrText(split));
+    assert.equal(splitDetail.includes("Jane"), false);
+    assert.equal(splitDetail.includes("Doe"), false);
+    assert.equal(splitDetail.includes("secret"), false);
   });
 
   it("reads rate limits when the thread list fails", async () => {
