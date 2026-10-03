@@ -187,12 +187,23 @@ function readOptions(argv) {
   return options;
 }
 
+function plainSchemeEnd(text, index) {
+  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return -1;
+  if (!/[A-Za-z]/.test(text[index] ?? "")) return -1;
+  let cursor = index + 1;
+  while (cursor < text.length && /[A-Za-z0-9+.-]/.test(text[cursor])) cursor += 1;
+  return cursor;
+}
+
 /** Copy a remote URI with a real host. Stop before a colon that starts a local path. */
 function remoteUriEnd(text, index) {
-  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return -1;
-  const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text.slice(index));
-  if (!match || match[1].toLowerCase() === "file") return -1;
-  let cursor = index + match[0].length;
+  const schemeEnd = plainSchemeEnd(text, index);
+  if (schemeEnd < 0) return -1;
+  if (text[schemeEnd] !== ":" || text[schemeEnd + 1] !== "/" || text[schemeEnd + 2] !== "/") {
+    return -1;
+  }
+  if (text.slice(index, schemeEnd).toLowerCase() === "file") return -1;
+  let cursor = schemeEnd + 3;
   if (cursor >= text.length || /[/\\\s"'`<>]/.test(text[cursor])) return -1;
   while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) {
     if (text[cursor] === ":") {
@@ -201,7 +212,7 @@ function remoteUriEnd(text, index) {
       if (
         next === "/" ||
         next === "\\" ||
-        (next === "~" && (after === "/" || after === "\\")) ||
+        (next === "~" && isTildePath(text, cursor + 1)) ||
         (/[A-Za-z]/.test(next) && (after === "/" || after === "\\"))
       ) {
         return cursor;
@@ -217,19 +228,45 @@ function isEmptyHostPath(text, index) {
   return /(?:^|[^A-Za-z0-9])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:\/\/$/i.test(text.slice(0, index));
 }
 
+function isTildePath(text, index) {
+  if (text[index] !== "~") return false;
+  let cursor = index + 1;
+  while (cursor < text.length) {
+    const char = text[cursor];
+    if (char === "/" || char === "\\") return true;
+    if (
+      char === " " ||
+      char === "\t" ||
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"'
+    ) {
+      return false;
+    }
+    cursor += 1;
+  }
+  return false;
+}
+
 function isPathStart(text, index) {
   if (isEmptyHostPath(text, index)) return true;
-  if (text.startsWith("~/", index) || text.startsWith("~\\", index)) return true;
+  if (isTildePath(text, index) && !/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return true;
   const previous = text[index - 1];
   if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     return true;
   }
   if (text[index] === "\\" && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
+    let firstDot = false;
+    let inFirst = true;
     for (let cursor = index + 1; cursor < text.length; cursor += 1) {
       const char = text[cursor];
       if (char === "\n" || char === "\r" || char === "`" || char === '"') break;
       if (char === "\\" || char === "/") return true;
+      if (char === " " || char === "\t") inFirst = false;
+      else if (inFirst && char === ".") firstDot = true;
     }
+    if (firstDot) return true;
   }
   if (
     text.slice(index, index + 7).toLowerCase() === "file://" &&
@@ -372,6 +409,12 @@ export function redactDiagnostic(value) {
       index = uriEnd;
       continue;
     }
+    const plainEnd = plainSchemeEnd(text, index);
+    if (plainEnd > index && text[plainEnd] !== ":") {
+      redacted += text.slice(index, plainEnd);
+      index = plainEnd;
+      continue;
+    }
     if (!isPathStart(text, index)) {
       redacted += text[index];
       index += 1;
@@ -411,16 +454,20 @@ function redactEmails(text) {
   return redacted + text.slice(cursor);
 }
 
-/** Shrink a trailing dot or a non-letter label until the TLD is at least two letters. */
+/** One pass over the dots. A label followed by @ belongs to the next address. */
 function emailEnd(text, at, domain) {
-  let end = domain;
-  while (end > at + 1) {
-    const host = text.slice(at + 1, end);
-    const dot = host.lastIndexOf(".");
-    if (dot <= 0) return -1;
-    const tld = host.slice(dot + 1);
-    if (tld.length >= 2 && /^[A-Za-z]+$/.test(tld)) return at + 1 + dot + 1 + tld.length;
-    end = at + 1 + dot;
+  const dots = [];
+  for (let index = at + 1; index < domain; index += 1) {
+    if (text[index] === ".") dots.push(index);
+  }
+  for (let index = dots.length - 1; index >= 0; index -= 1) {
+    const dot = dots[index];
+    if (dot <= at + 1) continue;
+    const labelEnd = index + 1 < dots.length ? dots[index + 1] : domain;
+    const tld = text.slice(dot + 1, labelEnd);
+    if (tld.length < 2 || !/^[A-Za-z]+$/.test(tld)) continue;
+    if (text[labelEnd] === "@") continue;
+    return labelEnd;
   }
   return -1;
 }
@@ -453,8 +500,34 @@ export function bindStdin(stdin, rejectPending) {
   });
 }
 
+function quoteCmd(value) {
+  const text = String(value);
+  if (text.length === 0 || /[\s"&|<>^%]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
+  return text;
+}
+
+/** A Windows npm shim is codex.cmd. cmd.exe can start it; spawn cannot. */
+export function appServerLaunch(bin, args = [], platform = process.platform) {
+  if (platform !== "win32") return { command: bin, args };
+  const commandLine = [bin, ...args].map(quoteCmd).join(" ");
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+  };
+}
+
+export function formatFailure(error) {
+  return redactDiagnostic(error instanceof Error ? error.message : String(error));
+}
+
+function shareableUserAgent(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return publicLabel(value);
+}
+
 function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
-  const child = spawn(bin, args, {
+  const launch = appServerLaunch(bin, args);
+  const child = spawn(launch.command, launch.args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stderrState = { safe: "", pending: "" };
@@ -601,7 +674,7 @@ export async function runProbe({
     if (active.error) {
       const limits = await client.request(100, "account/rateLimits/read", {});
       return {
-        userAgent: init.result?.userAgent ?? null,
+        userAgent: shareableUserAgent(init.result?.userAgent),
         threads: rpcError(active.error),
         rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
       };
@@ -624,7 +697,7 @@ export async function runProbe({
 
     const limits = await client.request(100, "account/rateLimits/read", {});
     return {
-      userAgent: init.result?.userAgent ?? null,
+      userAgent: shareableUserAgent(init.result?.userAgent),
       threads: {
         ...summarizeThreads(
           dedupeThreads([
@@ -678,7 +751,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${formatFailure(error)}\n`);
     process.exitCode = 1;
   });
 }

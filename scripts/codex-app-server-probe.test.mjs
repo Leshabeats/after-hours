@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  appServerLaunch,
   assertProbeMethod,
   bindStdin,
+  formatFailure,
   shouldKillChild,
   terminateChild,
   redactDiagnostic,
@@ -376,6 +378,20 @@ describe("codex app-server probe", () => {
     assert.equal(rooted.includes("later"), true);
     assert.equal(rooted.startsWith("see "), true);
     assert.equal(escape, "failed \\n later");
+    const file = redactDiagnostic("see \\secret.txt later");
+    assert.equal(file.includes("secret"), false);
+    assert.equal(file.includes("later"), true);
+    assert.equal(file.startsWith("see "), true);
+    const fileSummary = summarizeThreads([
+      {
+        source: { custom: "\\secret.txt" },
+        originator: "\\secret.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(fileSummary).includes("secret"), false);
+    assert.equal(fileSummary.originators["[redacted]"], 1);
+    assert.equal(fileSummary.sources["[redacted]"], 1);
     const summary = summarizeThreads([
       {
         source: { custom: "\\Users\\Alice\\.codex\\sessions\\rollout.jsonl" },
@@ -534,13 +550,39 @@ describe("codex app-server probe", () => {
     const homeDrive = redactDiagnostic(
       "https://api.openai.com/v1/responses:C:\\Documents and Settings\\Jane\\.codex\\sessions\\rollout.jsonl later",
     );
-    for (const value of [home, homeWindows, homeSpaced, homeDrive]) {
+    const namedHome = redactDiagnostic(
+      "https://api.openai.com/v1/responses:~jane/.codex/sessions/rollout.jsonl later",
+    );
+    const namedWindows = redactDiagnostic(
+      "see ~jane\\AppData\\Codex\\sessions\\rollout.jsonl later",
+    );
+    const namedSlash = redactDiagnostic("see ~jane/.codex/sessions/rollout.jsonl later");
+    for (const value of [home, homeWindows, homeSpaced, homeDrive, namedHome]) {
+      assert.equal(value.startsWith("https://api.openai.com/v1/responses:"), true);
+    }
+    for (const value of [home, homeWindows, homeSpaced, homeDrive, namedHome, namedSlash]) {
       assert.equal(value.includes("Jane"), false);
       assert.equal(value.includes(".codex"), false);
       assert.equal(value.includes("rollout"), false);
       assert.equal(value.includes("later"), true);
-      assert.equal(value.startsWith("https://api.openai.com/v1/responses:"), true);
     }
+    assert.equal(namedHome.includes("jane"), false);
+    assert.equal(namedSlash.startsWith("see "), true);
+    assert.equal(namedSlash.includes("jane"), false);
+    assert.equal(namedWindows.includes("jane"), false);
+    assert.equal(namedWindows.includes("AppData"), false);
+    assert.equal(namedWindows.includes("later"), true);
+    assert.equal(namedWindows.startsWith("see "), true);
+    const namedSummary = summarizeThreads([
+      {
+        source: { custom: "~jane\\AppData\\Codex\\sessions\\rollout.jsonl" },
+        originator: "~jane\\AppData\\Codex\\sessions\\rollout.jsonl",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(namedSummary).includes("jane"), false);
+    assert.equal(namedSummary.originators["[redacted]"], 1);
+    assert.equal(namedSummary.sources["[redacted]"], 1);
     const signed = redactDiagnostic(
       "https://user:password@example.com/v1?token=secret#session=hidden failed",
     );
@@ -558,6 +600,19 @@ describe("codex app-server probe", () => {
     );
     assert.equal(redactDiagnostic("bob@example.co.uk."), "[redacted].");
     assert.equal(redactDiagnostic("alice@example.com.1"), "[redacted].1");
+    const pair = redactDiagnostic("auth failed for alice@example.com.bob@secret.personal.test");
+    assert.equal(pair.includes("secret"), false);
+    assert.equal(pair.includes("@"), false);
+    assert.equal(pair.startsWith("auth failed for [redacted]"), true);
+    const users = redactDiagnostic("users alice@foo.com.bob@bar.com.");
+    assert.equal(users.includes("@"), false);
+    assert.equal(users.includes("bar"), false);
+    assert.equal(users.endsWith("."), true);
+    assert.equal(stderrDetail(pair).includes("secret"), false);
+    const dottedHost = `a@${"a.".repeat(40_000)}1`;
+    const dottedStarted = Date.now();
+    assert.equal(redactDiagnostic(dottedHost), dottedHost);
+    assert.equal(Date.now() - dottedStarted < 1000, true);
     assert.equal(stderrDetail("alice@example.com").includes("@"), false);
     assert.equal(stderrDetail("alice@example.com.").includes("alice"), false);
     const dotted = summarizeThreads([
@@ -569,6 +624,58 @@ describe("codex app-server probe", () => {
     const started = Date.now();
     assert.equal(redactDiagnostic(letters), letters);
     assert.equal(Date.now() - started < 1000, true);
+  });
+
+  it("redacts a private user agent and a top-level argument path", async () => {
+    const failure = formatFailure(new Error("unknown argument --bad=/Users/alice/private"));
+    assert.equal(failure.includes("alice"), false);
+    assert.equal(failure.includes("/Users"), false);
+    assert.equal(failure.startsWith("unknown argument --bad="), true);
+    const unix = appServerLaunch("/usr/bin/codex", ["app-server"], "darwin");
+    const windows = appServerLaunch(
+      "C:\\Program Files\\nodejs\\codex.cmd",
+      ["app-server", "--listen", "stdio://"],
+      "win32",
+    );
+    assert.equal(unix.command, "/usr/bin/codex");
+    assert.deepEqual(unix.args, ["app-server"]);
+    assert.equal(windows.command.endsWith("cmd.exe"), true);
+    assert.deepEqual(windows.args.slice(0, 3), ["/d", "/s", "/c"]);
+    assert.equal(windows.args[3].includes("Program Files"), true);
+    assert.equal(windows.args[3].includes("app-server"), true);
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "agent.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: 'Codex Desktop alice@example.com /Users/alice/.codex' } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [] } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      const json = JSON.stringify(summary);
+      assert.equal(summary.userAgent, "[redacted]");
+      assert.equal(json.includes("alice"), false);
+      assert.equal(json.includes("/Users"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("redacts a remote URL path in an originator or custom source", () => {
