@@ -183,7 +183,9 @@ function isPathStart(text, index) {
   ) {
     return true;
   }
-  if (text[index] === "/" && previous !== "/" && previous !== ":") return true;
+  if (text[index] === "/" && previous !== "/" && !(previous === ":" && text[index + 1] === "/")) {
+    return true;
+  }
   if (
     /[A-Za-z]/.test(text[index] ?? "") &&
     text[index + 1] === ":" &&
@@ -196,32 +198,42 @@ function isPathStart(text, index) {
 }
 
 function pathEnd(text, index) {
-  let end = index;
-  while (end < text.length) {
-    const char = text[end];
-    if (char === "`" || char === '"' || char === "\n" || char === "\r") break;
-    if (char === " " || char === "\t") {
-      const rest = text.slice(end + 1);
-      const lineEnd = rest.search(/[\n\r]/);
-      const line = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
-      if (line.search(/[`"]/) !== -1) {
-        end += 1;
-        continue;
-      }
-      const separatorAhead = line.includes("/") || line.includes("\\");
-      const dotAhead = line.split(/\s+/).some((token) => token.includes("."));
-      if (separatorAhead || dotAhead) {
-        end += 1;
-        continue;
-      }
-      const segment = text.slice(index, end);
-      const lastSeparator = Math.max(segment.lastIndexOf("/"), segment.lastIndexOf("\\"));
-      const current = lastSeparator === -1 ? segment : segment.slice(lastSeparator + 1);
-      if (current.includes(".")) break;
-    }
-    end += 1;
+  let lineEnd = index;
+  let closer = -1;
+  while (lineEnd < text.length) {
+    const char = text[lineEnd];
+    if (char === "\n" || char === "\r") break;
+    if (closer === -1 && (char === "`" || char === '"')) closer = lineEnd;
+    lineEnd += 1;
   }
-  return end;
+  if (closer !== -1) return closer;
+
+  let lastRequired = index;
+  let cursor = index;
+  while (cursor < lineEnd) {
+    const char = text[cursor];
+    if (char === " " || char === "\t") {
+      cursor += 1;
+      continue;
+    }
+    let hasSeparator = false;
+    let hasDot = false;
+    while (cursor < lineEnd && text[cursor] !== " " && text[cursor] !== "\t") {
+      if (text[cursor] === "/" || text[cursor] === "\\") hasSeparator = true;
+      if (text[cursor] === ".") hasDot = true;
+      cursor += 1;
+    }
+    if (hasSeparator || hasDot) lastRequired = cursor;
+  }
+
+  let lastSeparator = -1;
+  for (let scan = index; scan < lineEnd; scan += 1) {
+    if (text[scan] === "/" || text[scan] === "\\") lastSeparator = scan;
+  }
+  for (let scan = lastSeparator + 1; scan < lineEnd; scan += 1) {
+    if (text[scan] === ".") return lastRequired;
+  }
+  return lineEnd;
 }
 
 const STDERR_LINE_LIMIT = 100_000;
@@ -230,8 +242,23 @@ const STDERR_LINE_LIMIT = 100_000;
  * Keep raw stderr only until a line can be redacted whole.
  * A rolling slice of the raw bytes can drop the leading `/` of a long path.
  */
+function firstBreak(text) {
+  const newline = text.indexOf("\n");
+  const carriage = text.indexOf("\r");
+  if (newline === -1) return carriage;
+  if (carriage === -1) return newline;
+  return Math.min(newline, carriage);
+}
+
 export function retainStderr(state, chunk) {
-  state.pending += String(chunk ?? "");
+  let text = String(chunk ?? "");
+  if (state.discardLine) {
+    const breakAt = firstBreak(text);
+    if (breakAt === -1) return state;
+    state.discardLine = false;
+    text = text.slice(breakAt + 1);
+  }
+  state.pending += text;
   const breakAt = Math.max(state.pending.lastIndexOf("\n"), state.pending.lastIndexOf("\r"));
   if (breakAt !== -1) {
     const complete = state.pending.slice(0, breakAt + 1);
@@ -241,6 +268,7 @@ export function retainStderr(state, chunk) {
   if (state.pending.length > STDERR_LINE_LIMIT) {
     state.safe = `${state.safe}${redactDiagnostic(state.pending)}`.slice(-2000);
     state.pending = "";
+    state.discardLine = true;
   }
   return state;
 }
@@ -281,6 +309,12 @@ function rpcError(message) {
   return { error: text || "request failed" };
 }
 
+export function bindStdin(stdin, rejectPending) {
+  stdin.on("error", (error) => {
+    rejectPending(new Error(`codex app-server stdin failed: ${error?.code || "unknown"}`));
+  });
+}
+
 function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const child = spawn(bin, args, {
     stdio: ["pipe", "pipe", "pipe"],
@@ -293,7 +327,6 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     retainStderr(stderrState, chunk);
   });
   child.stderr.on("error", () => {});
-  child.stdin.on("error", () => {});
 
   const rejectPending = (error) => {
     if (failure) return;
@@ -304,6 +337,8 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       waiter.reject(error);
     }
   };
+
+  bindStdin(child.stdin, rejectPending);
 
   child.on("error", (error) => {
     const reason = error.code || redactDiagnostic(error.message);

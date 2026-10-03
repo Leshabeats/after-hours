@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   assertProbeMethod,
+  bindStdin,
   redactDiagnostic,
   retainStderr,
   runProbe,
@@ -429,6 +431,38 @@ describe("codex app-server probe", () => {
     assert.equal(summary.originators["[redacted]"], 1);
   });
 
+  it("redacts an absolute path that follows a label colon", () => {
+    const labeled = redactDiagnostic("cwd:/alice/private");
+    const single = redactDiagnostic("cwd:/secret");
+    const uri = redactDiagnostic("see https://example.com later");
+    assert.equal(labeled.includes("alice"), false);
+    assert.equal(labeled.includes("private"), false);
+    assert.equal(labeled.startsWith("cwd:"), true);
+    assert.equal(single.includes("secret"), false);
+    assert.equal(single.startsWith("cwd:"), true);
+    assert.equal(uri.includes("example.com"), true);
+  });
+
+  it("redacts a long spaced path without a quadratic scan", () => {
+    const spaced = `/tmp/${"Private ".repeat(4000)}secret`;
+    const started = Date.now();
+    const redacted = redactDiagnostic(spaced);
+    assert.equal(Date.now() - started < 2000, true);
+    assert.equal(redacted.includes("Private"), false);
+    assert.equal(redacted.includes("secret"), false);
+  });
+
+  it("drops the rest of an oversized stderr line", () => {
+    const state = { safe: "", pending: "" };
+    retainStderr(state, `/${"n".repeat(100_000)}`);
+    assert.equal(state.discardLine, true);
+    retainStderr(state, "Jane Doe secret\nlater ok");
+    const detail = stderrDetail(stderrText(state));
+    assert.equal(detail.includes("Jane"), false);
+    assert.equal(detail.includes("secret"), false);
+    assert.equal(detail.includes("later ok"), true);
+  });
+
   it("redacts stderr before keeping the last 500 characters", () => {
     const text = `C:\\Users\\Jane Doe\\.codex\\sessions\\rollout.jsonl${"y".repeat(458)}`;
     const detail = stderrDetail(text);
@@ -711,6 +745,16 @@ describe("codex app-server probe", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("rejects pending requests when stdin fails", () => {
+    const stdin = new EventEmitter();
+    let rejected = null;
+    bindStdin(stdin, (error) => {
+      rejected = error;
+    });
+    stdin.emit("error", { code: "EPIPE" });
+    assert.match(rejected.message, /stdin failed: EPIPE/);
   });
 
   it("refuses a model turn", () => {
