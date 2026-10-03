@@ -590,6 +590,13 @@ describe("codex app-server probe", () => {
     const mailed = redactDiagnostic("auth failed for alice@example.com");
     assert.equal(mailed, "auth failed for [redacted]");
     assert.equal(redactDiagnostic("bob@example.co.uk"), "[redacted]");
+    assert.equal(redactDiagnostic("алиса@example.com"), "[redacted]");
+    assert.equal(redactDiagnostic("alice@пример.рф"), "[redacted]");
+    assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
+    const apostrophe = redactDiagnostic("wrote o'brien@example.com later");
+    assert.equal(apostrophe.includes("brien"), false);
+    assert.equal(apostrophe.includes("o'"), false);
+    assert.equal(apostrophe.includes("later"), true);
     assert.equal(
       redactDiagnostic("auth failed for alice@example.com."),
       "auth failed for [redacted].",
@@ -638,8 +645,10 @@ describe("codex app-server probe", () => {
       "win32",
     );
     assert.equal(unix.command, "/usr/bin/codex");
+    assert.equal(unix.verbatim, false);
     assert.deepEqual(unix.args, ["app-server"]);
     assert.equal(windows.command.endsWith("cmd.exe"), true);
+    assert.equal(windows.verbatim, true);
     assert.deepEqual(windows.args.slice(0, 3), ["/d", "/s", "/c"]);
     assert.equal(windows.args[3].includes("Program Files"), true);
     assert.equal(windows.args[3].includes("app-server"), true);

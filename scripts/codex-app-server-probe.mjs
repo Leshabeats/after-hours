@@ -430,8 +430,9 @@ export function redactDiagnostic(value) {
   );
 }
 
-const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
-const EMAIL_DOMAIN = /[A-Za-z0-9.-]/;
+const EMAIL_LOCAL = /[\p{L}0-9._%+\-'\u2019]/u;
+const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
+const EMAIL_TLD = /^\p{L}+$/u;
 
 /** Find addresses from each @. A greedy local-part regex retries every character of a long line. */
 function redactEmails(text) {
@@ -465,7 +466,7 @@ function emailEnd(text, at, domain) {
     if (dot <= at + 1) continue;
     const labelEnd = index + 1 < dots.length ? dots[index + 1] : domain;
     const tld = text.slice(dot + 1, labelEnd);
-    if (tld.length < 2 || !/^[A-Za-z]+$/.test(tld)) continue;
+    if (tld.length < 2 || !EMAIL_TLD.test(tld)) continue;
     if (text[labelEnd] === "@") continue;
     return labelEnd;
   }
@@ -508,11 +509,12 @@ function quoteCmd(value) {
 
 /** A Windows npm shim is codex.cmd. cmd.exe can start it; spawn cannot. */
 export function appServerLaunch(bin, args = [], platform = process.platform) {
-  if (platform !== "win32") return { command: bin, args };
+  if (platform !== "win32") return { command: bin, args, verbatim: false };
   const commandLine = [bin, ...args].map(quoteCmd).join(" ");
   return {
     command: process.env.ComSpec || "cmd.exe",
     args: ["/d", "/s", "/c", `"${commandLine}"`],
+    verbatim: true,
   };
 }
 
@@ -529,6 +531,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const launch = appServerLaunch(bin, args);
   const child = spawn(launch.command, launch.args, {
     stdio: ["pipe", "pipe", "pipe"],
+    ...(launch.verbatim ? { windowsVerbatimArguments: true } : {}),
   });
   const stderrState = { safe: "", pending: "" };
   let failure = null;
