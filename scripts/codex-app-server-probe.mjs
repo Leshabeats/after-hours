@@ -44,6 +44,16 @@ function bump(counts, key) {
   counts[key] = (counts[key] ?? 0) + 1;
 }
 
+function originLabel(origin) {
+  if (origin == null) return "null";
+  const text = String(origin);
+  const redacted = redactDiagnostic(text).replace(
+    /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    "[redacted]",
+  );
+  return redacted === text ? text : "[redacted]";
+}
+
 /** Counts only. Thread titles, previews, paths, and ids are not copied. */
 export function summarizeThreads(threads) {
   const sources = emptyCounts();
@@ -52,8 +62,7 @@ export function summarizeThreads(threads) {
   let uuidIds = 0;
   for (const thread of threads) {
     bump(sources, sourceLabel(thread?.source));
-    const origin = thread?.originator ?? null;
-    bump(originators, origin == null ? "null" : String(origin));
+    bump(originators, originLabel(thread?.originator));
     bump(statuses, statusLabel(thread?.status));
     if (typeof thread?.id === "string" && UUID.test(thread.id)) uuidIds += 1;
   }
@@ -197,6 +206,11 @@ function pathEnd(text, index) {
   return end;
 }
 
+/** Redact the whole stderr buffer, then keep the tail. A slice taken first can start mid-path. */
+export function stderrDetail(value) {
+  return redactDiagnostic(String(value ?? "").trim()).slice(-500);
+}
+
 /** Drop local paths and thread ids from text that may be printed. */
 export function redactDiagnostic(value) {
   const text = String(value ?? "");
@@ -254,7 +268,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   });
   child.on("exit", (code, signal) => {
     const why = signal ? `signal ${signal}` : `code ${code}`;
-    const detail = redactDiagnostic(stderr.trim().slice(-500));
+    const detail = stderrDetail(stderr);
     rejectPending(
       new Error(
         detail ? `codex app-server exited (${why}): ${detail}` : `codex app-server exited (${why})`,
@@ -288,7 +302,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       }
       const timer = setTimeout(() => {
         pending.delete(id);
-        const detail = redactDiagnostic(stderr.trim().slice(-500));
+        const detail = stderrDetail(stderr);
         reject(
           new Error(
             detail ? `timeout waiting for ${method}: ${detail}` : `timeout waiting for ${method}`,

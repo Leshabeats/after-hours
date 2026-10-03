@@ -7,6 +7,7 @@ import {
   assertProbeMethod,
   redactDiagnostic,
   runProbe,
+  stderrDetail,
   summarizeRateLimits,
   summarizeThreads,
 } from "./codex-app-server-probe.mjs";
@@ -43,6 +44,36 @@ describe("codex app-server probe", () => {
     );
     assert.equal(JSON.stringify(summary).includes("secret"), false);
     assert.equal(JSON.stringify(summary).includes("0199a0e0"), false);
+  });
+
+  it("redacts originator paths, ids, and emails", () => {
+    const summary = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        source: "cli",
+        originator: "/Users/alice/private/0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c22",
+        status: { type: "idle" },
+      },
+      {
+        id: "also-not-a-uuid",
+        source: "cli",
+        originator: "alice@example.com",
+        status: { type: "idle" },
+      },
+      {
+        id: "still-not-a-uuid",
+        source: "cli",
+        originator: "Codex Desktop",
+        status: { type: "idle" },
+      },
+    ]);
+    const json = JSON.stringify(summary);
+    assert.equal(json.includes("alice"), false);
+    assert.equal(json.includes("/Users"), false);
+    assert.equal(json.includes("0199a0e0"), false);
+    assert.equal(json.includes("example.com"), false);
+    assert.equal(summary.originators["[redacted]"], 2);
+    assert.equal(summary.originators["Codex Desktop"], 1);
   });
 
   it("counts originators that collide with object prototype names", () => {
@@ -329,6 +360,16 @@ describe("codex app-server probe", () => {
     assert.equal(longer.includes("Private"), false);
     assert.equal(longer.includes("Folder"), false);
     assert.equal(longer.startsWith("permission denied:"), true);
+  });
+
+  it("redacts stderr before keeping the last 500 characters", () => {
+    const text = `C:\\Users\\Jane Doe\\.codex\\sessions\\rollout.jsonl${"y".repeat(458)}`;
+    const detail = stderrDetail(text);
+    assert.equal(text.slice(-500).includes("Jane"), true);
+    assert.equal(detail.includes("Jane"), false);
+    assert.equal(detail.includes("Doe"), false);
+    assert.equal(detail.includes(".codex"), false);
+    assert.equal(detail.length <= 500, true);
   });
 
   it("reads rate limits when the thread list fails", async () => {
