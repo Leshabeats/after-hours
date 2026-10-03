@@ -177,6 +177,12 @@ function isPathStart(text, index) {
   if (text.startsWith("\\\\", index) && previous !== "\\" && !/[A-Za-z0-9]/.test(previous ?? "")) {
     return true;
   }
+  if (
+    text.slice(index, index + 7).toLowerCase() === "file://" &&
+    !/[A-Za-z0-9]/.test(previous ?? "")
+  ) {
+    return true;
+  }
   if (text[index] === "/" && previous !== "/" && previous !== ":") return true;
   if (
     /[A-Za-z]/.test(text[index] ?? "") &&

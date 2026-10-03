@@ -405,6 +405,30 @@ describe("codex app-server probe", () => {
     assert.equal(longer.startsWith("permission denied:"), true);
   });
 
+  it("redacts file URLs including the host", () => {
+    const file = redactDiagnostic("see file:///secret-file later");
+    const host = redactDiagnostic("see file://private-host/share later");
+    const summary = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        source: { custom: "file:///secret-file" },
+        originator: "file://private-host/share",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(file.startsWith("see "), true);
+    assert.equal(file.includes("secret-file"), false);
+    assert.equal(file.includes("file:"), false);
+    assert.equal(host.startsWith("see "), true);
+    assert.equal(host.includes("private-host"), false);
+    assert.equal(host.includes("share"), false);
+    const json = JSON.stringify(summary);
+    assert.equal(json.includes("secret-file"), false);
+    assert.equal(json.includes("private-host"), false);
+    assert.equal(summary.sources["[redacted]"], 1);
+    assert.equal(summary.originators["[redacted]"], 1);
+  });
+
   it("redacts stderr before keeping the last 500 characters", () => {
     const text = `C:\\Users\\Jane Doe\\.codex\\sessions\\rollout.jsonl${"y".repeat(458)}`;
     const detail = stderrDetail(text);
