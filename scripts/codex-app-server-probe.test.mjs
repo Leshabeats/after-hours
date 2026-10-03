@@ -231,6 +231,24 @@ describe("codex app-server probe", () => {
     assert.equal(JSON.stringify(summary).includes("secret-balance"), false);
   });
 
+  it("keeps the reset-credit count and drops credit ids", () => {
+    const summary = summarizeRateLimits({
+      ordinaryUsageAllowed: false,
+      rateLimits: { primary: { usedPercent: 100, windowDurationMins: 60, resetsAt: 1 } },
+      rateLimitResetCredits: {
+        availableCount: 2,
+        credits: [{ id: "secret-credit-id", title: "secret-title", description: "secret-body" }],
+      },
+    });
+    const missing = summarizeRateLimits({ rateLimits: { primary: null } });
+
+    assert.equal(summary.resetCreditsAvailable, 2);
+    assert.equal(missing.resetCreditsAvailable, null);
+    assert.equal(JSON.stringify(summary).includes("secret-credit"), false);
+    assert.equal(JSON.stringify(summary).includes("secret-title"), false);
+    assert.equal(JSON.stringify(summary).includes("secret-body"), false);
+  });
+
   it("treats a missing limit window as unavailable", () => {
     const summary = summarizeRateLimits({ rateLimits: { primary: null } });
     assert.equal(summary.primary, null);
@@ -449,12 +467,68 @@ describe("codex app-server probe", () => {
       assert.equal(summary.threads.count, 2);
       assert.equal(summary.threads.uuidIds, 2);
       assert.equal(summary.threads.scope, "interactive");
+      assert.equal(summary.threads.extraSourcesIncluded, true);
       assert.equal(summary.threads.archivedIncluded, true);
       assert.equal(summary.threads.more, false);
       assert.equal(summary.threads.originators["live-origin"], 1);
       assert.equal(summary.threads.originators["archived-origin"], 1);
       assert.equal(JSON.stringify(summary).includes("0199a0e0"), false);
       assert.equal(summary.rateLimits.primary, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts the default interactive list and the extra source kinds once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "sources.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    const archived = message.params && message.params.archived === true;",
+        "    const kinds = message.params && message.params.sourceKinds;",
+        "    const extra = Array.isArray(kinds);",
+        "    const wrong = extra && JSON.stringify(kinds) !== JSON.stringify(['exec', 'appServer', 'unknown']);",
+        "    const thread = {",
+        "      id: archived",
+        "        ? extra ? '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c24' : '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c23'",
+        "        : extra ? '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c22' : '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c21',",
+        "      source: extra ? 'exec' : { custom: 'atlas' },",
+        "      originator: wrong ? 'wrong-filter' : extra ? 'exec-origin' : 'atlas-origin',",
+        "      status: { type: 'idle' },",
+        "    };",
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [thread], nextCursor: null } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: null }, rateLimitResetCredits: { availableCount: 1, credits: [{ id: 'secret-credit-id' }] } } }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.threads.count, 4);
+      assert.equal(summary.threads.sources["custom:atlas"], 2);
+      assert.equal(summary.threads.sources.exec, 2);
+      assert.equal(summary.threads.originators["atlas-origin"], 2);
+      assert.equal(summary.threads.originators["exec-origin"], 2);
+      assert.equal(summary.threads.originators["wrong-filter"], undefined);
+      assert.equal(summary.threads.extraSourcesIncluded, true);
+      assert.equal(summary.rateLimits.resetCreditsAvailable, 1);
+      assert.equal(JSON.stringify(summary).includes("secret-credit-id"), false);
+      assert.equal(JSON.stringify(summary).includes("0199a0e0"), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

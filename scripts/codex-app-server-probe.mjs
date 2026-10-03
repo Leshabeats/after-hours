@@ -10,7 +10,8 @@ export const PROBE_METHODS = new Set([
   "account/rateLimits/read",
 ]);
 
-export const INTERACTIVE_SOURCES = ["cli", "vscode", "exec", "appServer", "unknown"];
+/** Kinds outside the server's default interactive allowlist. Custom kinds such as atlas cannot be named in this enum. */
+export const EXTRA_SOURCE_KINDS = ["exec", "appServer", "unknown"];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -137,6 +138,10 @@ export function summarizeRateLimits(result) {
     rateLimitReachedType: limits.rateLimitReachedType ?? null,
     ...spendControlOf(limits),
     credits: creditsOf(limits),
+    resetCreditsAvailable:
+      typeof result?.rateLimitResetCredits?.availableCount === "number"
+        ? result.rateLimitResetCredits.availableCount
+        : null,
     buckets,
   };
 }
@@ -328,17 +333,31 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   return { request, notify, stop, child };
 }
 
-async function listThreads(client, { pages, limit, archived, idBase }) {
+function dedupeThreads(threads) {
+  const seen = new Set();
+  const unique = [];
+  for (const thread of threads) {
+    const id = typeof thread?.id === "string" ? thread.id : "";
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    unique.push(thread);
+  }
+  return unique;
+}
+
+async function listThreads(client, { pages, limit, archived, idBase, sourceKinds }) {
   const threads = [];
   let more = false;
   let cursor = null;
   for (let page = 0; page < pages; page += 1) {
     const listed = await client.request(idBase + page, "thread/list", {
       limit,
-      sourceKinds: INTERACTIVE_SOURCES,
       modelProviders: [],
       useStateDbOnly: true,
       archived,
+      ...(sourceKinds ? { sourceKinds } : {}),
       ...(cursor ? { cursor } : {}),
     });
     if (listed.error) return { error: listed.error, threads, more };
@@ -377,18 +396,46 @@ export async function runProbe({
         rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
       };
     }
-    const archived = await listThreads(client, { pages, limit, archived: true, idBase: 20 });
+    const extra = await listThreads(client, {
+      pages,
+      limit,
+      archived: false,
+      idBase: 20,
+      sourceKinds: EXTRA_SOURCE_KINDS,
+    });
+    const archived = await listThreads(client, { pages, limit, archived: true, idBase: 40 });
+    const archivedExtra = await listThreads(client, {
+      pages,
+      limit,
+      archived: true,
+      idBase: 60,
+      sourceKinds: EXTRA_SOURCE_KINDS,
+    });
 
     const limits = await client.request(100, "account/rateLimits/read", {});
-    const archivedThreads = archived.error ? [] : archived.threads;
+    const extraError = extra.error ?? archivedExtra.error;
+    const archivedError = archived.error ?? archivedExtra.error;
     return {
       userAgent: init.result?.userAgent ?? null,
       threads: {
-        ...summarizeThreads([...active.threads, ...archivedThreads]),
-        more: active.more || (!archived.error && archived.more),
+        ...summarizeThreads(
+          dedupeThreads([
+            ...active.threads,
+            ...(extra.error ? [] : extra.threads),
+            ...(archived.error ? [] : archived.threads),
+            ...(archivedExtra.error ? [] : archivedExtra.threads),
+          ]),
+        ),
+        more:
+          active.more ||
+          (!extra.error && extra.more) ||
+          (!archived.error && archived.more) ||
+          (!archivedExtra.error && archivedExtra.more),
         scope: "interactive",
-        archivedIncluded: !archived.error,
-        ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
+        extraSourcesIncluded: !extra.error && !archivedExtra.error,
+        archivedIncluded: !archived.error && !archivedExtra.error,
+        ...(extraError ? { extraSourceError: rpcError(extraError).error } : {}),
+        ...(archivedError ? { archivedError: rpcError(archivedError).error } : {}),
       },
       rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
     };
@@ -402,13 +449,18 @@ async function main() {
   if (options.help) {
     process.stdout.write(
       "Usage: node scripts/codex-app-server-probe.mjs [--pages N] [--limit N]\n" +
-        "Reads interactive stored thread counts (cli, vscode, exec, appServer, unknown), including archived threads. Sub-agent threads are not included. Does not start a model turn.\n",
+        "Reads the default interactive thread list plus exec, appServer, and unknown, including archived threads. Sub-agent threads are not included. Does not start a model turn.\n",
     );
     return;
   }
   const summary = await runProbe(options);
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-  if (summary.threads?.error || summary.threads?.archivedError || summary.rateLimits?.error) {
+  if (
+    summary.threads?.error ||
+    summary.threads?.archivedError ||
+    summary.threads?.extraSourceError ||
+    summary.rateLimits?.error
+  ) {
     process.exitCode = 1;
   }
 }
