@@ -438,8 +438,6 @@ export async function runProbe({
     });
 
     const limits = await client.request(100, "account/rateLimits/read", {});
-    const extraError = extra.error ?? archivedExtra.error;
-    const archivedError = archived.error ?? archivedExtra.error;
     return {
       userAgent: init.result?.userAgent ?? null,
       threads: {
@@ -457,10 +455,14 @@ export async function runProbe({
           (!archived.error && archived.more) ||
           (!archivedExtra.error && archivedExtra.more),
         scope: "interactive",
-        extraSourcesIncluded: !extra.error && !archivedExtra.error,
-        archivedIncluded: !archived.error && !archivedExtra.error,
-        ...(extraError ? { extraSourceError: rpcError(extraError).error } : {}),
-        ...(archivedError ? { archivedError: rpcError(archivedError).error } : {}),
+        extraSourcesIncluded: !extra.error,
+        archivedIncluded: !archived.error,
+        archivedExtraIncluded: !archivedExtra.error,
+        ...(extra.error ? { extraSourceError: rpcError(extra.error).error } : {}),
+        ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
+        ...(archivedExtra.error
+          ? { archivedExtraError: rpcError(archivedExtra.error).error }
+          : {}),
       },
       rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
     };
@@ -483,6 +485,7 @@ async function main() {
   if (
     summary.threads?.error ||
     summary.threads?.archivedError ||
+    summary.threads?.archivedExtraError ||
     summary.threads?.extraSourceError ||
     summary.rateLimits?.error
   ) {

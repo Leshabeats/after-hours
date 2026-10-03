@@ -593,11 +593,74 @@ describe("codex app-server probe", () => {
     try {
       const summary = await runProbe({ bin: process.execPath, args: [helper] });
       assert.equal(summary.threads.count, 1);
+      assert.equal(summary.threads.extraSourcesIncluded, true);
+      assert.equal(summary.threads.extraSourceError, undefined);
       assert.equal(summary.threads.archivedIncluded, false);
+      assert.equal(summary.threads.archivedExtraIncluded, false);
       assert.match(summary.threads.archivedError, /^-32603: /);
+      assert.match(summary.threads.archivedExtraError, /^-32603: /);
       assert.equal(summary.threads.archivedError.includes("secret-archive"), false);
+      assert.equal(summary.threads.archivedExtraError.includes("secret-archive"), false);
       assert.equal(summary.threads.originators["live-origin"], 1);
       assert.equal(summary.rateLimits.primary.usedPercent, 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an archived extra-source failure without blaming the other slices", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "archived-extra-error.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    const archived = message.params && message.params.archived === true;",
+        "    const extra = Array.isArray(message.params && message.params.sourceKinds);",
+        "    if (archived && extra) {",
+        "      process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32603, message: 'archived extra /tmp/secret-extra.jsonl' } }) + '\\n');",
+        "      return;",
+        "    }",
+        "    const thread = {",
+        "      id: archived",
+        "        ? '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c23'",
+        "        : extra ? '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c22' : '0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c21',",
+        "      source: extra ? 'exec' : 'cli',",
+        "      originator: archived ? 'archived-origin' : extra ? 'exec-origin' : 'live-origin',",
+        "      status: { type: 'idle' },",
+        "    };",
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [thread], nextCursor: null } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: null } } }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.threads.count, 3);
+      assert.equal(summary.threads.extraSourcesIncluded, true);
+      assert.equal(summary.threads.archivedIncluded, true);
+      assert.equal(summary.threads.archivedExtraIncluded, false);
+      assert.equal(summary.threads.extraSourceError, undefined);
+      assert.equal(summary.threads.archivedError, undefined);
+      assert.match(summary.threads.archivedExtraError, /^-32603: /);
+      assert.equal(summary.threads.archivedExtraError.includes("secret-extra"), false);
+      assert.equal(summary.threads.originators["live-origin"], 1);
+      assert.equal(summary.threads.originators["exec-origin"], 1);
+      assert.equal(summary.threads.originators["archived-origin"], 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
