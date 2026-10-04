@@ -580,16 +580,15 @@ function windowsBodyAt(text) {
   let qualifies = false;
   for (let cursor = text.length - 1; cursor >= 0; cursor -= 1) {
     const char = text[cursor];
-    if (
-      char === "\n" ||
-      char === "\r" ||
-      char === "`" ||
-      char === '"' ||
-      char === ":" ||
-      char === "="
-    ) {
+    if (char === "\n" || char === "\r" || char === "`" || char === '"' || char === ":") {
       seenRight = false;
       qualifies = false;
+      continue;
+    }
+    if (char === "=") {
+      if (!seenRight) {
+        qualifies = false;
+      }
       continue;
     }
     if (char === " " || char === "\t") {
@@ -887,11 +886,17 @@ function windowsPathStarts(text) {
       char === "\r" ||
       char === "`" ||
       char === '"' ||
-      char === ":" ||
-      char === "="
+      char === ":"
     ) {
       seenSep = 0;
       seenDot = 0;
+      continue;
+    }
+    if (char === "=") {
+      if (!seenSep) {
+        seenSep = 0;
+        seenDot = 0;
+      }
       continue;
     }
     if (char === "\\") seenSep = 1;
@@ -1414,13 +1419,22 @@ export function redactDiagnostic(value) {
   );
 }
 
-/** RFC 5322 dtext, plus the folding space a domain literal may contain. */
+/** RFC 5322 dtext or a quoted pair, plus folding space. */
 function isDomainLiteral(body) {
   let printable = false;
-  for (const char of body) {
-    const code = char.codePointAt(0);
+  for (let index = 0; index < body.length; index += 1) {
+    const code = body.codePointAt(index);
+    if (code > 0xffff) index += 1;
+    if (code === 92) {
+      const next = body.codePointAt(index + 1);
+      if (next == null || next === 10 || next === 13) return false;
+      if (next !== 32 && next !== 9 && (next < 33 || next > 126)) return false;
+      printable = true;
+      index += next > 0xffff ? 2 : 1;
+      continue;
+    }
     if (code === 32 || code === 9) continue;
-    if (code < 33 || code > 126 || code === 91 || code === 92 || code === 93) return false;
+    if (code < 33 || code > 126 || code === 91 || code === 93) return false;
     printable = true;
   }
   return printable;
@@ -1428,7 +1442,19 @@ function isDomainLiteral(body) {
 
 function addressLiteralEnd(text, at) {
   if (text[at + 1] !== "[") return -1;
-  const close = text.indexOf("]", at + 2);
+  let close = -1;
+  for (let index = at + 2; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "]") {
+      close = index;
+      break;
+    }
+    if (char === "\n" || char === "\r" || char === "[") return -1;
+  }
   if (close === -1 || !isDomainLiteral(text.slice(at + 2, close))) return -1;
   return close + 1;
 }
@@ -1743,7 +1769,7 @@ let groupQuote = null;
 function insideGroup(text, index) {
   if (groupText !== text) {
     groupText = text;
-    groupParen = new Uint16Array(text.length);
+    groupParen = new Uint32Array(text.length);
     groupQuote = new Uint8Array(text.length);
     let paren = 0;
     let quote = 0;
@@ -2171,6 +2197,21 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"], timeoutMs =
       return;
     }
     if (message == null || typeof message !== "object" || Array.isArray(message)) return;
+    if (typeof message.method === "string") {
+      if (message.id != null) {
+        try {
+          child.stdin.write(
+            `${JSON.stringify({
+              id: message.id,
+              error: { code: -32601, message: "method not supported" },
+            })}\n`,
+          );
+        } catch {
+          // The server asked for something this probe does not do.
+        }
+      }
+      return;
+    }
     const waiter = message.id == null ? undefined : pending.get(message.id);
     if (!waiter) return;
     clearTimeout(waiter.timer);

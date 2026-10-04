@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -404,6 +404,11 @@ describe("codex app-server probe", () => {
     assert.equal(file.includes("later"), true);
     assert.equal(file.startsWith("see "), true);
     const relative = redactDiagnostic("see PrivateProject\\secrets\\key.txt later");
+    assert.equal(redactDiagnostic("Private=Customer\\secrets\\key.txt"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("note Private=Customer\\secrets\\key.txt later"),
+      "note [redacted] later",
+    );
     assert.equal(relative.includes("PrivateProject"), false);
     assert.equal(relative.includes("secrets"), false);
     assert.equal(relative.includes("key"), false);
@@ -1358,7 +1363,11 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@[IPv6:2001:db8::1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[private.example] later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("alice@[private\\]example]"), "[redacted]");
     assert.equal(redactDiagnostic("see alice@[ later"), "see alice@[ later");
+    const deepAt = redactDiagnostic(`${"(".repeat(65536)}alice@★`);
+    assert.equal(deepAt.includes("alice"), false);
+    assert.equal(deepAt.endsWith("[redacted]★"), true);
     assert.equal(redactDiagnostic("alice@example.xn--p1ai"), "[redacted]");
     const punycode = redactDiagnostic("wrote alice@example.xn--p1ai later");
     assert.equal(punycode.includes("alice"), false);
@@ -1498,6 +1507,51 @@ describe("codex app-server probe", () => {
       const cleanSummary = await runProbe({ bin: process.execPath, args: [clean] });
       assert.equal(cleanSummary.userAgent, agent);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers a server request without taking the pending response", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const log = join(dir, "requests.txt");
+    const helper = join(dir, "agent.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { appendFileSync } from "node:fs";',
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        "  if (message.method == null && message.error) {",
+        "    appendFileSync(process.env.PROBE_LOG, String(message.id) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "initialize") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, method: 'account/chatgptAuthTokens/refresh' }) + '\\n');",
+        "    process.stdout.write(JSON.stringify({ id: 999, method: 'account/chatgptAuthTokens/refresh' }) + '\\n');",
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: 'codex' } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [] } }) + '\\n');",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    process.env.PROBE_LOG = log;
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.userAgent, "codex");
+      const ids = readFileSync(log, "utf8").trim().split("\n");
+      assert.deepEqual(ids.sort(), ["1", "999"]);
+    } finally {
+      delete process.env.PROBE_LOG;
       rmSync(dir, { recursive: true, force: true });
     }
   });
