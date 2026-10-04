@@ -938,23 +938,6 @@ function isVersionSlash(text, index) {
   return /\d/.test(text[cursor] ?? "");
 }
 
-const PATH_PUNCTUATION = new Set([
-  "&",
-  "#",
-  "%",
-  "!",
-  "~",
-  ",",
-  ";",
-  "$",
-  "^",
-  "{",
-  "}",
-  "[",
-  "]",
-  "@",
-]);
-
 function isPathTokenChar(char) {
   return (
     isWordChar(char) ||
@@ -1044,6 +1027,21 @@ function markPosixPrefix(text, marks, pathStart) {
   }
 }
 
+/** Code point immediately before `index`. A slash check must not see a surrogate half. */
+function charBefore(text, index) {
+  if (index <= 0) return "";
+  const unit = text.charCodeAt(index - 1);
+  const start = unit >= 0xdc00 && unit <= 0xdfff ? index - 2 : index - 1;
+  if (start < 0) return "";
+  return pointAt(text, start)?.char ?? "";
+}
+
+/** `--bad=/Users/...` keeps the flag. A slash continues a name only after a path character. */
+function slashContinuesToken(text, slashIndex) {
+  const before = charBefore(text, slashIndex);
+  return before === "/" || isPathTokenChar(before);
+}
+
 function isRelativePosixPath(text, index) {
   if (!isWordStart(text, index)) return false;
   if (posixText !== text) {
@@ -1051,6 +1049,7 @@ function isRelativePosixPath(text, index) {
     posixAt = new Uint8Array(text.length);
     let cursor = 0;
     let barrenUntil = 0;
+    let cachedSlash = -1;
     while (cursor < text.length) {
       if (!isWordStart(text, cursor)) {
         cursor += 1;
@@ -1065,15 +1064,30 @@ function isRelativePosixPath(text, index) {
           stoppedOnBackslash = true;
           break;
         }
-        if (PATH_PUNCTUATION.has(char)) {
-          let look = end + 1;
-          let pathAfter = false;
-          if (look >= barrenUntil) {
+        if (char === " " || char === "\t" || char === "(") {
+          if (PATH_CLAUSE.has(text.slice(cursor, end))) break;
+          const slash = posixParenContinuation(text, end);
+          if (slash < 0) break;
+          end = slash;
+          continue;
+        }
+        const point = pointAt(text, end);
+        const glyph = point?.char ?? char;
+        if (!isPathTokenChar(glyph) && glyph !== "/") {
+          // Any mark stays in the name when a later slash belongs to this path.
+          // One failed look sets the bound, so a long `a|` run stays linear.
+          if (end < barrenUntil) break;
+          let pathAfter = cachedSlash > end;
+          if (!pathAfter) {
+            let look = end + (point?.size ?? 1);
             while (look < text.length) {
               const next = pointAt(text, look);
               const nextChar = next?.char ?? text[look];
               if (nextChar === "/") {
-                pathAfter = true;
+                if (slashContinuesToken(text, look)) {
+                  pathAfter = true;
+                  cachedSlash = look;
+                }
                 break;
               }
               if (
@@ -1086,25 +1100,14 @@ function isRelativePosixPath(text, index) {
               ) {
                 break;
               }
-              if (!isPathTokenChar(nextChar) && !PATH_PUNCTUATION.has(nextChar)) break;
               look += next?.size ?? 1;
             }
             if (!pathAfter) barrenUntil = look;
           }
           if (!pathAfter) break;
-          end += 1;
+          end += point?.size ?? 1;
           continue;
         }
-        if (char === " " || char === "\t" || char === "(") {
-          if (PATH_CLAUSE.has(text.slice(cursor, end))) break;
-          const slash = posixParenContinuation(text, end);
-          if (slash < 0) break;
-          end = slash;
-          continue;
-        }
-        const point = pointAt(text, end);
-        const glyph = point?.char ?? char;
-        if (!isPathTokenChar(glyph) && glyph !== "/") break;
         if (glyph === "/") slashes.push(end);
         end += point?.size ?? 1;
       }

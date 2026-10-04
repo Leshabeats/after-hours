@@ -651,6 +651,10 @@ describe("codex app-server probe", () => {
     const punctuatedStarted = Date.now();
     assert.equal(redactDiagnostic(punctuated), punctuated);
     assert.equal(Date.now() - punctuatedStarted < 1000, true);
+    const glued = `${"a|".repeat(16000)}b/c/d.txt`;
+    const gluedStarted = Date.now();
+    assert.equal(redactDiagnostic(glued), "[redacted]");
+    assert.equal(Date.now() - gluedStarted < 1000, true);
     assert.equal(missing.startsWith("Missing "), true);
     assert.equal(missing.includes("sessions"), false);
     assert.equal(missing.includes("Jane"), false);
@@ -868,6 +872,11 @@ describe("codex app-server probe", () => {
     );
     assert.equal(redactDiagnostic("error R&D/client/secrets/key.txt"), "error [redacted]");
     assert.equal(redactDiagnostic("see R&D later"), "see R&D later");
+    assert.equal(redactDiagnostic("error Private=Customer/secrets/key.txt"), "error [redacted]");
+    assert.equal(redactDiagnostic("see file|name/secrets/key.txt later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see file?name/secrets/key.txt later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("note file:name/secrets/key.txt"), "note [redacted]");
+    assert.equal(redactDiagnostic("at 12:30 later"), "at 12:30 later");
     const punctPath = summarizeThreads([
       {
         source: { custom: "R&D/client/secrets/key.txt" },
@@ -880,6 +889,19 @@ describe("codex app-server probe", () => {
     assert.equal(punctJson.includes("secrets"), false);
     assert.equal(punctPath.originators["[redacted]"], 1);
     assert.equal(punctPath.sources["[redacted]"], 1);
+    const equalsPath = summarizeThreads([
+      {
+        source: { custom: "Private=Customer/secrets/key.txt" },
+        originator: "file|name/secrets/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const equalsJson = JSON.stringify(equalsPath);
+    assert.equal(equalsJson.includes("Private"), false);
+    assert.equal(equalsJson.includes("Customer"), false);
+    assert.equal(equalsJson.includes("file|name"), false);
+    assert.equal(equalsPath.originators["[redacted]"], 1);
+    assert.equal(equalsPath.sources["[redacted]"], 1);
     const atPath = summarizeThreads([
       {
         source: { custom: "project@client/secrets/key.txt" },
