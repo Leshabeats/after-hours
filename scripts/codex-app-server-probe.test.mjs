@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   appServerLaunch,
+  appServerSpawnOptions,
   assertProbeMethod,
   bindStdin,
   bindStdout,
@@ -733,6 +734,25 @@ describe("codex app-server probe", () => {
       redactDiagnostic("see PrivateProject/secrets Please retry"),
       "see [redacted] retry",
     );
+    assert.equal(redactDiagnostic("see PrivateProject/secrets later."), "see [redacted] later.");
+    assert.equal(redactDiagnostic("see sessions/Jane Doe."), "see [redacted].");
+    assert.equal(
+      redactDiagnostic("Error reading PrivateProject/secrets v2.0 now"),
+      "Error reading [redacted] v2.0 now",
+    );
+    assert.equal(
+      redactDiagnostic("see PrivateProject/secrets File.txt later"),
+      "see [redacted] File.txt later",
+    );
+    assert.equal(
+      redactDiagnostic("failed (os error 3)/tmp/secret.txt"),
+      "failed (os error 3)[redacted]",
+    );
+    assert.equal(redactDiagnostic("Error (timeout)/tmp/secret.txt"), "Error (timeout)[redacted]");
+    const letter = "\u{10400}";
+    const supplementaryPath = redactDiagnostic(`${letter}${letter}/secrets/key.txt`);
+    assert.equal(supplementaryPath.includes(letter), false);
+    assert.equal(redactDiagnostic(`alice@${letter}${letter}.com`), "[redacted]");
     assert.equal(
       redactDiagnostic("see Private Project/secrets/key.txt later"),
       "see [redacted] later",
@@ -1906,6 +1926,29 @@ describe("codex app-server probe", () => {
     });
     afterExit[0]();
     assert.equal(exited.exitCode, 0);
+    const groupSignals = [];
+    const grouped = {
+      pid: 9,
+      exitCode: null,
+      signalCode: null,
+      kill() {
+        throw new Error("direct pid signal");
+      },
+      killGroup(signal) {
+        groupSignals.push(signal);
+      },
+    };
+    const groupLater = [];
+    terminateChild(grouped, "linux", undefined, (fn) => {
+      groupLater.push(fn);
+      return { unref() {} };
+    });
+    assert.deepEqual(groupSignals, ["SIGTERM"]);
+    grouped.exitCode = 0;
+    groupLater[0]();
+    assert.deepEqual(groupSignals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(appServerSpawnOptions({ verbatim: false }, "linux").detached, true);
+    assert.equal(appServerSpawnOptions({ verbatim: false }, "win32").detached, undefined);
     const ended = [];
     const killed = [];
     const windows = {

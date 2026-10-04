@@ -600,6 +600,25 @@ function bareNameChar(char) {
   return isWordChar(char) || char === "'" || char === "\u2019" || char === "_" || char === "-";
 }
 
+/** A slash pair keeps its tail. A sentence period stays. A dot that another scan does not own does not drop the pair. */
+function extensionlessSlashEnd(text, end) {
+  let cursor = end;
+  while (cursor < text.length) {
+    let after = cursor;
+    while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
+    if (after === cursor || !bareNameChar(text[after])) return cursor;
+    let wordEnd = after + 1;
+    while (wordEnd < text.length && bareNameChar(text[wordEnd])) wordEnd += 1;
+    const word = text.slice(after, wordEnd);
+    if (word === word.toLowerCase()) return cursor;
+    const follow = text[wordEnd] ?? "";
+    if (follow === "." && !bareNameChar(text[wordEnd + 1] ?? "")) return wordEnd;
+    if (follow === "\\" || follow === "/" || follow === ".") return cursor;
+    cursor = wordEnd;
+  }
+  return cursor;
+}
+
 /** Include capitalized words. A `\\`, `/`, or `.` means the existing path scan owns the line. */
 function barePairEndWithNames(text, end) {
   let cursor = end;
@@ -697,7 +716,7 @@ function bareWindowsPairEnd(text, index) {
           end - split >= 3 &&
           hasMixedCase(text, start, end)
         ) {
-          const named = barePairEndWithNames(text, end);
+          const named = extensionlessSlashEnd(text, end);
           if (named >= end) bareEnds[posixPairStart(text, start)] = named;
         }
         continue;
@@ -732,8 +751,24 @@ function isWordChar(char) {
   return /[\p{L}\p{N}\p{M}]/u.test(char ?? "");
 }
 
+/** One Unicode scalar. A low surrogate is the tail of the previous scalar. */
+function pointAt(text, index) {
+  if (index < 0 || index >= text.length) return null;
+  const unit = text.charCodeAt(index);
+  if (unit >= 0xdc00 && unit <= 0xdfff) return null;
+  const point = text.codePointAt(index);
+  if (point === undefined) return null;
+  return { char: String.fromCodePoint(point), size: point > 0xffff ? 2 : 1 };
+}
+
 function isWordStart(text, index) {
-  return isWordChar(text[index]) && !isWordChar(text[index - 1]);
+  const current = pointAt(text, index);
+  if (!current || !isWordChar(current.char)) return false;
+  if (index === 0) return true;
+  const previousUnit = text.charCodeAt(index - 1);
+  const previousStart = previousUnit >= 0xdc00 && previousUnit <= 0xdfff ? index - 2 : index - 1;
+  const previous = pointAt(text, previousStart);
+  return !previous || !isWordChar(previous.char);
 }
 
 function wordsStayOnOneLine(text, left, right) {
@@ -884,6 +919,7 @@ function posixParenContinuation(text, index) {
     for (let scan = look; scan < text.length; scan += 1) {
       const char = text[scan];
       if (char === "\n" || char === "\r" || char === "/") break;
+      if (char === " " || char === "\t" || char === "\n" || char === "\r") return -1;
       if (char === "(") depth += 1;
       else if (char === ")") {
         depth -= 1;
@@ -941,14 +977,17 @@ function isRelativePosixPath(text, index) {
           break;
         }
         if (char === " " || char === "\t" || char === "(") {
+          if (PATH_CLAUSE.has(text.slice(cursor, end))) break;
           const slash = posixParenContinuation(text, end);
           if (slash < 0) break;
           end = slash;
           continue;
         }
-        if (!isPathTokenChar(char) && char !== "/") break;
-        if (char === "/") slashes.push(end);
-        end += 1;
+        const point = pointAt(text, end);
+        const glyph = point?.char ?? char;
+        if (!isPathTokenChar(glyph) && glyph !== "/") break;
+        if (glyph === "/") slashes.push(end);
+        end += point?.size ?? 1;
       }
       if (slashes.length > 0) {
         const lastSlash = slashes[slashes.length - 1];
@@ -1489,9 +1528,14 @@ function redactEmails(text) {
       tokenAt -= 1;
     }
     const schemeAt = quoted === -1 ? text.indexOf("://", tokenAt) : -1;
-    while (quoted === -1 && local > cursor && isEmailLocalChar(text[local - 1])) {
-      if (text[local - 1] === "/" && schemeAt !== -1 && schemeAt < local - 1) break;
-      local -= 1;
+    while (quoted === -1 && local > cursor) {
+      const previousUnit = text.charCodeAt(local - 1);
+      const start = previousUnit >= 0xdc00 && previousUnit <= 0xdfff ? local - 2 : local - 1;
+      if (start < cursor) break;
+      const point = pointAt(text, start);
+      if (!point || !isEmailLocalChar(point.char)) break;
+      if (point.char === "/" && schemeAt !== -1 && schemeAt < start) break;
+      local = start;
     }
     const end = local < at ? mailboxEnd(text, at) : -1;
     if (end !== -1) {
@@ -1597,7 +1641,12 @@ function mailboxEnd(text, at) {
     if (literal !== -1) return literal;
   }
   let domain = domainStart;
-  while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
+  while (domain < text.length) {
+    const point = pointAt(text, domain);
+    const glyph = point?.char ?? text[domain];
+    if (!EMAIL_DOMAIN.test(glyph)) break;
+    domain += point?.size ?? 1;
+  }
   const end = emailEnd(text, domainStart, domain);
   if (end === -1) return -1;
   const before = text[domainStart - 1];
@@ -1643,19 +1692,28 @@ export function shouldKillChild(child) {
 
 const FORCE_KILL_WAIT_MS = 1000;
 
+/** A POSIX child is a process-group leader. `killGroup` signals the wrapper and its descendants. */
+function signalChild(child, signal) {
+  if (typeof child.killGroup === "function") {
+    child.killGroup(signal);
+    return;
+  }
+  child.kill(signal);
+}
+
 /** SIGTERM first. A child that ignores it is SIGKILL'd once the wait elapses. */
 function killDirect(child, signalLater = setTimeout) {
   if (!shouldKillChild(child)) return false;
   try {
-    child.kill("SIGTERM");
+    signalChild(child, "SIGTERM");
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
     return true;
   }
   const timer = signalLater(() => {
-    if (!shouldKillChild(child)) return;
+    if (!child.killGroup && !shouldKillChild(child)) return;
     try {
-      child.kill("SIGKILL");
+      signalChild(child, "SIGKILL");
     } catch {
       // The pid can disappear between the check and the signal.
     }
@@ -1743,6 +1801,15 @@ export function appServerLaunch(bin, args = [], platform = process.platform) {
   };
 }
 
+export function appServerSpawnOptions(launch, platform = process.platform) {
+  return {
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(platform !== "win32" ? { detached: true } : {}),
+    ...(launch.verbatim ? { windowsVerbatimArguments: true } : {}),
+    ...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
+  };
+}
+
 export function formatFailure(error) {
   return redactDiagnostic(error instanceof Error ? error.message : String(error));
 }
@@ -1754,11 +1821,10 @@ function shareableUserAgent(value) {
 
 function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const launch = appServerLaunch(bin, args);
-  const child = spawn(launch.command, launch.args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    ...(launch.verbatim ? { windowsVerbatimArguments: true } : {}),
-    ...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
-  });
+  const child = spawn(launch.command, launch.args, appServerSpawnOptions(launch));
+  if (process.platform !== "win32") {
+    child.killGroup = (signal) => process.kill(-child.pid, signal);
+  }
   const stderrState = { safe: "", pending: "" };
   let failure = null;
   const pending = new Map();
