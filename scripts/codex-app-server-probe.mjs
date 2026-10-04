@@ -1217,11 +1217,22 @@ function redactEmails(text) {
   return redacted + text.slice(cursor);
 }
 
+function isHostLabel(label) {
+  if (label.length < 2 || label.length > 63) return false;
+  if (!/^[\p{L}\p{M}][\p{L}\p{M}0-9-]*$/u.test(label)) return false;
+  const last = label[label.length - 1];
+  return last !== "-" && /[\p{L}\p{M}0-9]/u.test(last);
+}
+
 /** One pass over the dots. A label followed by @ belongs to the next address. */
 function emailEnd(text, at, domain) {
   const dots = [];
   for (let index = at + 1; index < domain; index += 1) {
     if (text[index] === ".") dots.push(index);
+  }
+  if (dots.length === 0) {
+    const label = text.slice(at + 1, domain);
+    return isHostLabel(label) && text[domain] !== "@" ? domain : -1;
   }
   for (let index = dots.length - 1; index >= 0; index -= 1) {
     const dot = dots[index];

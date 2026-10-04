@@ -1023,6 +1023,9 @@ describe("codex app-server probe", () => {
       redactDiagnostic("alice@\u0909\u0926\u093e\u0939\u0930\u0923.\u092d\u093e\u0930\u0924"),
       "[redacted]",
     );
+    assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
     assert.equal(
       redactDiagnostic("see https://example.com/path@attacker.com later"),
       "see https://example.com/[redacted] later",
