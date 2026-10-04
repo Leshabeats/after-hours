@@ -11,8 +11,11 @@ import {
   bindStdin,
   bindStdout,
   formatFailure,
+  handleProbeSignal,
+  rememberProbeChild,
   shouldKillChild,
   stopChild,
+  stopForSignal,
   terminateChild,
   redactDiagnostic,
   retainStderr,
@@ -748,10 +751,15 @@ describe("codex app-server probe", () => {
       redactDiagnostic("failed (os error 3)/tmp/secret.txt"),
       "failed (os error 3)[redacted]",
     );
-    assert.equal(redactDiagnostic("Error (timeout)/tmp/secret.txt"), "Error (timeout)[redacted]");
+    assert.equal(redactDiagnostic("Error (timeout)/tmp/secret.txt"), "Error [redacted]");
+    assert.equal(redactDiagnostic("Missing (old)/secret/key.txt"), "Missing [redacted]");
+    assert.equal(redactDiagnostic("Error (x86)/secret/key.txt"), "Error [redacted]");
+    assert.equal(redactDiagnostic("Error (timeout) later"), "Error (timeout) later");
     const letter = "\u{10400}";
     const supplementaryPath = redactDiagnostic(`${letter}${letter}/secrets/key.txt`);
     assert.equal(supplementaryPath.includes(letter), false);
+    assert.equal(redactDiagnostic(`see ${letter}Project/secrets later`), "see [redacted] later");
+    assert.equal(redactDiagnostic(`see ${letter}Files/secrets later`), "see [redacted] later");
     assert.equal(redactDiagnostic(`alice@${letter}${letter}.com`), "[redacted]");
     assert.equal(
       redactDiagnostic("see Private Project/secrets/key.txt later"),
@@ -1831,7 +1839,7 @@ describe("codex app-server probe", () => {
         "    return;",
         "  }",
         '  if (message.method === "thread/list") {',
-        '    process.stdout.write("x".repeat(100001));',
+        '    process.stdout.write("x".repeat(8000001));',
         "    setTimeout(() => {}, 30000);",
         "  }",
         "});",
@@ -1844,6 +1852,118 @@ describe("codex app-server probe", () => {
         () => runProbe({ bin: process.execPath, args: [helper] }),
         /output line exceeded the limit/,
       );
+      assert.equal(Date.now() - started < 5000, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses a thread list line longer than the stderr cap", async () => {
+    const preview = "PREVIEWMARKER".repeat(10_000);
+    const sample = JSON.stringify({
+      id: 2,
+      result: {
+        data: [
+          {
+            id: "listed-thread",
+            source: "cli",
+            originator: "probe-origin",
+            status: { type: "idle" },
+            preview,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+    assert.equal(sample.length > 100_000, true);
+    assert.equal(sample.length < 8_000_000, true);
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "stdout-long-list.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    const extra = Array.isArray(message.params && message.params.sourceKinds);",
+        "    const archived = Boolean(message.params && message.params.archived);",
+        "    if (!extra && !archived) {",
+        '      const preview = "PREVIEWMARKER".repeat(10000);',
+        "      const body = {",
+        "        id: message.id,",
+        "        result: {",
+        '          data: [{ id: "listed-thread", source: "cli", originator: "probe-origin", status: { type: "idle" }, preview }],',
+        "          nextCursor: null,",
+        "        },",
+        "      };",
+        '      process.stdout.write(JSON.stringify(body) + "\\n");',
+        "      return;",
+        "    }",
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { data: [], nextCursor: null } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: { usedPercent: 9, windowDurationMins: 60, resetsAt: 1 } } } }) + "\\n");',
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      const json = JSON.stringify(summary);
+      assert.equal(summary.threads.count, 1);
+      assert.equal(summary.threads.originators["probe-origin"], 1);
+      assert.equal(summary.rateLimits.primary.usedPercent, 9);
+      assert.equal(json.includes("PREVIEWMARKER"), false);
+      assert.equal(json.includes("listed-thread"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads rate limits when the thread list times out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "list-timeout.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    setTimeout(() => {}, 30000);",
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: { usedPercent: 11, windowDurationMins: 60, resetsAt: 1 } } } }) + "\\n");',
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    try {
+      const summary = await runProbe({
+        bin: process.execPath,
+        args: [helper],
+        timeoutMs: 1000,
+      });
+      assert.match(summary.threads.error, /timeout waiting for thread\/list/);
+      assert.equal(summary.rateLimits.primary.usedPercent, 11);
       assert.equal(Date.now() - started < 5000, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1947,8 +2067,65 @@ describe("codex app-server probe", () => {
     grouped.exitCode = 0;
     groupLater[0]();
     assert.deepEqual(groupSignals, ["SIGTERM", "SIGKILL"]);
+    const gone = {
+      pid: 13,
+      exitCode: null,
+      signalCode: null,
+      kill() {
+        throw new Error("direct pid signal");
+      },
+      killGroup() {
+        const error = new Error("kill EPERM");
+        error.code = "EPERM";
+        throw error;
+      },
+    };
+    assert.equal(terminateChild(gone, "linux"), true);
     assert.equal(appServerSpawnOptions({ verbatim: false }, "linux").detached, true);
     assert.equal(appServerSpawnOptions({ verbatim: false }, "win32").detached, undefined);
+    const interruptSignals = [];
+    let interruptCode = null;
+    stopForSignal(
+      {
+        killGroup(signal) {
+          interruptSignals.push(signal);
+        },
+      },
+      "SIGINT",
+      (code) => {
+        interruptCode = code;
+      },
+    );
+    assert.deepEqual(interruptSignals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(interruptCode, 130);
+    const termSignals = [];
+    let termCode = null;
+    rememberProbeChild({
+      killGroup(signal) {
+        termSignals.push(signal);
+      },
+    });
+    handleProbeSignal("SIGTERM", (code) => {
+      termCode = code;
+    });
+    assert.deepEqual(termSignals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(termCode, 143);
+    const plain = [];
+    stopForSignal(
+      {
+        pid: 12,
+        exitCode: null,
+        signalCode: null,
+        stdin: { destroyed: true },
+        kill(signal) {
+          plain.push(signal);
+          if (signal === "SIGTERM") this.exitCode = 0;
+        },
+      },
+      "SIGTERM",
+      () => {},
+    );
+    assert.deepEqual(plain, ["SIGTERM"]);
     const ended = [];
     const killed = [];
     const windows = {

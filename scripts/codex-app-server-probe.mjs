@@ -337,6 +337,19 @@ function isTildePath(text, index) {
   return tildePaths[index] === 1;
 }
 
+/** A clause word stays. A space-free group glued to `/` is the directory. */
+function clauseParenPathStart(text, index) {
+  if (text[index] !== "(") return false;
+  let cursor = index;
+  while (cursor > 0 && (text[cursor - 1] === " " || text[cursor - 1] === "\t")) cursor -= 1;
+  if (cursor === 0 || cursor === index) return false;
+  let start = cursor - 1;
+  while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+  if (!isWordStart(text, start)) return false;
+  if (!PATH_CLAUSE.has(text.slice(start, cursor))) return false;
+  return posixParenContinuation(text, index) >= 0;
+}
+
 function isPathStart(text, index) {
   if (isEmptyHostPath(text, index)) return true;
   if (isTildePath(text, index) && !/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return true;
@@ -383,6 +396,7 @@ function isPathStart(text, index) {
     return true;
   }
   if (isDriveRelativePath(text, index)) return true;
+  if (clauseParenPathStart(text, index)) return true;
   return isRelativeWindowsPath(text, index) || isRelativePosixPath(text, index);
 }
 
@@ -640,8 +654,11 @@ function barePairEndWithNames(text, end) {
 function hasMixedCase(text, start, end) {
   let upper = false;
   let lower = false;
-  for (let index = start; index < end; index += 1) {
-    const char = text[index];
+  for (let index = start; index < end;) {
+    const point = pointAt(text, index);
+    if (!point) break;
+    const char = point.char;
+    index += point.size;
     if (!isWordChar(char)) continue;
     if (char !== char.toLowerCase()) upper = true;
     else if (char !== char.toUpperCase()) lower = true;
@@ -677,19 +694,23 @@ function bareWindowsPairEnd(text, index) {
     bareEnds.fill(-1);
     let cursor = 0;
     while (cursor < text.length) {
-      const char = text[cursor];
-      if (!isPathTokenChar(char) && char !== "/" && char !== "\\") {
+      const opened = pointAt(text, cursor);
+      if (!opened) {
         cursor += 1;
+        continue;
+      }
+      if (!isPathTokenChar(opened.char) && opened.char !== "/" && opened.char !== "\\") {
+        cursor += opened.size;
         continue;
       }
       const start = cursor;
       let slash = false;
-      while (
-        cursor < text.length &&
-        (isPathTokenChar(text[cursor]) || text[cursor] === "/" || text[cursor] === "\\")
-      ) {
-        if (text[cursor] === "/") slash = true;
-        cursor += 1;
+      while (cursor < text.length) {
+        const piece = pointAt(text, cursor);
+        if (!piece) break;
+        if (!isPathTokenChar(piece.char) && piece.char !== "/" && piece.char !== "\\") break;
+        if (piece.char === "/") slash = true;
+        cursor += piece.size;
       }
       const end = cursor;
       if (text[start] === "\\") continue;
@@ -698,22 +719,33 @@ function bareWindowsPairEnd(text, index) {
         let split = -1;
         let dot = false;
         let words = true;
-        for (let scan = start; scan < end; scan += 1) {
-          const piece = text[scan];
-          if (piece === ".") dot = true;
-          if (piece === "/") {
+        let leftPoints = 0;
+        let rightPoints = 0;
+        for (let scan = start; scan < end;) {
+          const piece = pointAt(text, scan);
+          if (!piece) {
+            words = false;
+            break;
+          }
+          const glyph = piece.char;
+          if (glyph === ".") dot = true;
+          if (glyph === "/") {
             slashCount += 1;
             split = scan;
+            scan += piece.size;
             continue;
           }
-          if (piece === "\\" || !bareNameChar(piece)) words = false;
+          if (glyph === "\\" || !bareNameChar(glyph)) words = false;
+          if (split === -1) leftPoints += 1;
+          else rightPoints += 1;
+          scan += piece.size;
         }
         if (
           slashCount === 1 &&
           words &&
           !dot &&
-          split >= start + 2 &&
-          end - split >= 3 &&
+          leftPoints >= 2 &&
+          rightPoints >= 2 &&
           hasMixedCase(text, start, end)
         ) {
           const named = extensionlessSlashEnd(text, end);
@@ -724,20 +756,31 @@ function bareWindowsPairEnd(text, index) {
       let split = -1;
       let dot = false;
       let words = true;
-      for (let scan = start; scan < end; scan += 1) {
-        const piece = text[scan];
-        if (piece === ".") dot = true;
-        if (piece === "\\") {
+      let leftPoints = 0;
+      let rightPoints = 0;
+      for (let scan = start; scan < end;) {
+        const piece = pointAt(text, scan);
+        if (!piece) {
+          words = false;
+          break;
+        }
+        const glyph = piece.char;
+        if (glyph === ".") dot = true;
+        if (glyph === "\\") {
           if (split !== -1) {
             split = -2;
             break;
           }
           split = scan;
+          scan += piece.size;
           continue;
         }
-        if (!bareNameChar(piece)) words = false;
+        if (!bareNameChar(glyph)) words = false;
+        if (split === -1) leftPoints += 1;
+        else rightPoints += 1;
+        scan += piece.size;
       }
-      if (!words || dot || split < start + 2 || end - split < 3) continue;
+      if (!words || dot || split < 0 || leftPoints < 2 || rightPoints < 2) continue;
       const named = barePairEndWithNames(text, end);
       if (named < end) continue;
       bareEnds[start] = named;
@@ -1160,6 +1203,7 @@ function pathEnd(text, index) {
 }
 
 const STDERR_LINE_LIMIT = 100_000;
+const STDOUT_LINE_LIMIT = 8_000_000;
 
 /**
  * Keep raw stderr only until a line can be redacted whole.
@@ -1707,7 +1751,8 @@ function killDirect(child, signalLater = setTimeout) {
   try {
     signalChild(child, "SIGTERM");
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
+    // Darwin reports EPERM when the detached group has already exited.
+    if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error;
     return true;
   }
   const timer = signalLater(() => {
@@ -1748,6 +1793,41 @@ export function terminateChild(
   });
   killer.unref?.();
   return true;
+}
+
+let activeProbeChild = null;
+
+export function rememberProbeChild(child) {
+  activeProbeChild = child;
+}
+
+/**
+ * Ctrl+C exits immediately, so the one-second SIGKILL timer never runs.
+ * Signal the detached group here, then exit.
+ */
+export function stopForSignal(child, signal, exit = process.exit) {
+  if (typeof child?.killGroup === "function") {
+    for (const name of ["SIGTERM", "SIGKILL"]) {
+      try {
+        child.killGroup(name);
+      } catch {
+        // ESRCH means the group is already gone. The probe still exits below.
+      }
+    }
+  } else if (child) {
+    try {
+      stopChild(child);
+    } catch {
+      // A failed stop still has to leave the probe exiting.
+    }
+  }
+  exit(signal === "SIGINT" ? 130 : 143);
+}
+
+export function handleProbeSignal(signal, exit = process.exit) {
+  const child = activeProbeChild;
+  activeProbeChild = null;
+  stopForSignal(child, signal, exit);
 }
 
 export function stopChild(child, platform = process.platform, launch = spawn) {
@@ -1819,12 +1899,24 @@ function shareableUserAgent(value) {
   return publicLabel(value);
 }
 
-function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
+function connect(bin, args = ["app-server", "--listen", "stdio://"], timeoutMs = 20_000) {
   const launch = appServerLaunch(bin, args);
   const child = spawn(launch.command, launch.args, appServerSpawnOptions(launch));
   if (process.platform !== "win32") {
-    child.killGroup = (signal) => process.kill(-child.pid, signal);
+    child.killGroup = (signal) => {
+      try {
+        process.kill(-child.pid, signal);
+      } catch (error) {
+        if (error?.code === "ESRCH") return;
+        try {
+          child.kill(signal);
+        } catch (fallback) {
+          if (fallback?.code !== "ESRCH") throw fallback;
+        }
+      }
+    };
   }
+  rememberProbeChild(child);
   const stderrState = { safe: "", pending: "" };
   let failure = null;
   const pending = new Map();
@@ -1898,13 +1990,13 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       if (newline === -1) break;
       const line = stdoutBuffer.slice(0, newline);
       stdoutBuffer = stdoutBuffer.slice(newline + 1);
-      if (line.length > STDERR_LINE_LIMIT) {
+      if (line.length > STDOUT_LINE_LIMIT) {
         rejectOversized();
         return;
       }
       takeStdoutLine(line);
     }
-    if (stdoutBuffer.length > STDERR_LINE_LIMIT) rejectOversized();
+    if (stdoutBuffer.length > STDOUT_LINE_LIMIT) rejectOversized();
   });
   bindStdout(child.stdout, rejectPending, () => {
     if (stopping) return;
@@ -1947,7 +2039,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
             detail ? `timeout waiting for ${method}: ${detail}` : `timeout waiting for ${method}`,
           ),
         );
-      }, 20_000);
+      }, timeoutMs);
       pending.set(id, { timer, resolve, reject });
       child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
@@ -1961,6 +2053,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const stop = () => {
     stopping = true;
     if (outputTimer) clearTimeout(outputTimer);
+    if (activeProbeChild === child) activeProbeChild = null;
     stopChild(child);
   };
 
@@ -1986,14 +2079,23 @@ async function listThreads(client, { pages, limit, archived, idBase, sourceKinds
   let more = false;
   let cursor = null;
   for (let page = 0; page < pages; page += 1) {
-    const listed = await client.request(idBase + page, "thread/list", {
-      limit,
-      modelProviders: [],
-      useStateDbOnly: true,
-      archived,
-      ...(sourceKinds ? { sourceKinds } : {}),
-      ...(cursor ? { cursor } : {}),
-    });
+    let listed;
+    try {
+      listed = await client.request(idBase + page, "thread/list", {
+        limit,
+        modelProviders: [],
+        useStateDbOnly: true,
+        archived,
+        ...(sourceKinds ? { sourceKinds } : {}),
+        ...(cursor ? { cursor } : {}),
+      });
+    } catch (error) {
+      return {
+        error: { message: error instanceof Error ? error.message : String(error) },
+        threads,
+        more,
+      };
+    }
     if (listed.error) return { error: listed.error, threads, more };
     threads.push(...(listed.result?.data ?? []));
     cursor = listed.result?.nextCursor ?? null;
@@ -2014,8 +2116,9 @@ export async function runProbe({
   args,
   pages = 1,
   limit = 20,
+  timeoutMs = 20_000,
 } = {}) {
-  const client = connect(bin, args);
+  const client = connect(bin, args, timeoutMs);
   try {
     const init = await client.request(1, "initialize", {
       clientInfo: {
@@ -2109,6 +2212,8 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.once("SIGINT", () => handleProbeSignal("SIGINT"));
+  process.once("SIGTERM", () => handleProbeSignal("SIGTERM"));
   main().catch((error) => {
     process.stderr.write(`${formatFailure(error)}\n`);
     process.exitCode = 1;
