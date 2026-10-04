@@ -975,6 +975,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     if (failure && !(replace && failurePlaceholder)) return;
     failure = error;
     failurePlaceholder = placeholder;
+    if (placeholder) return;
     for (const [id, waiter] of pending) {
       clearTimeout(waiter.timer);
       pending.delete(id);
@@ -1049,13 +1050,16 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       if (stopping || failure) return;
       if (child.exitCode != null || child.signalCode != null) return;
       const detail = stderrDetail(stderrText(stderrState));
-      rejectPending(
-        new Error(
-          detail ? `codex app-server output closed: ${detail}` : "codex app-server output closed",
-        ),
-        { placeholder: true },
+      const error = new Error(
+        detail ? `codex app-server output closed: ${detail}` : "codex app-server output closed",
       );
-    }, 1000);
+      rejectPending(error, { placeholder: true });
+      outputTimer = setTimeout(() => {
+        outputTimer = null;
+        if (!failurePlaceholder) return;
+        rejectPending(error, { replace: true });
+      }, 1000);
+    }, 150);
   });
 
   const request = (id, method, params) =>

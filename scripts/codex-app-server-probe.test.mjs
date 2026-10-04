@@ -1401,7 +1401,7 @@ describe("codex app-server probe", () => {
         '  if (message.method === "thread/list") {',
         '    process.stderr.write("rollout missing at C:\\\\Users\\\\Ada\\\\secret.jsonl\\n");',
         "    process.stdout.end();",
-        "    setTimeout(() => process.exit(7), 200);",
+        "    setTimeout(() => process.exit(7), 300);",
         "  }",
         "});",
         "",
