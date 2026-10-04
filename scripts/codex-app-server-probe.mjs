@@ -1361,16 +1361,23 @@ function isEmailTld(label) {
 function skipCommentBackward(text, end, limit) {
   if (text[end - 1] !== ")") return end;
   let depth = 0;
-  for (let index = end - 1; index >= limit; index -= 1) {
+  let index = end - 1;
+  while (index >= limit) {
+    let look = index - 1;
     let escapes = 0;
-    for (let look = index - 1; look >= limit && text[look] === "\\"; look -= 1) escapes += 1;
-    if (escapes % 2 === 1) continue;
-    const char = text[index];
-    if (char === ")") depth += 1;
-    else if (char === "(") {
-      depth -= 1;
-      if (depth === 0) return index;
+    while (look >= limit && text[look] === "\\") {
+      escapes += 1;
+      look -= 1;
     }
+    if (escapes % 2 === 0) {
+      const char = text[index];
+      if (char === ")") depth += 1;
+      else if (char === "(") {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
+    }
+    index = look;
   }
   return end;
 }
@@ -1597,7 +1604,7 @@ function redactEmails(text) {
 }
 
 function isHostLabel(label) {
-  if (label.length < 2 || label.length > 63) return false;
+  if (label.length < 1 || label.length > 63) return false;
   if (!/^[\p{L}\p{M}][\p{L}\p{M}0-9-]*$/u.test(label)) return false;
   const last = label[label.length - 1];
   return last !== "-" && /[\p{L}\p{M}0-9]/u.test(last);
@@ -1722,6 +1729,18 @@ function emailEnd(text, domainStart, domain) {
   return -1;
 }
 
+async function readRateLimits(client) {
+  try {
+    const limits = await client.request(100, "account/rateLimits/read", {
+      excludeResetCreditDetails: true,
+    });
+    return limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result);
+  } catch (error) {
+    if (error?.priorFailure) throw error;
+    return rpcError({ message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function rpcError(message) {
   const text = redactDiagnostic(message?.message ?? "");
   if (message?.code != null && text) return { error: `${message.code}: ${text}` };
@@ -1753,7 +1772,14 @@ function killDirect(child, signalLater = setTimeout) {
   } catch (error) {
     if (error?.code === "ESRCH") return true;
     // Darwin reports EPERM when the detached group has already exited.
-    if (error?.code === "EPERM" && typeof child.killGroup === "function") return true;
+    // An EPERM from the direct kill fallback still has to surface.
+    if (
+      error?.code === "EPERM" &&
+      error?.directKill !== true &&
+      typeof child.killGroup === "function"
+    ) {
+      return true;
+    }
     throw error;
   }
   const timer = signalLater(() => {
@@ -1912,7 +1938,9 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"], timeoutMs =
         try {
           child.kill(signal);
         } catch (fallback) {
-          if (fallback?.code !== "ESRCH") throw fallback;
+          if (fallback?.code === "ESRCH") return;
+          if (fallback && typeof fallback === "object") fallback.directKill = true;
+          throw fallback;
         }
       }
     };
@@ -2029,6 +2057,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"], timeoutMs =
     new Promise((resolve, reject) => {
       assertProbeMethod(method);
       if (failure) {
+        failure.priorFailure = true;
         reject(failure);
         return;
       }
@@ -2131,14 +2160,12 @@ export async function runProbe({
     client.notify("initialized", {});
     if (init.error) return { userAgent: null, threads: rpcError(init.error), rateLimits: null };
 
-    const rateLimitsParams = { excludeResetCreditDetails: true };
     const active = await listThreads(client, { pages, limit, archived: false, idBase: 2 });
     if (active.error) {
-      const limits = await client.request(100, "account/rateLimits/read", rateLimitsParams);
       return {
         userAgent: shareableUserAgent(init.result?.userAgent),
         threads: rpcError(active.error),
-        rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
+        rateLimits: await readRateLimits(client),
       };
     }
     const extra = await listThreads(client, {
@@ -2165,7 +2192,6 @@ export async function runProbe({
         ...(archivedExtra.error ? [] : archivedExtra.threads),
       ]),
     );
-    const limits = await client.request(100, "account/rateLimits/read", rateLimitsParams);
     return {
       userAgent: shareableUserAgent(init.result?.userAgent),
       threads: {
@@ -2183,7 +2209,7 @@ export async function runProbe({
         ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
         ...(archivedExtra.error ? { archivedExtraError: rpcError(archivedExtra.error).error } : {}),
       },
-      rateLimits: limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result),
+      rateLimits: await readRateLimits(client),
     };
   } finally {
     client.stop();

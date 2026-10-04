@@ -788,6 +788,12 @@ describe("codex app-server probe", () => {
     const slashRedacted = redactDiagnostic(slashUri);
     assert.equal(Date.now() - slashStarted < 1000, true);
     assert.equal(slashRedacted.startsWith("https://example.com/"), true);
+    const commentEscapes = `https://example.com/user(${"\\\\".repeat(20000)})@example.net`;
+    const commentStarted = Date.now();
+    const commentRedacted = redactDiagnostic(commentEscapes);
+    assert.equal(Date.now() - commentStarted < 1000, true);
+    assert.equal(commentRedacted.startsWith("https://example.com/"), true);
+    assert.equal(commentRedacted.includes("example.net"), false);
     const nestedParens = `${"(".repeat(16000)}${")".repeat(16000)}`;
     const nestedStarted = Date.now();
     assert.equal(redactDiagnostic(nestedParens), nestedParens);
@@ -1097,20 +1103,18 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see user★@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
-    assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
+    assert.equal(redactDiagnostic("see alice@b later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@x later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(comment)@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(note @)@example.com later"), "see [redacted] later");
     assert.equal(
       redactDiagnostic("see user(s3cr3t @)\n@example.com later"),
       "see [redacted] later",
     );
-    assert.equal(
-      redactDiagnostic("see user(s3cr3t @)\n@x later"),
-      "see user([redacted])\n@x later",
-    );
-    assert.equal(redactDiagnostic("see (alice@secret.com)\n@x"), "see ([redacted])\n@x");
-    assert.equal(redactDiagnostic("see (alice@secret.com) @x"), "see ([redacted]) @x");
-    assert.equal(redactDiagnostic('prefix "alice@secret.com"\n@x'), 'prefix "[redacted]"\n@x');
+    assert.equal(redactDiagnostic("see user(s3cr3t @)\n@x later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see (alice@secret.com)\n@x"), "[redacted]");
+    assert.equal(redactDiagnostic("see (alice@secret.com) @x"), "[redacted]");
+    assert.equal(redactDiagnostic('prefix "alice@secret.com"\n@x'), "prefix [redacted]");
     assert.equal(redactDiagnostic("see alice@(private)example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@(note)localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@ example.com later"), "see [redacted] later");
@@ -1128,8 +1132,9 @@ describe("codex app-server probe", () => {
       redactDiagnostic("see alice@ (private) example.com later"),
       "see [redacted] later",
     );
-    assert.equal(redactDiagnostic("failed (os error 3)\n@x"), "failed (os error 3)\n@x");
-    assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
+    assert.equal(redactDiagnostic("failed (os error 3)\n@x"), "[redacted]");
+    assert.equal(redactDiagnostic("see alice@b later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@x later"), "see [redacted] later");
     assert.equal(
       redactDiagnostic("see user(note @)\r\n@example.com later"),
       "see [redacted] later",
@@ -1970,6 +1975,54 @@ describe("codex app-server probe", () => {
     }
   });
 
+  it("keeps thread counts when the rate-limit read times out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "limits-timeout.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    const extra = Array.isArray(message.params && message.params.sourceKinds);",
+        "    const archived = Boolean(message.params && message.params.archived);",
+        "    const data = !extra && !archived ? [{ id: 'listed-thread', source: 'cli', originator: 'probe-origin', status: { type: 'idle' } }] : [];",
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { data, nextCursor: null } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        "    setTimeout(() => {}, 30000);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    try {
+      const summary = await runProbe({
+        bin: process.execPath,
+        args: [helper],
+        timeoutMs: 1000,
+      });
+      assert.equal(summary.threads.count, 1);
+      assert.equal(summary.threads.originators["probe-origin"], 1);
+      assert.equal(
+        summary.rateLimits.error,
+        redactDiagnostic("timeout waiting for account/rateLimits/read"),
+      );
+      assert.equal(Date.now() - started < 5000, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects pending requests when stdin fails", () => {
     const stdin = new EventEmitter();
     let rejected = null;
@@ -2081,6 +2134,32 @@ describe("codex app-server probe", () => {
       },
     };
     assert.equal(terminateChild(gone, "linux"), true);
+    assert.throws(
+      () =>
+        terminateChild(
+          {
+            pid: 14,
+            exitCode: null,
+            signalCode: null,
+            kill() {
+              const error = new Error("denied");
+              error.code = "EPERM";
+              throw error;
+            },
+            killGroup(signal) {
+              try {
+                this.kill(signal);
+              } catch (error) {
+                if (error?.code === "ESRCH") return;
+                error.directKill = true;
+                throw error;
+              }
+            },
+          },
+          "linux",
+        ),
+      /denied/,
+    );
     assert.equal(appServerSpawnOptions({ verbatim: false }, "linux").detached, true);
     assert.equal(appServerSpawnOptions({ verbatim: false }, "win32").detached, undefined);
     const interruptSignals = [];
