@@ -1034,6 +1034,21 @@ describe("codex app-server probe", () => {
       "see [redacted] later",
     );
     assert.equal(redactDiagnostic('"a@b"(comment)@example.com'), "[redacted]");
+    assert.equal(
+      redactDiagnostic('auth failed for "alice@example.com"'),
+      'auth failed for "[redacted]"',
+    );
+    assert.equal(redactDiagnostic('{"email":"alice@example.com"}'), '{"email":"[redacted]"}');
+    assert.equal(redactDiagnostic("auth failed (alice@example.com)"), "auth failed ([redacted])");
+    assert.equal(
+      redactDiagnostic("login failed (user alice@example.com)"),
+      "login failed (user [redacted])",
+    );
+    const openParens = `${"(".repeat(20000)} alice@example.com`;
+    const openParensStarted = Date.now();
+    const openParensRedacted = redactDiagnostic(openParens);
+    assert.equal(Date.now() - openParensStarted < 1000, true);
+    assert.equal(openParensRedacted.includes("alice@example.com"), false);
     assert.equal(redactDiagnostic("see user (comment) @example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(a(b)c)@example.com later"), "see [redacted] later");
     assert.equal(

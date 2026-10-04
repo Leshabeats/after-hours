@@ -1218,20 +1218,69 @@ function closingComment(text, open) {
   return -1;
 }
 
-/** The `@` that separates a mailbox. An `@` inside quotes or a comment stays put. */
+function lineEndAt(text, index) {
+  let end = text.length;
+  const newline = text.indexOf("\n", index);
+  const carriage = text.indexOf("\r", index);
+  if (newline !== -1) end = newline;
+  if (carriage !== -1 && carriage < end) end = carriage;
+  return end;
+}
+
+/** Spaces and a comment, then `@`. A group that does not introduce a mailbox stays text. */
+function cfwsThenAt(text, index) {
+  let cursor = index;
+  while (cursor < text.length) {
+    const char = text[cursor];
+    if (char === " " || char === "\t") {
+      cursor += 1;
+      continue;
+    }
+    if (char === "(") {
+      const close = closingComment(text, cursor);
+      if (close === -1) return false;
+      cursor = close + 1;
+      continue;
+    }
+    return char === "@";
+  }
+  return false;
+}
+
+/** The `@` that separates a mailbox. Quotes and comments jump only when they introduce that `@`. */
 function nextMailboxAt(text, cursor) {
   let index = cursor;
+  let plainUntil = -1;
   while (index < text.length) {
-    if (!escapedAt(text, index, cursor) && text[index] === '"') {
+    if (index >= plainUntil && !escapedAt(text, index, cursor) && text[index] === '"') {
       const close = closingQuote(text, index);
-      index = close === -1 ? index + 1 : close + 1;
+      if (close === -1) {
+        plainUntil = lineEndAt(text, index);
+        index += 1;
+        continue;
+      }
+      if (cfwsThenAt(text, close + 1)) {
+        index = close + 1;
+        continue;
+      }
+      index += 1;
       continue;
     }
-    if (!escapedAt(text, index, cursor) && text[index] === "(") {
+    if (index >= plainUntil && !escapedAt(text, index, cursor) && text[index] === "(") {
       const close = closingComment(text, index);
-      index = close === -1 ? index + 1 : close + 1;
+      if (close === -1) {
+        plainUntil = lineEndAt(text, index);
+        index += 1;
+        continue;
+      }
+      if (cfwsThenAt(text, close + 1)) {
+        index = close + 1;
+        continue;
+      }
+      index += 1;
       continue;
     }
+    if (text[index] === "\n" || text[index] === "\r") plainUntil = -1;
     if (text[index] === "@" && !escapedAt(text, index, cursor)) return index;
     index += 1;
   }
