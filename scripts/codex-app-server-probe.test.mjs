@@ -409,6 +409,11 @@ describe("codex app-server probe", () => {
       redactDiagnostic("note Private=Customer\\secrets\\key.txt later"),
       "note [redacted] later",
     );
+    assert.equal(redactDiagnostic("Failed=src\\private\\key.txt"), "Failed=[redacted]");
+    assert.equal(
+      redactDiagnostic("see file.txt=note\\other\\path.txt later"),
+      "see file.txt=[redacted] later",
+    );
     assert.equal(relative.includes("PrivateProject"), false);
     assert.equal(relative.includes("secrets"), false);
     assert.equal(relative.includes("key"), false);
@@ -895,6 +900,18 @@ describe("codex app-server probe", () => {
       redactDiagnostic("see my private files/secrets/key.txt later"),
       "see [redacted] later",
     );
+    assert.equal(
+      redactDiagnostic("failed to read src/private/key.txt"),
+      "failed to read [redacted]",
+    );
+    assert.equal(
+      redactDiagnostic("permission denied for my private files/secrets/key.txt"),
+      "permission denied for [redacted]",
+    );
+    assert.equal(
+      redactDiagnostic("open the file at src/private/key.txt because it is locked"),
+      "open the file at [redacted] because it is locked",
+    );
     assert.equal(redactDiagnostic("see file|name/secrets/key.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see file?name/secrets/key.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("note file:name/secrets/key.txt"), "note [redacted]");
@@ -1238,6 +1255,9 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@3- later"), "see alice@3- later");
     assert.equal(redactDiagnostic("alice@corp.x"), "[redacted]");
+    assert.equal(redactDiagnostic("alice@corp.mail-server"), "[redacted]");
+    assert.equal(redactDiagnostic("see alice@corp.mail-server later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("alice@corp.mail-"), "alice@corp.mail-");
     assert.equal(redactDiagnostic("see alice@corp.é later"), "see [redacted] later");
     assert.equal(redactDiagnostic("alice@𐐀"), "[redacted]");
     const shortDomain = summarizeThreads([

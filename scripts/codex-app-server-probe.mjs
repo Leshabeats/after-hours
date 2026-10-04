@@ -571,6 +571,37 @@ function driveRelativeEnd(text, index) {
 }
 
 /**
+ * `Private=Customer` is one component. A failure word or a finished token
+ * (`Failed`, `file.txt`) stays on the left of `=`.
+ */
+function equalsJoinsComponent(text, index) {
+  let left = index - 1;
+  while (left >= 0) {
+    const char = text[left];
+    if (
+      char === " " ||
+      char === "\t" ||
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === ":" ||
+      char === "\\" ||
+      char === "/" ||
+      char === "=" ||
+      char === "(" ||
+      char === ")"
+    ) {
+      break;
+    }
+    left -= 1;
+  }
+  const token = text.slice(left + 1, index);
+  if (!token || token.includes(".")) return false;
+  return !isFailureClause(token);
+}
+
+/**
  * One reverse pass. A `\\` starts a body when another `\\` or `.` remains later
  * in the same segment. Spaces stay inside the segment only while that tail exists.
  */
@@ -586,7 +617,8 @@ function windowsBodyAt(text) {
       continue;
     }
     if (char === "=") {
-      if (!seenRight) {
+      if (!seenRight || !equalsJoinsComponent(text, cursor)) {
+        seenRight = false;
         qualifies = false;
       }
       continue;
@@ -849,6 +881,26 @@ const PATH_CLAUSE_FOLD = new Set(
   [...PATH_CLAUSE].map((word) => word.toLowerCase()).concat(["because"]),
 );
 
+/** Prose before a path. These are not words of a spaced directory name. */
+const PATH_PROSE = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "by",
+  "denied",
+  "file",
+  "for",
+  "in",
+  "of",
+  "on",
+  "or",
+  "permission",
+  "read",
+  "to",
+  "with",
+]);
+
 function isFailureClause(word) {
   return PATH_CLAUSE_FOLD.has(word.toLowerCase());
 }
@@ -893,7 +945,7 @@ function windowsPathStarts(text) {
       continue;
     }
     if (char === "=") {
-      if (!seenSep) {
+      if (!seenSep || !equalsJoinsComponent(text, cursor)) {
         seenSep = 0;
         seenDot = 0;
       }
@@ -1036,7 +1088,7 @@ function markPosixPrefix(text, marks, pathStart, allowLower = false) {
     const lower = text[start] === text[start].toLowerCase();
     if (!isWordStart(text, start) || (lower && !allowLower)) break;
     if (!wordsStayOnOneLine(text, start, pathStart)) break;
-    if (isFailureClause(word)) break;
+    if (isFailureClause(word) || (lower && PATH_PROSE.has(word.toLowerCase()))) break;
     marks[start] = 1;
     prefix = start;
   }
@@ -1482,11 +1534,12 @@ function isEmailLocalChar(char) {
   return char.codePointAt(0) > 127;
 }
 const EMAIL_DOMAIN = /[\p{L}\p{M}\p{Nd}.-]/u;
-const EMAIL_TLD = /^[\p{L}\p{M}]+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
 
 function isEmailTld(label) {
-  return EMAIL_TLD.test(label) || EMAIL_PUNYCODE_TLD.test(label);
+  if (EMAIL_PUNYCODE_TLD.test(label)) return true;
+  if (!isHostLabel(label) || /\p{Nd}/u.test(label)) return false;
+  return /\p{L}|\p{M}/u.test(label);
 }
 
 function skipCommentBackward(text, end, limit) {
