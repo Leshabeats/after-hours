@@ -2134,32 +2134,40 @@ describe("codex app-server probe", () => {
       },
     };
     assert.equal(terminateChild(gone, "linux"), true);
-    assert.throws(
-      () =>
-        terminateChild(
-          {
-            pid: 14,
-            exitCode: null,
-            signalCode: null,
-            kill() {
-              const error = new Error("denied");
-              error.code = "EPERM";
-              throw error;
-            },
-            killGroup(signal) {
-              try {
-                this.kill(signal);
-              } catch (error) {
-                if (error?.code === "ESRCH") return;
-                error.directKill = true;
-                throw error;
-              }
-            },
-          },
-          "linux",
-        ),
-      /denied/,
+    const deniedSignals = [];
+    const deniedLater = [];
+    const denied = terminateChild(
+      {
+        pid: 14,
+        exitCode: null,
+        signalCode: null,
+        kill(signal) {
+          deniedSignals.push(signal);
+          const error = new Error("denied");
+          error.code = "EPERM";
+          throw error;
+        },
+        killGroup(signal) {
+          try {
+            this.kill(signal);
+          } catch (error) {
+            if (error?.code === "ESRCH") return;
+            error.directKill = true;
+            throw error;
+          }
+        },
+      },
+      "linux",
+      undefined,
+      (fn) => {
+        deniedLater.push(fn);
+        return { unref() {} };
+      },
     );
+    assert.equal(denied, true);
+    assert.deepEqual(deniedSignals, ["SIGTERM"]);
+    deniedLater[0]();
+    assert.deepEqual(deniedSignals, ["SIGTERM", "SIGKILL"]);
     assert.equal(appServerSpawnOptions({ verbatim: false }, "linux").detached, true);
     assert.equal(appServerSpawnOptions({ verbatim: false }, "win32").detached, undefined);
     const interruptSignals = [];

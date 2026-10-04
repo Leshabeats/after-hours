@@ -1772,7 +1772,6 @@ function killDirect(child, signalLater = setTimeout) {
   } catch (error) {
     if (error?.code === "ESRCH") return true;
     // Darwin reports EPERM when the detached group has already exited.
-    // An EPERM from the direct kill fallback still has to surface.
     if (
       error?.code === "EPERM" &&
       error?.directKill !== true &&
@@ -1780,7 +1779,9 @@ function killDirect(child, signalLater = setTimeout) {
     ) {
       return true;
     }
-    throw error;
+    // A denied direct kill still gets SIGKILL. stop() runs in finally, so throwing
+    // here would drop a summary that the probe has already collected.
+    if (!(error?.code === "EPERM" && error?.directKill === true)) throw error;
   }
   const timer = signalLater(() => {
     if (!child.killGroup && !shouldKillChild(child)) return;
