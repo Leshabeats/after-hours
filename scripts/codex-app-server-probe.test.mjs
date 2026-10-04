@@ -794,6 +794,10 @@ describe("codex app-server probe", () => {
     assert.equal(Date.now() - commentStarted < 1000, true);
     assert.equal(commentRedacted.startsWith("https://example.com/"), true);
     assert.equal(commentRedacted.includes("example.net"), false);
+    const openParens = "a(".repeat(24_000);
+    const openStarted = Date.now();
+    assert.equal(redactDiagnostic(openParens), openParens);
+    assert.equal(Date.now() - openStarted < 1000, true);
     const nestedParens = `${"(".repeat(16000)}${")".repeat(16000)}`;
     const nestedStarted = Date.now();
     assert.equal(redactDiagnostic(nestedParens), nestedParens);

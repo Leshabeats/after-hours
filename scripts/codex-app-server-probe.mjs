@@ -950,33 +950,61 @@ function isPathTokenChar(char) {
   );
 }
 
+let parenText = null;
+let parenSlash = null;
+
+/** One pass. Each `(` records the `/` a space-free group chain reaches, or -1. */
+function buildParenSlash(text) {
+  const slashAt = new Int32Array(text.length);
+  slashAt.fill(-1);
+  const closeAt = new Int32Array(text.length);
+  closeAt.fill(-1);
+  const stack = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "(") {
+      stack.push({ index, dirty: false });
+      continue;
+    }
+    if (char === ")") {
+      const frame = stack.pop();
+      if (!frame) continue;
+      if (frame.dirty) {
+        if (stack.length > 0) stack[stack.length - 1].dirty = true;
+        continue;
+      }
+      closeAt[frame.index] = index;
+      continue;
+    }
+    if (
+      stack.length > 0 &&
+      (char === " " || char === "\t" || char === "\n" || char === "\r" || char === "/")
+    ) {
+      stack[stack.length - 1].dirty = true;
+    }
+  }
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    if (text[index] !== "(" || closeAt[index] < 0) continue;
+    const after = closeAt[index] + 1;
+    if (text[after] === "/") {
+      slashAt[index] = after;
+      continue;
+    }
+    let look = after;
+    while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
+    if (text[look] === "(" && slashAt[look] >= 0) slashAt[index] = slashAt[look];
+  }
+  parenText = text;
+  parenSlash = slashAt;
+}
+
 /** `Name (note)/file` keeps the parenthesized piece. A group that does not lead to `/` stays text. */
 function posixParenContinuation(text, index) {
-  let cursor = index;
-  while (cursor < text.length) {
-    let look = cursor;
-    while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
-    if (text[look] !== "(") return -1;
-    let depth = 0;
-    let closed = -1;
-    for (let scan = look; scan < text.length; scan += 1) {
-      const char = text[scan];
-      if (char === "\n" || char === "\r" || char === "/") break;
-      if (char === " " || char === "\t" || char === "\n" || char === "\r") return -1;
-      if (char === "(") depth += 1;
-      else if (char === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          closed = scan;
-          break;
-        }
-      }
-    }
-    if (closed === -1) return -1;
-    cursor = closed + 1;
-    if (text[cursor] === "/") return cursor;
-  }
-  return -1;
+  if (parenText !== text) buildParenSlash(text);
+  let look = index;
+  while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
+  if (look >= text.length || text[look] !== "(") return -1;
+  return parenSlash[look];
 }
 
 let posixText = null;
