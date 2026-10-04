@@ -547,6 +547,14 @@ describe("codex app-server probe", () => {
       "see [redacted] later",
     );
     assert.equal(redactDiagnostic("see \\Program Files (x86) later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("failed to read \\secret (os error 3)"),
+      "failed to read [redacted] (os error 3)",
+    );
+    assert.equal(
+      redactDiagnostic("failed to read \\Program Files (x86) (os error 3)"),
+      "failed to read [redacted] (os error 3)",
+    );
     assert.equal(redactDiagnostic("see \\secret, then continue"), "see [redacted], then continue");
     assert.equal(
       redactDiagnostic("The File Is Missing From Documents\\secrets\\key.txt"),
@@ -602,6 +610,10 @@ describe("codex app-server probe", () => {
     const fragmentRedacted = redactDiagnostic(fragments);
     assert.equal(Date.now() - fragmentStarted < 1000, true);
     assert.equal(fragmentRedacted.includes("a\\a"), false);
+    const tildes = "~".repeat(16000);
+    const tildeStarted = Date.now();
+    assert.equal(redactDiagnostic(tildes), tildes);
+    assert.equal(Date.now() - tildeStarted < 1000, true);
     const punctuated = "a$".repeat(40000);
     const punctuatedStarted = Date.now();
     assert.equal(redactDiagnostic(punctuated), punctuated);
@@ -863,6 +875,7 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("алиса@example.com"), "[redacted]");
     assert.equal(redactDiagnostic("alice@пример.рф"), "[redacted]");
     assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
+    assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic("alice@example.xn--p1ai"), "[redacted]");
     const punycode = redactDiagnostic("wrote alice@example.xn--p1ai later");
     assert.equal(punycode.includes("alice"), false);
@@ -1351,6 +1364,81 @@ describe("codex app-server probe", () => {
       await assert.rejects(
         () => runProbe({ bin: process.execPath, args: [helper] }),
         /output closed/,
+      );
+      assert.equal(Date.now() - started < 5000, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the exit code when stdout closes just before the process exits", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "stdout-exit.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        '    process.stderr.write("rollout missing at C:\\\\Users\\\\Ada\\\\secret.jsonl\\n");',
+        "    process.stdout.end();",
+        "    setTimeout(() => process.exit(7), 80);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      await assert.rejects(
+        () => runProbe({ bin: process.execPath, args: [helper] }),
+        (error) => {
+          assert.match(error.message, /exited \(code 7\)/);
+          assert.match(error.message, /\[redacted\]/);
+          assert.equal(error.message.includes("secret.jsonl"), false);
+          assert.equal(error.message.includes("Ada"), false);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an app-server line that exceeds the stdout limit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "stdout-limit.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        '    process.stdout.write("x".repeat(100001));',
+        "    setTimeout(() => {}, 30000);",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => runProbe({ bin: process.execPath, args: [helper] }),
+        /output line exceeded the limit/,
       );
       assert.equal(Date.now() - started < 5000, true);
     } finally {

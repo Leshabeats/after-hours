@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 /** Methods this probe may send. A model turn is intentionally absent. */
@@ -241,6 +240,7 @@ function isTildePath(text, index) {
   while (cursor < text.length) {
     const char = text[cursor];
     if (char === "/" || char === "\\") return true;
+    if (char === "~") return false;
     if (
       char === " " ||
       char === "\t" ||
@@ -504,6 +504,7 @@ function extensionlessWord(text, index, lineEnd) {
   if (char === "(") {
     const close = text.indexOf(")", cursor + 1);
     if (close === -1 || close >= lineEnd) return { end: index };
+    if (/\s/.test(text.slice(cursor + 1, close))) return { end: index };
     let after = close + 1;
     while (after < lineEnd && (text[after] === " " || text[after] === "\t")) after += 1;
     const follow = text[after] ?? "";
@@ -720,6 +721,16 @@ export function redactDiagnostic(value) {
   );
 }
 
+function quotedLocalStart(text, at, floor) {
+  if (text[at - 1] !== '"') return -1;
+  for (let index = at - 2; index >= floor; index -= 1) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") return -1;
+    if (char === '"' && text[index - 1] !== "\\") return index;
+  }
+  return -1;
+}
+
 const EMAIL_LOCAL = /[\p{L}0-9._%+\-'\u2019]/u;
 const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
 const EMAIL_TLD = /^\p{L}+$/u;
@@ -734,8 +745,9 @@ function redactEmails(text) {
   let redacted = "";
   let cursor = 0;
   for (let at = text.indexOf("@", cursor); at !== -1; at = text.indexOf("@", cursor)) {
-    let local = at;
-    while (local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
+    const quoted = quotedLocalStart(text, at, cursor);
+    let local = quoted === -1 ? at : quoted;
+    while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
     let domain = at + 1;
     while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
     const end = local < at ? emailEnd(text, at, domain) : -1;
@@ -901,18 +913,13 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     );
   });
 
-  const rl = createInterface({ input: child.stdout });
-  rl.on("close", () => {
-    if (stopping || failure) return;
-    if (child.exitCode != null || child.signalCode != null) return;
-    outputTimer = setTimeout(() => {
-      outputTimer = null;
-      if (stopping || failure) return;
-      if (child.exitCode != null || child.signalCode != null) return;
-      rejectPending(new Error("codex app-server output closed"));
-    }, 50);
-  });
-  rl.on("line", (line) => {
+  let stdoutBuffer = "";
+  const rejectOversized = () => {
+    stdoutBuffer = "";
+    rejectPending(new Error("codex app-server output line exceeded the limit"));
+    if (!stopping) stopChild(child);
+  };
+  const takeStdoutLine = (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     let message;
@@ -926,6 +933,39 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     clearTimeout(waiter.timer);
     pending.delete(message.id);
     waiter.resolve(message);
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    if (failure) return;
+    stdoutBuffer += chunk;
+    for (;;) {
+      const newline = stdoutBuffer.indexOf("\n");
+      if (newline === -1) break;
+      const line = stdoutBuffer.slice(0, newline);
+      stdoutBuffer = stdoutBuffer.slice(newline + 1);
+      if (line.length > STDERR_LINE_LIMIT) {
+        rejectOversized();
+        return;
+      }
+      takeStdoutLine(line);
+    }
+    if (stdoutBuffer.length > STDERR_LINE_LIMIT) rejectOversized();
+  });
+  child.stdout.on("error", () => {});
+  child.stdout.on("end", () => {
+    if (stopping || failure) return;
+    if (child.exitCode != null || child.signalCode != null) return;
+    outputTimer = setTimeout(() => {
+      outputTimer = null;
+      if (stopping || failure) return;
+      if (child.exitCode != null || child.signalCode != null) return;
+      const detail = stderrDetail(stderrText(stderrState));
+      rejectPending(
+        new Error(
+          detail ? `codex app-server output closed: ${detail}` : "codex app-server output closed",
+        ),
+      );
+    }, 150);
   });
 
   const request = (id, method, params) =>
@@ -957,7 +997,6 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const stop = () => {
     stopping = true;
     if (outputTimer) clearTimeout(outputTimer);
-    rl.close();
     stopChild(child);
   };
 
