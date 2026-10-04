@@ -1058,6 +1058,18 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see (alice@secret.com) @x"), "see ([redacted]) @x");
     assert.equal(redactDiagnostic('prefix "alice@secret.com"\n@x'), 'prefix "[redacted]"\n@x');
     assert.equal(redactDiagnostic("see alice@(private)example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@(note)localhost later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@ example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@ [127.0.0.1] later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("failed alice@ because it is locked"),
+      "failed alice@ because it is locked",
+    );
+    assert.equal(redactDiagnostic("user @ host"), "user @ host");
+    assert.equal(
+      redactDiagnostic("timeout waiting for thread/list: user@ host closed the socket"),
+      "timeout waiting for thread/list: user@ host closed the socket",
+    );
     assert.equal(
       redactDiagnostic("see alice@ (private) example.com later"),
       "see [redacted] later",

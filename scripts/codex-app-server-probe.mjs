@@ -1468,7 +1468,11 @@ function mailboxEnd(text, at) {
   }
   let domain = domainStart;
   while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
-  return emailEnd(text, domainStart, domain);
+  const end = emailEnd(text, domainStart, domain);
+  if (end === -1) return -1;
+  const before = text[domainStart - 1];
+  if (text.slice(domainStart, end).includes(".") || before === "@" || before === ")") return end;
+  return -1;
 }
 
 /** One pass over the dots. A label followed by @ belongs to the next address. */
