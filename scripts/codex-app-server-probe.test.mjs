@@ -1027,6 +1027,20 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
     assert.equal(
+      redactDiagnostic("auth failed for alice@localhost."),
+      "auth failed for [redacted].",
+    );
+    assert.equal(redactDiagnostic('"a@b"@localhost.'), "[redacted].");
+    assert.equal(redactDiagnostic("see alice@example.com. later"), "see [redacted]. later");
+    assert.equal(
+      redactDiagnostic("see https://example.com/v1 failed for alice/private@example.com"),
+      "see https://example.com/v1 failed for [redacted]",
+    );
+    assert.equal(
+      redactDiagnostic("see https://example.com/v1 failed for first.last/team@example.com"),
+      "see https://example.com/v1 failed for [redacted]",
+    );
+    assert.equal(
       redactDiagnostic("see https://example.com/path@attacker.com later"),
       "see https://example.com/[redacted] later",
     );

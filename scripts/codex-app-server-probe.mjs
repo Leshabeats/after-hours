@@ -1192,7 +1192,13 @@ function redactEmails(text) {
     if (at === -1) break;
     const quoted = quotedLocalStart(text, at, cursor);
     let local = quoted === -1 ? at : quoted;
-    const schemeAt = quoted === -1 ? text.indexOf("://", cursor) : -1;
+    let tokenAt = at;
+    while (tokenAt > cursor) {
+      const previous = text[tokenAt - 1];
+      if (previous === " " || previous === "\t" || previous === "\n" || previous === "\r") break;
+      tokenAt -= 1;
+    }
+    const schemeAt = quoted === -1 ? text.indexOf("://", tokenAt) : -1;
     while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) {
       if (text[local - 1] === "/" && schemeAt !== -1 && schemeAt < local - 1) break;
       local -= 1;
@@ -1226,13 +1232,15 @@ function isHostLabel(label) {
 
 /** One pass over the dots. A label followed by @ belongs to the next address. */
 function emailEnd(text, at, domain) {
+  let hostEnd = domain;
+  while (hostEnd > at + 1 && text[hostEnd - 1] === ".") hostEnd -= 1;
+  const bare = text.slice(at + 1, hostEnd);
+  if (!bare.includes(".")) {
+    return isHostLabel(bare) && text[domain] !== "@" ? hostEnd : -1;
+  }
   const dots = [];
   for (let index = at + 1; index < domain; index += 1) {
     if (text[index] === ".") dots.push(index);
-  }
-  if (dots.length === 0) {
-    const label = text.slice(at + 1, domain);
-    return isHostLabel(label) && text[domain] !== "@" ? domain : -1;
   }
   for (let index = dots.length - 1; index >= 0; index -= 1) {
     const dot = dots[index];
