@@ -1751,9 +1751,10 @@ function killDirect(child, signalLater = setTimeout) {
   try {
     signalChild(child, "SIGTERM");
   } catch (error) {
+    if (error?.code === "ESRCH") return true;
     // Darwin reports EPERM when the detached group has already exited.
-    if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error;
-    return true;
+    if (error?.code === "EPERM" && typeof child.killGroup === "function") return true;
+    throw error;
   }
   const timer = signalLater(() => {
     if (!child.killGroup && !shouldKillChild(child)) return;
