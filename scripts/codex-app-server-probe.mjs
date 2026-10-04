@@ -813,6 +813,34 @@ function isPathTokenChar(char) {
   );
 }
 
+/** `Name (note)/file` keeps the parenthesized piece. A group that does not lead to `/` stays text. */
+function posixParenContinuation(text, index) {
+  let cursor = index;
+  while (cursor < text.length) {
+    let look = cursor;
+    while (look < text.length && (text[look] === " " || text[look] === "\t")) look += 1;
+    if (text[look] !== "(") return -1;
+    let depth = 0;
+    let closed = -1;
+    for (let scan = look; scan < text.length; scan += 1) {
+      const char = text[scan];
+      if (char === "\n" || char === "\r" || char === "/") break;
+      if (char === "(") depth += 1;
+      else if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          closed = scan;
+          break;
+        }
+      }
+    }
+    if (closed === -1) return -1;
+    cursor = closed + 1;
+    if (text[cursor] === "/") return cursor;
+  }
+  return -1;
+}
+
 let posixText = null;
 let posixAt = null;
 
@@ -852,6 +880,12 @@ function isRelativePosixPath(text, index) {
         if (char === "\\") {
           stoppedOnBackslash = true;
           break;
+        }
+        if (char === " " || char === "\t" || char === "(") {
+          const slash = posixParenContinuation(text, end);
+          if (slash < 0) break;
+          end = slash;
+          continue;
         }
         if (!isPathTokenChar(char) && char !== "/") break;
         if (char === "/") slashes.push(end);
@@ -1168,6 +1202,12 @@ function quotedLocalStart(text, at, floor) {
 }
 
 const EMAIL_LOCAL = /[\p{L}\p{M}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
+
+/** ASCII atext, plus any non-ASCII character from SMTPUTF8. */
+function isEmailLocalChar(char) {
+  if (EMAIL_LOCAL.test(char)) return true;
+  return char.codePointAt(0) > 127;
+}
 const EMAIL_DOMAIN = /[\p{L}\p{M}0-9.-]/u;
 const EMAIL_TLD = /^[\p{L}\p{M}]+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
@@ -1220,10 +1260,19 @@ function escapedAt(text, index, floor) {
 }
 
 function closingQuote(text, open) {
+  let escaped = false;
   for (let index = open + 1; index < text.length; index += 1) {
     const char = text[index];
     if (char === "\n" || char === "\r") return -1;
-    if (char === '"' && !escapedAt(text, index, open)) return index;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') return index;
   }
   return -1;
 }
@@ -1247,10 +1296,19 @@ function commentCloseAt(text) {
   commentCloses = new Int32Array(text.length);
   commentCloses.fill(-1);
   const stack = [];
+  let escaped = false;
   for (let index = 0; index < text.length; index += 1) {
-    if (escapedAt(text, index, 0)) continue;
-    if (text[index] === "(") stack.push(index);
-    else if (text[index] === ")" && stack.length > 0) commentCloses[stack.pop()] = index;
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "(") stack.push(index);
+    else if (char === ")" && stack.length > 0) commentCloses[stack.pop()] = index;
   }
   return commentCloses;
 }
@@ -1306,8 +1364,21 @@ function nextMailboxAt(text, cursor) {
   const closes = commentCloseAt(text);
   let index = cursor;
   let plainUntil = -1;
+  let escaped = false;
   while (index < text.length) {
-    if (index >= plainUntil && !escapedAt(text, index, cursor) && text[index] === '"') {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      if (char === "\n" || char === "\r") plainUntil = -1;
+      index += 1;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      index += 1;
+      continue;
+    }
+    if (index >= plainUntil && char === '"') {
       const close = closingQuote(text, index);
       if (close === -1) {
         plainUntil = lineEndAt(text, index);
@@ -1321,7 +1392,7 @@ function nextMailboxAt(text, cursor) {
       index += 1;
       continue;
     }
-    if (index >= plainUntil && !escapedAt(text, index, cursor) && text[index] === "(") {
+    if (index >= plainUntil && char === "(") {
       const close = closes[index] ?? -1;
       if (close === -1) {
         plainUntil = lineEndAt(text, index);
@@ -1335,8 +1406,8 @@ function nextMailboxAt(text, cursor) {
       index += 1;
       continue;
     }
-    if (text[index] === "\n" || text[index] === "\r") plainUntil = -1;
-    if (text[index] === "@" && !escapedAt(text, index, cursor)) return index;
+    if (char === "\n" || char === "\r") plainUntil = -1;
+    if (char === "@") return index;
     index += 1;
   }
   return -1;
@@ -1359,7 +1430,7 @@ function redactEmails(text) {
       tokenAt -= 1;
     }
     const schemeAt = quoted === -1 ? text.indexOf("://", tokenAt) : -1;
-    while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) {
+    while (quoted === -1 && local > cursor && isEmailLocalChar(text[local - 1])) {
       if (text[local - 1] === "/" && schemeAt !== -1 && schemeAt < local - 1) break;
       local -= 1;
     }

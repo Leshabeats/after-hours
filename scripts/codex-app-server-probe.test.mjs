@@ -731,11 +731,25 @@ describe("codex app-server probe", () => {
       redactDiagnostic("The Private Project/secrets/key.txt was locked"),
       "The [redacted] was locked",
     );
+    assert.equal(
+      redactDiagnostic("see Private (old)/secret/key.txt later"),
+      "see [redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("The Private (old)/secret/key.txt was locked"),
+      "The [redacted] was locked",
+    );
+    assert.equal(redactDiagnostic("see Private (old) later"), "see Private (old) later");
     const deepWindows = `${"a\\".repeat(16000)}a.txt`;
     const deepWindowsStarted = Date.now();
     const deepWindowsRedacted = redactDiagnostic(deepWindows);
     assert.equal(Date.now() - deepWindowsStarted < 1000, true);
     assert.equal(deepWindowsRedacted.includes("a\\"), false);
+    const slashUri = `https://example.com/${"\\".repeat(40000)}`;
+    const slashStarted = Date.now();
+    const slashRedacted = redactDiagnostic(slashUri);
+    assert.equal(Date.now() - slashStarted < 1000, true);
+    assert.equal(slashRedacted.startsWith("https://example.com/"), true);
     const nestedParens = `${"(".repeat(16000)}${")".repeat(16000)}`;
     const nestedStarted = Date.now();
     assert.equal(redactDiagnostic(nestedParens), nestedParens);
@@ -1041,6 +1055,8 @@ describe("codex app-server probe", () => {
       redactDiagnostic("alice@\u0909\u0926\u093e\u0939\u0930\u0923.\u092d\u093e\u0930\u0924"),
       "[redacted]",
     );
+    assert.equal(redactDiagnostic("see user١@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see user★@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
