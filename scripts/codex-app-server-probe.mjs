@@ -1171,6 +1171,43 @@ function isEmailTld(label) {
   return EMAIL_TLD.test(label) || EMAIL_PUNYCODE_TLD.test(label);
 }
 
+function skipCommentBackward(text, end, limit) {
+  if (text[end - 1] !== ")") return end;
+  let depth = 0;
+  for (let index = end - 1; index >= limit; index -= 1) {
+    let escapes = 0;
+    for (let look = index - 1; look >= limit && text[look] === "\\"; look -= 1) escapes += 1;
+    if (escapes % 2 === 1) continue;
+    const char = text[index];
+    if (char === ")") depth += 1;
+    else if (char === "(") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return end;
+}
+
+/** Spaces and `(comment)` immediately before `@`. The local part stays to the left. */
+function skipCfwsBackward(text, end, limit) {
+  let index = end;
+  while (index > limit) {
+    const char = text[index - 1];
+    if (char === " " || char === "\t" || char === "\n" || char === "\r") {
+      index -= 1;
+      continue;
+    }
+    if (char === ")") {
+      const next = skipCommentBackward(text, index, limit);
+      if (next === index) break;
+      index = next;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
 /** Find addresses from each @. A greedy local-part regex retries every character of a long line. */
 function redactEmails(text) {
   let redacted = "";
@@ -1191,7 +1228,7 @@ function redactEmails(text) {
     }
     if (at === -1) break;
     const quoted = quotedLocalStart(text, at, cursor);
-    let local = quoted === -1 ? at : quoted;
+    let local = quoted === -1 ? skipCfwsBackward(text, at, cursor) : quoted;
     let tokenAt = at;
     while (tokenAt > cursor) {
       const previous = text[tokenAt - 1];

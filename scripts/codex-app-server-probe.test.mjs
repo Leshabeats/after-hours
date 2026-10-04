@@ -1026,6 +1026,24 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
+    assert.equal(redactDiagnostic("see user(comment)@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see user (comment) @example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see user(a(b)c)@example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("auth failed for user(comment)@localhost."),
+      "auth failed for [redacted].",
+    );
+    const commentMail = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        originator: "user(comment)@example.com",
+        source: "cli",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(commentMail).includes("example.com"), false);
+    assert.equal(JSON.stringify(commentMail).includes("comment"), false);
+    assert.equal(commentMail.originators["[redacted]"], 1);
     assert.equal(
       redactDiagnostic("auth failed for alice@localhost."),
       "auth failed for [redacted].",
