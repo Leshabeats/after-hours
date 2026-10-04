@@ -896,6 +896,21 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("Cannot open,src/private/key.txt"), "Cannot open,[redacted]");
     assert.equal(redactDiagnostic("name,with,commas/secret/file.txt"), "[redacted]");
     assert.equal(redactDiagnostic("Error src/private/key.txt"), "Error [redacted]");
+    assert.equal(redactDiagnostic("See\nsrc/private/key.txt"), "See\n[redacted]");
+    assert.equal(redactDiagnostic("Cannot open\nsrc/private/key.txt"), "Cannot open\n[redacted]");
+    assert.equal(
+      redactDiagnostic("warning: missing\nconfig/local/secrets.json"),
+      "warning: missing\n[redacted]",
+    );
+    assert.equal(
+      redactDiagnostic("Something went wrong today\nfoo/bar/baz.txt"),
+      "Something went wrong today\n[redacted]",
+    );
+    assert.equal(redactDiagnostic("Error:src/private/key.txt"), "Error:[redacted]");
+    assert.equal(redactDiagnostic("Missing:src/private/key.txt"), "Missing:[redacted]");
+    assert.equal(redactDiagnostic("because:src/private/key.txt"), "because:[redacted]");
+    assert.equal(redactDiagnostic("Failed=src/private/key.txt"), "Failed=[redacted]");
+    assert.equal(redactDiagnostic("See|src/private/key.txt"), "See|[redacted]");
     const punctPath = summarizeThreads([
       {
         source: { custom: "R&D/client/secrets/key.txt" },

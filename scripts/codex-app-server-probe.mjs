@@ -1072,6 +1072,7 @@ function isRelativePosixPath(text, index) {
           stoppedOnBackslash = true;
           break;
         }
+        if (char === "\n" || char === "\r") break;
         if (char === " " || char === "\t" || char === "(") {
           if (PATH_CLAUSE.has(text.slice(cursor, end))) break;
           const slash = posixParenContinuation(text, end);
@@ -1082,10 +1083,8 @@ function isRelativePosixPath(text, index) {
         const point = pointAt(text, end);
         const glyph = point?.char ?? char;
         if (!isPathTokenChar(glyph) && glyph !== "/") {
-          // `Error,src/...` keeps the failure word. `name,with,commas/secret` stays one path.
-          if ((glyph === "," || glyph === ";") && isFailureClause(text.slice(cursor, end))) {
-            break;
-          }
+          // `Error:src/...` keeps the failure word. `file:name/...` stays one path.
+          if (isFailureClause(text.slice(cursor, end))) break;
           // Any other mark stays in the name when a later slash belongs to this path.
           // One failed look sets the bound, so a long `a|` run stays linear.
           if (end < barrenUntil) break;
