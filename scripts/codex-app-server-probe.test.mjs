@@ -1412,6 +1412,16 @@ describe("codex app-server probe", () => {
     assert.equal(redacted.includes("secret"), false);
   });
 
+  it("does not keep a path prefix from an oversized stderr line", () => {
+    const state = { safe: "", pending: "" };
+    retainStderr(state, `${"x".repeat(100_000)}PrivateProject`);
+    retainStderr(state, "/secrets/key.txt\nlater ok");
+    const detail = stderrDetail(stderrText(state));
+    assert.equal(detail.includes("PrivateProject"), false);
+    assert.equal(detail.includes("secrets"), false);
+    assert.equal(detail.includes("later ok"), true);
+  });
+
   it("drops the rest of an oversized stderr line", () => {
     const state = { safe: "", pending: "" };
     retainStderr(state, `/${"n".repeat(100_000)}`);
@@ -1711,6 +1721,49 @@ describe("codex app-server probe", () => {
       assert.equal(summary.threads.originators["live-origin"], 1);
       assert.equal(summary.threads.originators["exec-origin"], 1);
       assert.equal(summary.threads.originators["archived-origin"], 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps counted threads when a later list loses the connection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "later-close.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "let lists = 0;",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "thread/list") {',
+        "    lists += 1;",
+        "    if (lists > 1) {",
+        "      process.stdout.end();",
+        "      setTimeout(() => {}, 30000);",
+        "      return;",
+        "    }",
+        "    const data = [{ id: 'listed-thread', source: 'cli', originator: 'probe-origin', status: { type: 'idle' } }];",
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { data, nextCursor: null } }) + "\\n");',
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const started = Date.now();
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.threads.count, 1);
+      assert.equal(summary.threads.originators["probe-origin"], 1);
+      assert.match(summary.threads.extraSourceError, /output closed/);
+      assert.match(summary.rateLimits.error, /output closed/);
+      assert.equal(Date.now() - started < 5000, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

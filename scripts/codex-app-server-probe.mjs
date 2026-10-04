@@ -1233,7 +1233,7 @@ export function retainStderr(state, chunk) {
     state.safe = `${state.safe}${redactDiagnostic(complete)}`.slice(-2000);
   }
   if (state.pending.length > STDERR_LINE_LIMIT) {
-    state.safe = `${state.safe}${redactDiagnostic(state.pending)}`.slice(-2000);
+    // The line is not finished, so a path token may still be split. Drop the prefix.
     state.pending = "";
     state.discardLine = true;
   }
@@ -1729,14 +1729,14 @@ function emailEnd(text, domainStart, domain) {
   return -1;
 }
 
-async function readRateLimits(client) {
+async function readRateLimits(client, { keepTransportFailure = false } = {}) {
   try {
     const limits = await client.request(100, "account/rateLimits/read", {
       excludeResetCreditDetails: true,
     });
     return limits.error ? rpcError(limits.error) : summarizeRateLimits(limits.result);
   } catch (error) {
-    if (error?.priorFailure) throw error;
+    if (error?.priorFailure && !keepTransportFailure) throw error;
     return rpcError({ message: error instanceof Error ? error.message : String(error) });
   }
 }
@@ -2210,7 +2210,7 @@ export async function runProbe({
         ...(archived.error ? { archivedError: rpcError(archived.error).error } : {}),
         ...(archivedExtra.error ? { archivedExtraError: rpcError(archivedExtra.error).error } : {}),
       },
-      rateLimits: await readRateLimits(client),
+      rateLimits: await readRateLimits(client, { keepTransportFailure: true }),
     };
   } finally {
     client.stop();
