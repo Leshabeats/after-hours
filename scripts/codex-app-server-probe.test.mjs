@@ -655,6 +655,16 @@ describe("codex app-server probe", () => {
     const gluedStarted = Date.now();
     assert.equal(redactDiagnostic(glued), "[redacted]");
     assert.equal(Date.now() - gluedStarted < 1000, true);
+    const ampersands = `${"a&".repeat(20000)}/x/y.txt`;
+    const ampersandStarted = Date.now();
+    const ampersandRedacted = redactDiagnostic(ampersands);
+    assert.equal(Date.now() - ampersandStarted < 1000, true);
+    assert.equal(ampersandRedacted.includes("/x"), false);
+    assert.equal(ampersandRedacted.includes("y.txt"), false);
+    const joined = `${"a&".repeat(20000)}x/y/z.txt`;
+    const joinedStarted = Date.now();
+    assert.equal(redactDiagnostic(joined), "[redacted]");
+    assert.equal(Date.now() - joinedStarted < 1000, true);
     assert.equal(missing.startsWith("Missing "), true);
     assert.equal(missing.includes("sessions"), false);
     assert.equal(missing.includes("Jane"), false);
@@ -877,6 +887,15 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see file?name/secrets/key.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("note file:name/secrets/key.txt"), "note [redacted]");
     assert.equal(redactDiagnostic("at 12:30 later"), "at 12:30 later");
+    assert.equal(redactDiagnostic("Error,src/private/key.txt"), "Error,[redacted]");
+    assert.equal(redactDiagnostic("error,src/private/key.txt"), "error,[redacted]");
+    assert.equal(redactDiagnostic("Missing,src/private/key.txt"), "Missing,[redacted]");
+    assert.equal(redactDiagnostic("See;src/private/key.txt"), "See;[redacted]");
+    assert.equal(redactDiagnostic("Failed,src/private/key.txt"), "Failed,[redacted]");
+    assert.equal(redactDiagnostic("because,src/private/key.txt"), "because,[redacted]");
+    assert.equal(redactDiagnostic("Cannot open,src/private/key.txt"), "Cannot open,[redacted]");
+    assert.equal(redactDiagnostic("name,with,commas/secret/file.txt"), "[redacted]");
+    assert.equal(redactDiagnostic("Error src/private/key.txt"), "Error [redacted]");
     const punctPath = summarizeThreads([
       {
         source: { custom: "R&D/client/secrets/key.txt" },

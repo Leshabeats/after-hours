@@ -846,6 +846,14 @@ const PATH_CLAUSE = new Set([
   "The",
 ]);
 
+const PATH_CLAUSE_FOLD = new Set(
+  [...PATH_CLAUSE].map((word) => word.toLowerCase()).concat(["because"]),
+);
+
+function isFailureClause(word) {
+  return PATH_CLAUSE_FOLD.has(word.toLowerCase());
+}
+
 let windowsStartText = null;
 let windowsStarts = null;
 
@@ -1074,7 +1082,11 @@ function isRelativePosixPath(text, index) {
         const point = pointAt(text, end);
         const glyph = point?.char ?? char;
         if (!isPathTokenChar(glyph) && glyph !== "/") {
-          // Any mark stays in the name when a later slash belongs to this path.
+          // `Error,src/...` keeps the failure word. `name,with,commas/secret` stays one path.
+          if ((glyph === "," || glyph === ";") && isFailureClause(text.slice(cursor, end))) {
+            break;
+          }
+          // Any other mark stays in the name when a later slash belongs to this path.
           // One failed look sets the bound, so a long `a|` run stays linear.
           if (end < barrenUntil) break;
           let pathAfter = cachedSlash > end;
