@@ -1237,6 +1237,21 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@3com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@3- later"), "see alice@3- later");
+    assert.equal(redactDiagnostic("alice@corp.x"), "[redacted]");
+    assert.equal(redactDiagnostic("see alice@corp.é later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("alice@𐐀"), "[redacted]");
+    const shortDomain = summarizeThreads([
+      {
+        source: { custom: "alice@corp.x" },
+        originator: "alice@𐐀",
+        status: { type: "idle" },
+      },
+    ]);
+    const shortJson = JSON.stringify(shortDomain);
+    assert.equal(shortJson.includes("alice"), false);
+    assert.equal(shortJson.includes("corp"), false);
+    assert.equal(shortDomain.originators["[redacted]"], 1);
+    assert.equal(shortDomain.sources["[redacted]"], 1);
     const digitMail = summarizeThreads([
       {
         source: { custom: "alice@1" },
@@ -1415,7 +1430,7 @@ describe("codex app-server probe", () => {
     assert.equal(stderrDetail(pair).includes("secret"), false);
     const dottedHost = `a@${"a.".repeat(40_000)}1`;
     const dottedStarted = Date.now();
-    assert.equal(redactDiagnostic(dottedHost), dottedHost);
+    assert.equal(redactDiagnostic(dottedHost), "[redacted].1");
     assert.equal(Date.now() - dottedStarted < 1000, true);
     assert.equal(stderrDetail("alice@example.com").includes("@"), false);
     assert.equal(stderrDetail("alice@example.com.").includes("alice"), false);

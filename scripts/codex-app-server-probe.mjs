@@ -1737,7 +1737,7 @@ function redactEmails(text) {
 function isHostLabel(label) {
   if (label.length < 1 || label.length > 63) return false;
   if (!/^[\p{L}\p{M}\p{Nd}][\p{L}\p{M}\p{Nd}-]*$/u.test(label)) return false;
-  const last = label[label.length - 1];
+  const last = charBefore(label, label.length);
   return last !== "-" && /[\p{L}\p{M}\p{Nd}]/u.test(last);
 }
 
@@ -1883,7 +1883,7 @@ function emailEnd(text, domainStart, domain) {
     if (dot <= domainStart) continue;
     const labelEnd = index + 1 < dots.length ? dots[index + 1] : domain;
     const tld = text.slice(dot + 1, labelEnd);
-    if (tld.length < 2 || !isEmailTld(tld)) continue;
+    if (!isEmailTld(tld)) continue;
     if (text[labelEnd] === "@") continue;
     return labelEnd;
   }
