@@ -1023,7 +1023,7 @@ function posixParenContinuation(text, index) {
 let posixText = null;
 let posixAt = null;
 
-function markPosixPrefix(text, marks, pathStart) {
+function markPosixPrefix(text, marks, pathStart, allowLower = false) {
   let prefix = pathStart;
   while (prefix > 0 && (text[prefix - 1] === " " || text[prefix - 1] === "\t")) {
     let space = prefix - 1;
@@ -1032,9 +1032,11 @@ function markPosixPrefix(text, marks, pathStart) {
     const wordEnd = space - 1;
     let start = wordEnd;
     while (start > 0 && isWordChar(text[start - 1])) start -= 1;
-    if (!isWordStart(text, start) || text[start] === text[start].toLowerCase()) break;
+    const word = text.slice(start, wordEnd + 1);
+    const lower = text[start] === text[start].toLowerCase();
+    if (!isWordStart(text, start) || (lower && !allowLower)) break;
     if (!wordsStayOnOneLine(text, start, pathStart)) break;
-    if (PATH_CLAUSE.has(text.slice(start, wordEnd + 1))) break;
+    if (isFailureClause(word)) break;
     marks[start] = 1;
     prefix = start;
   }
@@ -1147,7 +1149,10 @@ function isRelativePosixPath(text, index) {
             posixAt[mark] = 1;
           if (posixAt[mark] === 1) marked = true;
         }
-        if (marked) markPosixPrefix(text, posixAt, cursor);
+        let head = cursor;
+        while (head < text.length && isWordChar(text[head])) head += 1;
+        const plainHead = text[head] === "/";
+        if (marked) markPosixPrefix(text, posixAt, cursor, slashes.length >= 2 && plainHead);
       }
       cursor = Math.max(end, cursor + 1);
     }

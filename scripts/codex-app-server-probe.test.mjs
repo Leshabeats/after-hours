@@ -890,6 +890,11 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("error R&D/client/secrets/key.txt"), "error [redacted]");
     assert.equal(redactDiagnostic("see R&D later"), "see R&D later");
     assert.equal(redactDiagnostic("error Private=Customer/secrets/key.txt"), "error [redacted]");
+    assert.equal(redactDiagnostic("my private files/secrets/key.txt"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("see my private files/secrets/key.txt later"),
+      "see [redacted] later",
+    );
     assert.equal(redactDiagnostic("see file|name/secrets/key.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see file?name/secrets/key.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("note file:name/secrets/key.txt"), "note [redacted]");
@@ -943,6 +948,18 @@ describe("codex app-server probe", () => {
     assert.equal(equalsJson.includes("file|name"), false);
     assert.equal(equalsPath.originators["[redacted]"], 1);
     assert.equal(equalsPath.sources["[redacted]"], 1);
+    const lowerPath = summarizeThreads([
+      {
+        source: { custom: "my private files/secrets/key.txt" },
+        originator: "my private files/secrets/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const lowerJson = JSON.stringify(lowerPath);
+    assert.equal(lowerJson.includes("private"), false);
+    assert.equal(lowerJson.includes("secrets"), false);
+    assert.equal(lowerPath.originators["[redacted]"], 1);
+    assert.equal(lowerPath.sources["[redacted]"], 1);
     const atPath = summarizeThreads([
       {
         source: { custom: "project@client/secrets/key.txt" },
