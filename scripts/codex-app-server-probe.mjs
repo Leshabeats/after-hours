@@ -1142,26 +1142,6 @@ function quotedLocalStart(text, at, floor) {
   return -1;
 }
 
-/** A quoted local part may contain `@`. The separator is the `@` after the closing quote. */
-function quotedMailboxEnd(text, open) {
-  let close = -1;
-  for (let index = open + 1; index < text.length; index += 1) {
-    const char = text[index];
-    if (char === "\n" || char === "\r") return -1;
-    if (char === '"' && text[index - 1] !== "\\") {
-      close = index;
-      break;
-    }
-  }
-  if (close === -1 || text[close + 1] !== "@") return -1;
-  const at = close + 1;
-  const literal = addressLiteralEnd(text, at);
-  if (literal !== -1) return literal;
-  let domain = at + 1;
-  while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
-  return emailEnd(text, at, domain);
-}
-
 const EMAIL_LOCAL = /[\p{L}\p{M}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
 const EMAIL_DOMAIN = /[\p{L}\p{M}0-9.-]/u;
 const EMAIL_TLD = /^[\p{L}\p{M}]+$/u;
@@ -1208,27 +1188,66 @@ function skipCfwsBackward(text, end, limit) {
   return index;
 }
 
+function escapedAt(text, index, floor) {
+  let escapes = 0;
+  for (let look = index - 1; look >= floor && text[look] === "\\"; look -= 1) escapes += 1;
+  return escapes % 2 === 1;
+}
+
+function closingQuote(text, open) {
+  for (let index = open + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") return -1;
+    if (char === '"' && !escapedAt(text, index, open)) return index;
+  }
+  return -1;
+}
+
+function closingComment(text, open) {
+  let depth = 0;
+  for (let index = open; index < text.length; index += 1) {
+    if (escapedAt(text, index, open)) continue;
+    const char = text[index];
+    if (char === "\n" || char === "\r") return -1;
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+/** The `@` that separates a mailbox. An `@` inside quotes or a comment stays put. */
+function nextMailboxAt(text, cursor) {
+  let index = cursor;
+  while (index < text.length) {
+    if (!escapedAt(text, index, cursor) && text[index] === '"') {
+      const close = closingQuote(text, index);
+      index = close === -1 ? index + 1 : close + 1;
+      continue;
+    }
+    if (!escapedAt(text, index, cursor) && text[index] === "(") {
+      const close = closingComment(text, index);
+      index = close === -1 ? index + 1 : close + 1;
+      continue;
+    }
+    if (text[index] === "@" && !escapedAt(text, index, cursor)) return index;
+    index += 1;
+  }
+  return -1;
+}
+
 /** Find addresses from each @. A greedy local-part regex retries every character of a long line. */
 function redactEmails(text) {
   let redacted = "";
   let cursor = 0;
   while (cursor < text.length) {
-    const quote = text.indexOf('"', cursor);
-    const at = text.indexOf("@", cursor);
-    if (quote !== -1 && text[quote - 1] !== "\\" && (at === -1 || quote < at)) {
-      const end = quotedMailboxEnd(text, quote);
-      if (end > quote) {
-        redacted += `${text.slice(cursor, quote)}[redacted]`;
-        cursor = end;
-        continue;
-      }
-      redacted += text.slice(cursor, quote + 1);
-      cursor = quote + 1;
-      continue;
-    }
+    const at = nextMailboxAt(text, cursor);
     if (at === -1) break;
-    const quoted = quotedLocalStart(text, at, cursor);
-    let local = quoted === -1 ? skipCfwsBackward(text, at, cursor) : quoted;
+    const boundary = skipCfwsBackward(text, at, cursor);
+    const quoted = quotedLocalStart(text, boundary, cursor);
+    let local = quoted === -1 ? boundary : quoted;
     let tokenAt = at;
     while (tokenAt > cursor) {
       const previous = text[tokenAt - 1];

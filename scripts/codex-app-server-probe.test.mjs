@@ -1027,6 +1027,13 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
     assert.equal(redactDiagnostic("see user(comment)@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see user(note @)@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see user(@secret)@example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see user(alice@secret)@example.com later"),
+      "see [redacted] later",
+    );
+    assert.equal(redactDiagnostic('"a@b"(comment)@example.com'), "[redacted]");
     assert.equal(redactDiagnostic("see user (comment) @example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(a(b)c)@example.com later"), "see [redacted] later");
     assert.equal(
