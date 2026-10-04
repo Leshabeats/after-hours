@@ -659,6 +659,39 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("a/b/c\\d"), "[redacted]");
     assert.equal(redactDiagnostic("see C:secret.txt later"), "see [redacted] later");
     assert.equal(redactDiagnostic("missing C:tmp.txt after"), "missing [redacted] after");
+    assert.equal(redactDiagnostic("see C:secret later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see D:PrivateFolder later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("open C:Users\\Alice because missing"),
+      "open [redacted] because missing",
+    );
+    assert.equal(redactDiagnostic("see C:My Secret.txt later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see C:My Documents\\key later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see https://example.com/a:C:secret.txt later"),
+      "see https://example.com/a:[redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("see https://example.com/a:C:secret later"),
+      "see https://example.com/a:[redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("see https://example.com/a:C:My Secret.txt later"),
+      "see https://example.com/a:[redacted] later",
+    );
+    const driveRelative = summarizeThreads([
+      {
+        source: { custom: "C:My Secret.txt" },
+        originator: "C:Users\\Alice",
+        status: { type: "idle" },
+      },
+    ]);
+    const driveRelativeJson = JSON.stringify(driveRelative);
+    assert.equal(driveRelativeJson.includes("Alice"), false);
+    assert.equal(driveRelativeJson.includes("Secret"), false);
+    assert.equal(driveRelativeJson.includes("Users"), false);
+    assert.equal(driveRelative.originators["[redacted]"], 1);
+    assert.equal(driveRelative.sources["[redacted]"], 1);
     const posixSummary = summarizeThreads([
       {
         source: { custom: "src/private/key.txt" },
@@ -899,6 +932,8 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("alice@пример.рф"), "[redacted]");
     assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
     assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
+    assert.equal(redactDiagnostic('see "a@b"@example.com later'), "see [redacted] later");
+    assert.equal(redactDiagnostic('auth failed for "a@b"@example.com.'), "auth failed for [redacted].");
     assert.equal(redactDiagnostic("see alice@[192.0.2.1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[IPv6:2001:db8::1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see alice@[not-an-ip] later");
@@ -1138,6 +1173,10 @@ describe("codex app-server probe", () => {
         "    return;",
         "  }",
         '  if (message.method === "account/rateLimits/read") {',
+        "    if (!message.params || message.params.excludeResetCreditDetails !== true) {",
+        "      process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');",
+        "      return;",
+        "    }",
         "    process.stdout.write(JSON.stringify({ id: message.id, result: { ordinaryUsageAllowed: false, rateLimits: { limitId: 'codex', primary: { usedPercent: 10, windowDurationMins: 60, resetsAt: 1 }, secondary: null, spendControlReached: true, individualLimit: { limit: 'usd-secret-limit', remainingPercent: 0, resetsAt: 5, used: 'usd-secret-used' } } } }) + '\\n');",
         "  }",
         "});",
@@ -1293,6 +1332,10 @@ describe("codex app-server probe", () => {
         "    return;",
         "  }",
         '  if (message.method === "account/rateLimits/read") {',
+        "    if (!message.params || message.params.excludeResetCreditDetails !== true) {",
+        "      process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n');",
+        "      return;",
+        "    }",
         "    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: { usedPercent: 4, windowDurationMins: 60, resetsAt: null } } } }) + '\\n');",
         "  }",
         "});",

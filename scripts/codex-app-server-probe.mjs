@@ -262,7 +262,8 @@ function remoteUriEnd(text, index) {
         next === "/" ||
         next === "\\" ||
         (next === "~" && isTildePath(text, cursor + 1)) ||
-        (/[A-Za-z]/.test(next) && (after === "/" || after === "\\"))
+        (/[A-Za-z]/.test(next) && (after === "/" || after === "\\")) ||
+        isDriveRelativePath(text, cursor + 1)
       ) {
         return cursor;
       }
@@ -380,50 +381,96 @@ function isPathStart(text, index) {
 
 let driveText = null;
 let drivePaths = null;
+let driveEnds = null;
+const NO_DRIVE = new Uint8Array(0);
 
-/** One pass. `C:secret.txt` is a file on that drive's current directory. */
-function isDriveRelativePath(text, index) {
-  if (driveText !== text) {
-    driveText = text;
-    drivePaths = new Uint8Array(text.length);
-    let cursor = 0;
-    while (cursor < text.length) {
-      const after = text[cursor + 2] ?? "";
-      if (
-        !/[A-Za-z]/.test(text[cursor] ?? "") ||
-        /[A-Za-z]/.test(text[cursor - 1] ?? "") ||
-        text[cursor + 1] !== ":" ||
-        after === "" ||
-        after === "\\" ||
-        after === "/" ||
-        after === " " ||
-        after === "\t"
-      ) {
-        cursor += 1;
-        continue;
-      }
-      let end = cursor + 2;
-      let dot = false;
-      while (end < text.length) {
-        const char = text[end];
-        if (
-          char === " " ||
-          char === "\t" ||
-          char === "\n" ||
-          char === "\r" ||
-          char === '"' ||
-          char === "`"
-        ) {
-          break;
-        }
-        if (char === ".") dot = true;
-        end += 1;
-      }
-      if (dot) drivePaths[cursor] = 1;
-      cursor = Math.max(end, cursor + 1);
+function driveTokenEnd(text, index) {
+  let end = index;
+  let dot = false;
+  let sep = false;
+  let nameLen = 0;
+  while (end < text.length) {
+    const char = text[end];
+    if (
+      char === " " ||
+      char === "\t" ||
+      char === "\n" ||
+      char === "\r" ||
+      char === '"' ||
+      char === "`" ||
+      char === ":"
+    ) {
+      break;
     }
+    if (char === ".") dot = true;
+    else if (char === "\\" || char === "/") sep = true;
+    else nameLen += 1;
+    end += 1;
   }
+  return { end, dot, sep, nameLen };
+}
+
+/**
+ * One pass. `C:name` is a file on that drive's current directory.
+ * A later word stays only when that word itself has a dot or a separator.
+ * `pathEnd` would keep the rest of a line whose last segment has no dot.
+ */
+function scanDriveRelative(text) {
+  if (driveText === text) return;
+  driveText = text;
+  if (!text.includes(":")) {
+    drivePaths = NO_DRIVE;
+    driveEnds = NO_DRIVE;
+    return;
+  }
+  drivePaths = new Uint8Array(text.length);
+  driveEnds = new Int32Array(text.length);
+  let cursor = 0;
+  while (cursor < text.length) {
+    const after = text[cursor + 2] ?? "";
+    if (
+      !/[A-Za-z]/.test(text[cursor] ?? "") ||
+      /[A-Za-z]/.test(text[cursor - 1] ?? "") ||
+      text[cursor + 1] !== ":" ||
+      after === "" ||
+      after === "\\" ||
+      after === "/" ||
+      after === " " ||
+      after === "\t"
+    ) {
+      cursor += 1;
+      continue;
+    }
+    const token = driveTokenEnd(text, cursor + 2);
+    // One letter is the `a:a:a` chain, not a file name. Keep scanning so `a:C:secret` still sees `C`.
+    if (!(token.dot || token.sep || token.nameLen >= 2)) {
+      cursor += 1;
+      continue;
+    }
+    let end = token.end;
+    while (end < text.length && (text[end] === " " || text[end] === "\t")) {
+      let next = end;
+      while (text[next] === " " || text[next] === "\t") next += 1;
+      if (next >= text.length || text[next] === "\n" || text[next] === "\r") break;
+      const piece = driveTokenEnd(text, next);
+      if (!(piece.dot || piece.sep) || piece.end === next) break;
+      end = piece.end;
+    }
+    drivePaths[cursor] = 1;
+    driveEnds[cursor] = end;
+    cursor = end;
+  }
+}
+
+function isDriveRelativePath(text, index) {
+  scanDriveRelative(text);
   return drivePaths[index] === 1;
+}
+
+function driveRelativeEnd(text, index) {
+  scanDriveRelative(text);
+  const end = driveEnds[index];
+  return end > index ? end : index + 1;
 }
 
 /**
@@ -867,6 +914,11 @@ export function redactDiagnostic(value) {
       index = plainEnd;
       continue;
     }
+    if (isDriveRelativePath(text, index)) {
+      redacted += "[redacted]";
+      index = driveRelativeEnd(text, index);
+      continue;
+    }
     if (!isPathStart(text, index)) {
       redacted += text[index];
       index += 1;
@@ -902,6 +954,26 @@ function quotedLocalStart(text, at, floor) {
   return -1;
 }
 
+/** A quoted local part may contain `@`. The separator is the `@` after the closing quote. */
+function quotedMailboxEnd(text, open) {
+  let close = -1;
+  for (let index = open + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") return -1;
+    if (char === '"' && text[index - 1] !== "\\") {
+      close = index;
+      break;
+    }
+  }
+  if (close === -1 || text[close + 1] !== "@") return -1;
+  const at = close + 1;
+  const literal = addressLiteralEnd(text, at);
+  if (literal !== -1) return literal;
+  let domain = at + 1;
+  while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
+  return emailEnd(text, at, domain);
+}
+
 const EMAIL_LOCAL = /[\p{L}0-9._%+\-'\u2019]/u;
 const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
 const EMAIL_TLD = /^\p{L}+$/u;
@@ -915,7 +987,21 @@ function isEmailTld(label) {
 function redactEmails(text) {
   let redacted = "";
   let cursor = 0;
-  for (let at = text.indexOf("@", cursor); at !== -1; at = text.indexOf("@", cursor)) {
+  while (cursor < text.length) {
+    const quote = text.indexOf('"', cursor);
+    const at = text.indexOf("@", cursor);
+    if (quote !== -1 && text[quote - 1] !== "\\" && (at === -1 || quote < at)) {
+      const end = quotedMailboxEnd(text, quote);
+      if (end > quote) {
+        redacted += `${text.slice(cursor, quote)}[redacted]`;
+        cursor = end;
+        continue;
+      }
+      redacted += text.slice(cursor, quote + 1);
+      cursor = quote + 1;
+      continue;
+    }
+    if (at === -1) break;
     const quoted = quotedLocalStart(text, at, cursor);
     let local = quoted === -1 ? at : quoted;
     while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
@@ -1252,9 +1338,10 @@ export async function runProbe({
     client.notify("initialized", {});
     if (init.error) return { userAgent: null, threads: rpcError(init.error), rateLimits: null };
 
+    const rateLimitsParams = { excludeResetCreditDetails: true };
     const active = await listThreads(client, { pages, limit, archived: false, idBase: 2 });
     if (active.error) {
-      const limits = await client.request(100, "account/rateLimits/read", {});
+      const limits = await client.request(100, "account/rateLimits/read", rateLimitsParams);
       return {
         userAgent: shareableUserAgent(init.result?.userAgent),
         threads: rpcError(active.error),
@@ -1285,7 +1372,7 @@ export async function runProbe({
         ...(archivedExtra.error ? [] : archivedExtra.threads),
       ]),
     );
-    const limits = await client.request(100, "account/rateLimits/read", {});
+    const limits = await client.request(100, "account/rateLimits/read", rateLimitsParams);
     return {
       userAgent: shareableUserAgent(init.result?.userAgent),
       threads: {
