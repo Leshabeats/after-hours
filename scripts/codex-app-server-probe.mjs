@@ -1633,7 +1633,7 @@ function redactEmails(text) {
 
 function isHostLabel(label) {
   if (label.length < 1 || label.length > 63) return false;
-  if (!/^[\p{L}\p{M}][\p{L}\p{M}0-9-]*$/u.test(label)) return false;
+  if (!/^[\p{L}\p{M}0-9][\p{L}\p{M}0-9-]*$/u.test(label)) return false;
   const last = label[label.length - 1];
   return last !== "-" && /[\p{L}\p{M}0-9]/u.test(last);
 }

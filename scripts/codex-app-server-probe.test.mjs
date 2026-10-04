@@ -1122,6 +1122,21 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@b later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@x later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@3com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@1 later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@3- later"), "see alice@3- later");
+    const digitMail = summarizeThreads([
+      {
+        source: { custom: "alice@1" },
+        originator: "alice@3com",
+        status: { type: "idle" },
+      },
+    ]);
+    const digitJson = JSON.stringify(digitMail);
+    assert.equal(digitJson.includes("alice"), false);
+    assert.equal(digitJson.includes("3com"), false);
+    assert.equal(digitMail.originators["[redacted]"], 1);
+    assert.equal(digitMail.sources["[redacted]"], 1);
     assert.equal(redactDiagnostic("see user(comment)@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(note @)@example.com later"), "see [redacted] later");
     assert.equal(
