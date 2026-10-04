@@ -610,6 +610,15 @@ describe("codex app-server probe", () => {
     const fragmentRedacted = redactDiagnostic(fragments);
     assert.equal(Date.now() - fragmentStarted < 1000, true);
     assert.equal(fragmentRedacted.includes("a\\a"), false);
+    assert.equal(redactDiagnostic("~user~name/secret"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("rollout ~alice~/.codex/sessions/a.jsonl missing"),
+      "rollout [redacted] missing",
+    );
+    const schemes = `${"a-".repeat(10000)}:`;
+    const schemeStarted = Date.now();
+    assert.equal(redactDiagnostic(schemes), schemes);
+    assert.equal(Date.now() - schemeStarted < 1000, true);
     const tildes = "~".repeat(16000);
     const tildeStarted = Date.now();
     assert.equal(redactDiagnostic(tildes), tildes);
@@ -876,6 +885,9 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("alice@пример.рф"), "[redacted]");
     assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
     assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@[192.0.2.1] later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@[IPv6:2001:db8::1] later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see alice@[not-an-ip] later");
     assert.equal(redactDiagnostic("alice@example.xn--p1ai"), "[redacted]");
     const punycode = redactDiagnostic("wrote alice@example.xn--p1ai later");
     assert.equal(punycode.includes("alice"), false);
@@ -1389,7 +1401,7 @@ describe("codex app-server probe", () => {
         '  if (message.method === "thread/list") {',
         '    process.stderr.write("rollout missing at C:\\\\Users\\\\Ada\\\\secret.jsonl\\n");',
         "    process.stdout.end();",
-        "    setTimeout(() => process.exit(7), 80);",
+        "    setTimeout(() => process.exit(7), 200);",
         "  }",
         "});",
         "",

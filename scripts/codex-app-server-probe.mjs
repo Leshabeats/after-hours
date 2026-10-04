@@ -186,12 +186,33 @@ function readOptions(argv) {
   return options;
 }
 
+let schemeText = null;
+let schemeEnds = null;
+
+/** One pass. Every scheme start in a token shares that token's end. */
 function plainSchemeEnd(text, index) {
-  if (/[A-Za-z0-9]/.test(text[index - 1] ?? "")) return -1;
-  if (!/[A-Za-z]/.test(text[index] ?? "")) return -1;
-  let cursor = index + 1;
-  while (cursor < text.length && /[A-Za-z0-9+.-]/.test(text[cursor])) cursor += 1;
-  return cursor;
+  if (schemeText !== text) {
+    schemeText = text;
+    schemeEnds = new Int32Array(text.length);
+    schemeEnds.fill(-1);
+    let cursor = 0;
+    while (cursor < text.length) {
+      if (/[A-Za-z0-9]/.test(text[cursor - 1] ?? "") || !/[A-Za-z]/.test(text[cursor] ?? "")) {
+        cursor += 1;
+        continue;
+      }
+      let end = cursor + 1;
+      while (end < text.length && /[A-Za-z0-9+.-]/.test(text[end])) end += 1;
+      schemeEnds[cursor] = end;
+      for (let mark = cursor + 1; mark < end; mark += 1) {
+        if (/[A-Za-z]/.test(text[mark]) && !/[A-Za-z0-9]/.test(text[mark - 1] ?? "")) {
+          schemeEnds[mark] = end;
+        }
+      }
+      cursor = end;
+    }
+  }
+  return schemeEnds[index] ?? -1;
 }
 
 /** Copy a remote URI with a real host. Stop before a colon that starts a local path. */
@@ -234,26 +255,49 @@ function isEmptyHostPath(text, index) {
   return text.slice(start, end + 1).toLowerCase() !== "file";
 }
 
+let tildeText = null;
+let tildePaths = null;
+
+function tildeStops(char) {
+  return (
+    char === " " || char === "\t" || char === "\n" || char === "\r" || char === "`" || char === '"'
+  );
+}
+
+/** One pass. A later `~` stays inside the token when a slash follows it. */
 function isTildePath(text, index) {
   if (text[index] !== "~") return false;
-  let cursor = index + 1;
-  while (cursor < text.length) {
-    const char = text[cursor];
-    if (char === "/" || char === "\\") return true;
-    if (char === "~") return false;
-    if (
-      char === " " ||
-      char === "\t" ||
-      char === "\n" ||
-      char === "\r" ||
-      char === "`" ||
-      char === '"'
-    ) {
-      return false;
+  if (tildeText !== text) {
+    tildeText = text;
+    tildePaths = new Uint8Array(text.length);
+    let cursor = 0;
+    while (cursor < text.length) {
+      if (text[cursor] !== "~" || /[A-Za-z0-9]/.test(text[cursor - 1] ?? "")) {
+        cursor += 1;
+        continue;
+      }
+      let end = cursor + 1;
+      let slash = -1;
+      while (end < text.length && !tildeStops(text[end])) {
+        if (text[end] === "/" || text[end] === "\\") {
+          slash = end;
+          break;
+        }
+        end += 1;
+      }
+      if (slash !== -1) {
+        for (let mark = cursor; mark < slash; mark += 1) {
+          if (text[mark] === "~" && !/[A-Za-z0-9]/.test(text[mark - 1] ?? "")) {
+            tildePaths[mark] = 1;
+          }
+        }
+        cursor = slash + 1;
+      } else {
+        cursor = Math.max(end, cursor + 1);
+      }
     }
-    cursor += 1;
   }
-  return false;
+  return tildePaths[index] === 1;
 }
 
 function isPathStart(text, index) {
@@ -472,24 +516,50 @@ function isPathTokenChar(char) {
   return isWordChar(char) || char === "." || char === "_" || char === "-" || char === "+";
 }
 
+let posixText = null;
+let posixAt = null;
+
 function isRelativePosixPath(text, index) {
   if (!isWordStart(text, index)) return false;
-  let slashes = 0;
-  let sawDot = false;
-  let version = false;
-  for (let cursor = index; cursor < text.length; cursor += 1) {
-    const char = text[cursor];
-    if (char === "\\") return false;
-    if (!isPathTokenChar(char) && char !== "/") break;
-    if (char === "/") {
-      slashes += 1;
-      if (slashes === 1 && isVersionSlash(text, cursor + 1)) version = true;
-      if (slashes >= 2) return true;
-    } else if (char === "." && slashes >= 1) {
-      sawDot = true;
+  if (posixText !== text) {
+    posixText = text;
+    posixAt = new Uint8Array(text.length);
+    let cursor = 0;
+    while (cursor < text.length) {
+      if (!isWordStart(text, cursor)) {
+        cursor += 1;
+        continue;
+      }
+      let end = cursor;
+      const slashes = [];
+      while (end < text.length) {
+        const char = text[end];
+        if (char === "\\") break;
+        if (!isPathTokenChar(char) && char !== "/") break;
+        if (char === "/") slashes.push(end);
+        end += 1;
+      }
+      if (slashes.length > 0) {
+        const lastSlash = slashes[slashes.length - 1];
+        const twoSlashAt = slashes.length >= 2 ? slashes[slashes.length - 2] : -1;
+        let dotAfterLast = false;
+        for (let dot = lastSlash + 1; dot < end; dot += 1) {
+          if (text[dot] === ".") {
+            dotAfterLast = true;
+            break;
+          }
+        }
+        const lastIsVersion = isVersionSlash(text, lastSlash + 1);
+        for (let mark = cursor; mark < end; mark += 1) {
+          if (!isWordStart(text, mark)) continue;
+          if (twoSlashAt !== -1 && mark <= twoSlashAt) posixAt[mark] = 1;
+          else if (mark <= lastSlash && dotAfterLast && !lastIsVersion) posixAt[mark] = 1;
+        }
+      }
+      cursor = Math.max(end, cursor + 1);
     }
   }
-  return slashes === 1 && sawDot && !version;
+  return posixAt[index] === 1;
 }
 
 const LOWER_ROOT_WORD = new Set(["documents", "документы"]);
@@ -721,6 +791,16 @@ export function redactDiagnostic(value) {
   );
 }
 
+function addressLiteralEnd(text, at) {
+  if (text[at + 1] !== "[") return -1;
+  const close = text.indexOf("]", at + 2);
+  if (close === -1) return -1;
+  const body = text.slice(at + 2, close);
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(body)) return close + 1;
+  if (/^IPv6:[0-9A-Fa-f:.]+$/i.test(body) && body.includes(":")) return close + 1;
+  return -1;
+}
+
 function quotedLocalStart(text, at, floor) {
   if (text[at - 1] !== '"') return -1;
   for (let index = at - 2; index >= floor; index -= 1) {
@@ -748,6 +828,12 @@ function redactEmails(text) {
     const quoted = quotedLocalStart(text, at, cursor);
     let local = quoted === -1 ? at : quoted;
     while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
+    const literal = addressLiteralEnd(text, at);
+    if (literal !== -1 && local < at) {
+      redacted += `${text.slice(cursor, local)}[redacted]`;
+      cursor = literal;
+      continue;
+    }
     let domain = at + 1;
     while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
     const end = local < at ? emailEnd(text, at, domain) : -1;
@@ -884,9 +970,11 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   });
   child.stderr.on("error", () => {});
 
-  const rejectPending = (error) => {
-    if (failure) return;
+  let failurePlaceholder = false;
+  const rejectPending = (error, { replace = false, placeholder = false } = {}) => {
+    if (failure && !(replace && failurePlaceholder)) return;
     failure = error;
+    failurePlaceholder = placeholder;
     for (const [id, waiter] of pending) {
       clearTimeout(waiter.timer);
       pending.delete(id);
@@ -910,6 +998,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
       new Error(
         detail ? `codex app-server exited (${why}): ${detail}` : `codex app-server exited (${why})`,
       ),
+      { replace: true },
     );
   });
 
@@ -964,8 +1053,9 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
         new Error(
           detail ? `codex app-server output closed: ${detail}` : "codex app-server output closed",
         ),
+        { placeholder: true },
       );
-    }, 150);
+    }, 1000);
   });
 
   const request = (id, method, params) =>
