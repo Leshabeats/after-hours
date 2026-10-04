@@ -439,6 +439,25 @@ function driveHasExtension(text, start, end) {
   return true;
 }
 
+const DRIVE_FAILURE = new Set([
+  "because",
+  "cannot",
+  "error",
+  "failed",
+  "failure",
+  "from",
+  "is",
+  "missing",
+  "open",
+  "see",
+  "the",
+]);
+
+function driveFailureWord(text, start, end) {
+  if (end > start && text[end - 1] === ".") end -= 1;
+  return DRIVE_FAILURE.has(text.slice(start, end).toLowerCase());
+}
+
 function isCapitalizedWord(text, start, end) {
   if (end > start && text[end - 1] === ".") end -= 1;
   if (end - start < 2 || !/\p{Lu}/u.test(text[start] ?? "")) return false;
@@ -501,7 +520,23 @@ function scanDriveRelative(text) {
         end = piece.end;
         continue;
       }
-      if (!isCapitalizedWord(text, next, piece.end)) break;
+      if (driveFailureWord(text, next, piece.end)) break;
+      if (isCapitalizedWord(text, next, piece.end)) {
+        end = piece.end;
+        continue;
+      }
+      let followAt = piece.end;
+      while (followAt < text.length && (text[followAt] === " " || text[followAt] === "\t")) {
+        followAt += 1;
+      }
+      let nextSeparated = false;
+      if (followAt < text.length && text[followAt] !== "\n" && text[followAt] !== "\r") {
+        const follow = driveTokenEnd(text, followAt);
+        nextSeparated =
+          driveSliceHas(text, followAt, follow.end, "\\") ||
+          driveSliceHas(text, followAt, follow.end, "/");
+      }
+      if (!nextSeparated) break;
       end = piece.end;
     }
     drivePaths[cursor] = 1;
@@ -1157,14 +1192,9 @@ function redactEmails(text) {
     if (at === -1) break;
     const quoted = quotedLocalStart(text, at, cursor);
     let local = quoted === -1 ? at : quoted;
-    let lastDot = -1;
-    if (quoted === -1) {
-      for (let scan = cursor; scan < at; scan += 1) {
-        if (text[scan] === ".") lastDot = scan;
-      }
-    }
+    const schemeAt = quoted === -1 ? text.indexOf("://", cursor) : -1;
     while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) {
-      if (text[local - 1] === "/" && lastDot !== -1 && lastDot < local - 1) break;
+      if (text[local - 1] === "/" && schemeAt !== -1 && schemeAt < local - 1) break;
       local -= 1;
     }
     const literal = addressLiteralEnd(text, at);

@@ -754,6 +754,11 @@ describe("codex app-server probe", () => {
       redactDiagnostic("open C:secret.txt because Users\\Alice later"),
       "open [redacted] because [redacted] later",
     );
+    assert.equal(
+      redactDiagnostic("open C:Program files (x86)\\secret later"),
+      "open [redacted] later",
+    );
+    assert.equal(redactDiagnostic("open C:My secret files\\key later"), "open [redacted] later");
     assert.equal(redactDiagnostic("open \\^[ later"), "open \\^[ later");
     const driveRelative = summarizeThreads([
       {
@@ -1027,6 +1032,15 @@ describe("codex app-server probe", () => {
       "https://example.com/a/[redacted]",
     );
     assert.equal(redactDiagnostic("alice/private@example.com"), "[redacted]");
+    assert.equal(redactDiagnostic("note first.last/team@example.com now"), "note [redacted] now");
+    assert.equal(
+      redactDiagnostic("see https://example.com/jane.doe@attacker.com later"),
+      "see https://example.com/[redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("see http://localhost/user@example.com later"),
+      "see http://localhost/[redacted] later",
+    );
     assert.equal(
       redactDiagnostic("https://alice:pass:word@example.com/path"),
       "https://example.com/path",
