@@ -645,6 +645,18 @@ describe("codex app-server probe", () => {
     assert.equal(longName.sources["[redacted]"], 1);
     const posix = redactDiagnostic("see src/private/key.txt later");
     assert.equal(posix, "see [redacted] later");
+    assert.equal(redactDiagnostic("O'Brien/secrets/key.txt"), "[redacted]");
+    assert.equal(redactDiagnostic("see O\u2019Brien/secrets/key.txt later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("Cannot open src/file.txt\\more because it is locked"),
+      "Cannot open src/file.txt\\more because it is locked",
+    );
+    assert.equal(
+      redactDiagnostic("open pkg/main.go\\cache because missing"),
+      "open pkg/main.go\\cache because missing",
+    );
+    assert.equal(redactDiagnostic("node/v1.2.3\\extra"), "node/v1.2.3\\extra");
+    assert.equal(redactDiagnostic("a/b/c\\d"), "[redacted]");
     const posixSummary = summarizeThreads([
       {
         source: { custom: "src/private/key.txt" },
@@ -931,6 +943,13 @@ describe("codex app-server probe", () => {
     const started = Date.now();
     assert.equal(redactDiagnostic(letters), letters);
     assert.equal(Date.now() - started < 1000, true);
+    const originLetters = "b".repeat(80_000);
+    const originStarted = Date.now();
+    const originSummary = summarizeThreads([
+      { originator: originLetters, source: "cli", status: { type: "idle" } },
+    ]);
+    assert.equal(Date.now() - originStarted < 1000, true);
+    assert.equal(originSummary.originators[originLetters], 1);
   });
 
   it("redacts a private user agent and a top-level argument path", async () => {
@@ -952,6 +971,8 @@ describe("codex app-server probe", () => {
     assert.deepEqual(windows.args.slice(0, 3), ["/d", "/s", "/c"]);
     assert.equal(windows.args[3].includes("Program Files"), true);
     assert.equal(windows.args[3].includes("app-server"), true);
+    const parentheses = appServerLaunch("C:\\tools(x86)\\codex.cmd", ["app-server"], "win32");
+    assert.equal(parentheses.args[3].includes('"C:\\tools(x86)\\codex.cmd"'), true);
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "agent.mjs");
     writeFileSync(

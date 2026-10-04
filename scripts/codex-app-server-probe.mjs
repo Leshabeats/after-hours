@@ -20,18 +20,47 @@ export function assertProbeMethod(method) {
   }
 }
 
+function labelStops(char) {
+  return (
+    char === " " ||
+    char === "\t" ||
+    char === "\n" ||
+    char === "\r" ||
+    char === '"' ||
+    char === "'" ||
+    char === "`" ||
+    char === "<" ||
+    char === ">"
+  );
+}
+
+/** One pass. A scheme run without :// is not retried from every letter. */
 function labelHasUriPath(text) {
-  const scheme = /([A-Za-z][A-Za-z0-9+.-]*):\/\//g;
-  let match;
-  while ((match = scheme.exec(text))) {
-    if (/[A-Za-z0-9]/.test(text[match.index - 1] ?? "")) continue;
-    if (match[1].toLowerCase() === "file") continue;
-    let cursor = match.index + match[0].length;
-    if (cursor >= text.length || text[cursor] === "/" || text[cursor] === "\\") continue;
-    while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) {
-      if (text[cursor] === "/" || text[cursor] === "\\") return true;
+  let cursor = 0;
+  while (cursor < text.length) {
+    const schemeEnd = plainSchemeEnd(text, cursor);
+    if (schemeEnd <= cursor) {
       cursor += 1;
+      continue;
     }
+    if (text[schemeEnd] !== ":" || text[schemeEnd + 1] !== "/" || text[schemeEnd + 2] !== "/") {
+      cursor = schemeEnd;
+      continue;
+    }
+    if (text.slice(cursor, schemeEnd).toLowerCase() === "file") {
+      cursor = schemeEnd + 3;
+      continue;
+    }
+    let host = schemeEnd + 3;
+    if (host >= text.length || text[host] === "/" || text[host] === "\\") {
+      cursor = host + 1;
+      continue;
+    }
+    while (host < text.length && !labelStops(text[host])) {
+      if (text[host] === "/" || text[host] === "\\") return true;
+      host += 1;
+    }
+    cursor = host + 1;
   }
   return false;
 }
@@ -513,7 +542,15 @@ function isVersionSlash(text, index) {
 }
 
 function isPathTokenChar(char) {
-  return isWordChar(char) || char === "." || char === "_" || char === "-" || char === "+";
+  return (
+    isWordChar(char) ||
+    char === "." ||
+    char === "_" ||
+    char === "-" ||
+    char === "+" ||
+    char === "'" ||
+    char === "\u2019"
+  );
 }
 
 let posixText = null;
@@ -532,9 +569,13 @@ function isRelativePosixPath(text, index) {
       }
       let end = cursor;
       const slashes = [];
+      let stoppedOnBackslash = false;
       while (end < text.length) {
         const char = text[end];
-        if (char === "\\") break;
+        if (char === "\\") {
+          stoppedOnBackslash = true;
+          break;
+        }
         if (!isPathTokenChar(char) && char !== "/") break;
         if (char === "/") slashes.push(end);
         end += 1;
@@ -550,10 +591,11 @@ function isRelativePosixPath(text, index) {
           }
         }
         const lastIsVersion = isVersionSlash(text, lastSlash + 1);
+        const dottedSlash = !stoppedOnBackslash || slashes.length >= 2;
         for (let mark = cursor; mark < end; mark += 1) {
           if (!isWordStart(text, mark)) continue;
           if (twoSlashAt !== -1 && mark <= twoSlashAt) posixAt[mark] = 1;
-          else if (mark <= lastSlash && dotAfterLast && !lastIsVersion) posixAt[mark] = 1;
+          else if (dottedSlash && mark <= lastSlash && dotAfterLast && !lastIsVersion) posixAt[mark] = 1;
         }
       }
       cursor = Math.max(end, cursor + 1);
@@ -931,7 +973,7 @@ export function bindStdin(stdin, rejectPending) {
 
 function quoteCmd(value) {
   const text = String(value);
-  if (text.length === 0 || /[\s"&|<>^%]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
+  if (text.length === 0 || /[\s"&|<>^%()]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
   return text;
 }
 
