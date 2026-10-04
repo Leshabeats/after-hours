@@ -723,6 +723,16 @@ describe("codex app-server probe", () => {
       "Error reading [redacted] v2.0 now",
     );
     assert.equal(redactDiagnostic("see PrivateProject\\secrets later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see PrivateProject/secrets later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see Private Project/secrets later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("The PrivateProject/secrets was locked"),
+      "The [redacted] was locked",
+    );
+    assert.equal(
+      redactDiagnostic("see PrivateProject/secrets Please retry"),
+      "see [redacted] retry",
+    );
     assert.equal(
       redactDiagnostic("see Private Project/secrets/key.txt later"),
       "see [redacted] later",

@@ -618,7 +618,38 @@ function barePairEndWithNames(text, end) {
   return cursor;
 }
 
-/** One pass. `PrivateProject\\secrets` has no dot and no slash. A longer path stays with pathEnd. */
+function hasMixedCase(text, start, end) {
+  let upper = false;
+  let lower = false;
+  for (let index = start; index < end; index += 1) {
+    const char = text[index];
+    if (!isWordChar(char)) continue;
+    if (char !== char.toLowerCase()) upper = true;
+    else if (char !== char.toUpperCase()) lower = true;
+    if (upper && lower) return true;
+  }
+  return false;
+}
+
+/** Capitalized words before a path. A lowercase word or a clause word stops the walk. */
+function posixPairStart(text, pathStart) {
+  let prefix = pathStart;
+  while (prefix > 0 && (text[prefix - 1] === " " || text[prefix - 1] === "\t")) {
+    let space = prefix - 1;
+    while (space > 0 && (text[space - 1] === " " || text[space - 1] === "\t")) space -= 1;
+    if (space === 0 || !isWordChar(text[space - 1])) break;
+    const wordEnd = space - 1;
+    let start = wordEnd;
+    while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+    if (!isWordStart(text, start) || text[start] === text[start].toLowerCase()) break;
+    if (!wordsStayOnOneLine(text, start, pathStart)) break;
+    if (PATH_CLAUSE.has(text.slice(start, wordEnd + 1))) break;
+    prefix = start;
+  }
+  return prefix;
+}
+
+/** One pass. `PrivateProject\\secrets` has no dot and no slash. A `/` pair needs mixed case, so `read/write` stays. */
 function bareWindowsPairEnd(text, index) {
   if (!isWordStart(text, index)) return -1;
   if (bareText !== text) {
@@ -642,7 +673,35 @@ function bareWindowsPairEnd(text, index) {
         cursor += 1;
       }
       const end = cursor;
-      if (slash || text[start] === "\\") continue;
+      if (text[start] === "\\") continue;
+      if (slash) {
+        let slashCount = 0;
+        let split = -1;
+        let dot = false;
+        let words = true;
+        for (let scan = start; scan < end; scan += 1) {
+          const piece = text[scan];
+          if (piece === ".") dot = true;
+          if (piece === "/") {
+            slashCount += 1;
+            split = scan;
+            continue;
+          }
+          if (piece === "\\" || !bareNameChar(piece)) words = false;
+        }
+        if (
+          slashCount === 1 &&
+          words &&
+          !dot &&
+          split >= start + 2 &&
+          end - split >= 3 &&
+          hasMixedCase(text, start, end)
+        ) {
+          const named = barePairEndWithNames(text, end);
+          if (named >= end) bareEnds[posixPairStart(text, start)] = named;
+        }
+        continue;
+      }
       let split = -1;
       let dot = false;
       let words = true;
