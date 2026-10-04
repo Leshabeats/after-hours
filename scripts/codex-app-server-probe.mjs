@@ -410,9 +410,43 @@ function driveTokenEnd(text, index) {
   return { end, dot, sep, nameLen };
 }
 
+function driveSliceHas(text, start, end, mark) {
+  for (let index = start; index < end; index += 1) {
+    if (text[index] === mark) return true;
+  }
+  return false;
+}
+
+/** `Secret.txt` continues a drive path. `because.`, `e.g.`, and `v2.0` do not. */
+function driveHasExtension(text, start, end) {
+  if (end > start && text[end - 1] === ".") end -= 1;
+  let dot = -1;
+  for (let index = start; index < end; index += 1) {
+    if (text[index] === ".") dot = index;
+  }
+  if (dot === -1 || end - dot < 3) return false;
+  for (let index = dot + 1; index < end; index += 1) {
+    const char = text[index];
+    if (!((char >= "A" && char <= "Z") || (char >= "a" && char <= "z"))) return false;
+  }
+  return true;
+}
+
+function isCapitalizedWord(text, start, end) {
+  if (end > start && text[end - 1] === ".") end -= 1;
+  if (end - start < 2 || !/\p{Lu}/u.test(text[start] ?? "")) return false;
+  const word = text.slice(start, end);
+  if (PATH_CLAUSE.has(word)) return false;
+  for (let index = start; index < end; index += 1) {
+    if (!isWordChar(text[index])) return false;
+  }
+  return true;
+}
+
 /**
  * One pass. `C:name` is a file on that drive's current directory.
- * A later word stays only when that word itself has a dot or a separator.
+ * A later word stays when it has a separator or an extension, when the next
+ * piece has a separator, or when it is a capitalized name. This end is final:
  * `pathEnd` would keep the rest of a line whose last segment has no dot.
  */
 function scanDriveRelative(text) {
@@ -453,7 +487,23 @@ function scanDriveRelative(text) {
       while (text[next] === " " || text[next] === "\t") next += 1;
       if (next >= text.length || text[next] === "\n" || text[next] === "\r") break;
       const piece = driveTokenEnd(text, next);
-      if (!(piece.dot || piece.sep) || piece.end === next) break;
+      if (piece.end === next) break;
+      const separated =
+        driveSliceHas(text, next, piece.end, "\\") || driveSliceHas(text, next, piece.end, "/");
+      if (separated || driveHasExtension(text, next, piece.end)) {
+        end = piece.end;
+        continue;
+      }
+      let after = piece.end;
+      while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
+      let nextSeparated = false;
+      if (after < text.length && text[after] !== "\n" && text[after] !== "\r") {
+        const follow = driveTokenEnd(text, after);
+        nextSeparated =
+          driveSliceHas(text, after, follow.end, "\\") ||
+          driveSliceHas(text, after, follow.end, "/");
+      }
+      if (!(nextSeparated || isCapitalizedWord(text, next, piece.end))) break;
       end = piece.end;
     }
     drivePaths[cursor] = 1;
@@ -508,6 +558,70 @@ function windowsBodyAt(text) {
     if (qualifies) body[cursor] = 1;
   }
   return body;
+}
+
+let bareText = null;
+let bareEnds = null;
+
+function barePairContinues(text, end) {
+  let after = end;
+  while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
+  if (!isWordChar(text[after])) return false;
+  let wordEnd = after + 1;
+  while (wordEnd < text.length && isWordChar(text[wordEnd])) wordEnd += 1;
+  const follow = text[wordEnd] ?? "";
+  const word = text.slice(after, wordEnd);
+  return follow === "\\" || follow === "/" || follow === "." || word !== word.toLowerCase();
+}
+
+/** One pass. `PrivateProject\\secrets` has no dot and no slash. A longer path stays with pathEnd. */
+function bareWindowsPairEnd(text, index) {
+  if (!isWordStart(text, index)) return -1;
+  if (bareText !== text) {
+    bareText = text;
+    bareEnds = new Int32Array(text.length);
+    bareEnds.fill(-1);
+    let cursor = 0;
+    while (cursor < text.length) {
+      const char = text[cursor];
+      if (!isPathTokenChar(char) && char !== "/" && char !== "\\") {
+        cursor += 1;
+        continue;
+      }
+      const start = cursor;
+      let slash = false;
+      while (
+        cursor < text.length &&
+        (isPathTokenChar(text[cursor]) || text[cursor] === "/" || text[cursor] === "\\")
+      ) {
+        if (text[cursor] === "/") slash = true;
+        cursor += 1;
+      }
+      const end = cursor;
+      if (slash || text[start] === "\\") continue;
+      let split = -1;
+      let dot = false;
+      let words = true;
+      for (let scan = start; scan < end; scan += 1) {
+        const piece = text[scan];
+        if (piece === ".") dot = true;
+        if (piece === "\\") {
+          if (split !== -1) {
+            split = -2;
+            break;
+          }
+          split = scan;
+          continue;
+        }
+        if (!isWordChar(piece)) words = false;
+      }
+      if (!words || dot || split < start + 2 || end - split < 3) continue;
+      if (barePairContinues(text, end)) continue;
+      bareEnds[start] = end;
+    }
+  }
+  const found = bareEnds[index] ?? -1;
+  return found > index ? found : -1;
 }
 
 function isWordChar(char) {
@@ -691,7 +805,8 @@ function isRelativePosixPath(text, index) {
         for (let mark = cursor; mark < end; mark += 1) {
           if (!isWordStart(text, mark)) continue;
           if (twoSlashAt !== -1 && mark <= twoSlashAt) posixAt[mark] = 1;
-          else if (dottedSlash && mark <= lastSlash && dotAfterLast && !lastIsVersion) posixAt[mark] = 1;
+          else if (dottedSlash && mark <= lastSlash && dotAfterLast && !lastIsVersion)
+            posixAt[mark] = 1;
         }
       }
       cursor = Math.max(end, cursor + 1);
@@ -904,11 +1019,13 @@ export function redactDiagnostic(value) {
       continue;
     }
     const plainEnd = plainSchemeEnd(text, index);
+    const bareEnd = bareWindowsPairEnd(text, index);
     if (
       plainEnd > index &&
       text[plainEnd] !== ":" &&
       !isRelativeWindowsPath(text, index) &&
-      !isRelativePosixPath(text, index)
+      !isRelativePosixPath(text, index) &&
+      bareEnd < 0
     ) {
       redacted += text.slice(index, plainEnd);
       index = plainEnd;
@@ -917,6 +1034,11 @@ export function redactDiagnostic(value) {
     if (isDriveRelativePath(text, index)) {
       redacted += "[redacted]";
       index = driveRelativeEnd(text, index);
+      continue;
+    }
+    if (bareEnd > index) {
+      redacted += "[redacted]";
+      index = bareEnd;
       continue;
     }
     if (!isPathStart(text, index)) {
@@ -974,7 +1096,7 @@ function quotedMailboxEnd(text, open) {
   return emailEnd(text, at, domain);
 }
 
-const EMAIL_LOCAL = /[\p{L}0-9._%+\-'\u2019]/u;
+const EMAIL_LOCAL = /[\p{L}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
 const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
 const EMAIL_TLD = /^\p{L}+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
@@ -1199,6 +1321,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     } catch {
       return;
     }
+    if (message == null || typeof message !== "object" || Array.isArray(message)) return;
     const waiter = message.id == null ? undefined : pending.get(message.id);
     if (!waiter) return;
     clearTimeout(waiter.timer);

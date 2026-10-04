@@ -646,7 +646,10 @@ describe("codex app-server probe", () => {
     const posix = redactDiagnostic("see src/private/key.txt later");
     assert.equal(posix, "see [redacted] later");
     assert.equal(redactDiagnostic("O'Brien/secrets/key.txt"), "[redacted]");
-    assert.equal(redactDiagnostic("see O\u2019Brien/secrets/key.txt later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see O\u2019Brien/secrets/key.txt later"),
+      "see [redacted] later",
+    );
     assert.equal(
       redactDiagnostic("Cannot open src/file.txt\\more because it is locked"),
       "Cannot open src/file.txt\\more because it is locked",
@@ -679,6 +682,28 @@ describe("codex app-server probe", () => {
       redactDiagnostic("see https://example.com/a:C:My Secret.txt later"),
       "see https://example.com/a:[redacted] later",
     );
+    assert.equal(
+      redactDiagnostic("open C:Program Files (x86)\\secret.txt later"),
+      "open [redacted] later",
+    );
+    assert.equal(redactDiagnostic("open C:Users\\Jane Doe because"), "open [redacted] because");
+    assert.equal(
+      redactDiagnostic("The file C:Private Folder was locked."),
+      "The file [redacted] was locked.",
+    );
+    assert.equal(
+      redactDiagnostic("see https://example.com/a:C:Users\\Jane Doe later"),
+      "see https://example.com/a:[redacted] later",
+    );
+    assert.equal(redactDiagnostic("open C:secret.txt because."), "open [redacted] because.");
+    assert.equal(redactDiagnostic("missing C:tmp.txt after."), "missing [redacted] after.");
+    assert.equal(redactDiagnostic("open C:secret.txt e.g. now"), "open [redacted] e.g. now");
+    assert.equal(
+      redactDiagnostic("Error reading C:data.bin v2.0 now"),
+      "Error reading [redacted] v2.0 now",
+    );
+    assert.equal(redactDiagnostic("see PrivateProject\\secrets later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("open \\^[ later"), "open \\^[ later");
     const driveRelative = summarizeThreads([
       {
         source: { custom: "C:My Secret.txt" },
@@ -933,7 +958,12 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("o'brien@example.com"), "[redacted]");
     assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic('see "a@b"@example.com later'), "see [redacted] later");
-    assert.equal(redactDiagnostic('auth failed for "a@b"@example.com.'), "auth failed for [redacted].");
+    assert.equal(redactDiagnostic("see alice!private@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see bob$name@example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic('auth failed for "a@b"@example.com.'),
+      "auth failed for [redacted].",
+    );
     assert.equal(redactDiagnostic("see alice@[192.0.2.1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[IPv6:2001:db8::1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see alice@[not-an-ip] later");
@@ -1488,6 +1518,43 @@ describe("codex app-server probe", () => {
           return true;
         },
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a non-object app-server line", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
+    const helper = join(dir, "stdout-null.mjs");
+    writeFileSync(
+      helper,
+      [
+        'import { createInterface } from "node:readline";',
+        "const rl = createInterface({ input: process.stdin });",
+        "rl.on('line', (line) => {",
+        "  let message;",
+        "  try { message = JSON.parse(line); } catch { return; }",
+        '  if (!message || typeof message !== "object") return;',
+        '  if (message.method === "initialize") {',
+        '    process.stdout.write("null\\n");',
+        '    process.stdout.write("true\\n");',
+        '    process.stdout.write("[1]\\n");',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: "stub" } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  if (message.method === "account/rateLimits/read") {',
+        '    process.stdout.write(JSON.stringify({ id: message.id, result: { rateLimits: { primary: null } } }) + "\\n");',
+        "    return;",
+        "  }",
+        '  process.stdout.write(JSON.stringify({ id: message.id, result: { data: [], nextCursor: null } }) + "\\n");',
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.equal(summary.userAgent, "stub");
+      assert.equal(summary.rateLimits.primary, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
