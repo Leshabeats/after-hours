@@ -374,7 +374,56 @@ function isPathStart(text, index) {
   ) {
     return true;
   }
+  if (isDriveRelativePath(text, index)) return true;
   return isRelativeWindowsPath(text, index) || isRelativePosixPath(text, index);
+}
+
+let driveText = null;
+let drivePaths = null;
+
+/** One pass. `C:secret.txt` is a file on that drive's current directory. */
+function isDriveRelativePath(text, index) {
+  if (driveText !== text) {
+    driveText = text;
+    drivePaths = new Uint8Array(text.length);
+    let cursor = 0;
+    while (cursor < text.length) {
+      const after = text[cursor + 2] ?? "";
+      if (
+        !/[A-Za-z]/.test(text[cursor] ?? "") ||
+        /[A-Za-z]/.test(text[cursor - 1] ?? "") ||
+        text[cursor + 1] !== ":" ||
+        after === "" ||
+        after === "\\" ||
+        after === "/" ||
+        after === " " ||
+        after === "\t"
+      ) {
+        cursor += 1;
+        continue;
+      }
+      let end = cursor + 2;
+      let dot = false;
+      while (end < text.length) {
+        const char = text[end];
+        if (
+          char === " " ||
+          char === "\t" ||
+          char === "\n" ||
+          char === "\r" ||
+          char === '"' ||
+          char === "`"
+        ) {
+          break;
+        }
+        if (char === ".") dot = true;
+        end += 1;
+      }
+      if (dot) drivePaths[cursor] = 1;
+      cursor = Math.max(end, cursor + 1);
+    }
+  }
+  return drivePaths[index] === 1;
 }
 
 /**
@@ -980,11 +1029,14 @@ function quoteCmd(value) {
 /** A Windows npm shim is codex.cmd. cmd.exe can start it; spawn cannot. */
 export function appServerLaunch(bin, args = [], platform = process.platform) {
   if (platform !== "win32") return { command: bin, args, verbatim: false };
-  const commandLine = [bin, ...args].map(quoteCmd).join(" ");
+  const literalBin = String(bin).includes("%");
+  const commandBin = literalBin ? "%AFTER_HOURS_CODEX_BIN%" : bin;
+  const commandLine = [commandBin, ...args].map(quoteCmd).join(" ");
   return {
     command: process.env.ComSpec || "cmd.exe",
     args: ["/d", "/s", "/c", `"${commandLine}"`],
     verbatim: true,
+    ...(literalBin ? { env: { AFTER_HOURS_CODEX_BIN: String(bin) } } : {}),
   };
 }
 
@@ -1002,6 +1054,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
   const child = spawn(launch.command, launch.args, {
     stdio: ["pipe", "pipe", "pipe"],
     ...(launch.verbatim ? { windowsVerbatimArguments: true } : {}),
+    ...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
   });
   const stderrState = { safe: "", pending: "" };
   let failure = null;

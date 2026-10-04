@@ -657,6 +657,8 @@ describe("codex app-server probe", () => {
     );
     assert.equal(redactDiagnostic("node/v1.2.3\\extra"), "node/v1.2.3\\extra");
     assert.equal(redactDiagnostic("a/b/c\\d"), "[redacted]");
+    assert.equal(redactDiagnostic("see C:secret.txt later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("missing C:tmp.txt after"), "missing [redacted] after");
     const posixSummary = summarizeThreads([
       {
         source: { custom: "src/private/key.txt" },
@@ -973,6 +975,10 @@ describe("codex app-server probe", () => {
     assert.equal(windows.args[3].includes("app-server"), true);
     const parentheses = appServerLaunch("C:\\tools(x86)\\codex.cmd", ["app-server"], "win32");
     assert.equal(parentheses.args[3].includes('"C:\\tools(x86)\\codex.cmd"'), true);
+    const percentBin = appServerLaunch("C:\\tools\\%TEMP%\\codex.cmd", ["app-server"], "win32");
+    assert.equal(percentBin.env.AFTER_HOURS_CODEX_BIN, "C:\\tools\\%TEMP%\\codex.cmd");
+    assert.equal(percentBin.args[3].includes("%TEMP%"), false);
+    assert.equal(percentBin.args[3].includes("%AFTER_HOURS_CODEX_BIN%"), true);
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "agent.mjs");
     writeFileSync(
