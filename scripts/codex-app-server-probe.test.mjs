@@ -330,6 +330,19 @@ describe("codex app-server probe", () => {
     );
     assert.equal(text.includes("/Users"), false);
     assert.equal(text.includes("0199a0e0"), false);
+    const threadId = "0199a0e0-7c31-7a55-8c1e-6a5d0e8a9c11";
+    assert.equal(redactDiagnostic(`thread_${threadId}`).includes("0199a0e0"), false);
+    assert.equal(redactDiagnostic(`${threadId}_suffix`).includes("0199a0e0"), false);
+    const underscored = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        originator: `thread_${threadId}`,
+        source: "cli",
+        status: { type: "idle" },
+      },
+    ]);
+    assert.equal(JSON.stringify(underscored).includes("0199a0e0"), false);
+    assert.equal(underscored.originators["[redacted]"], 1);
     assert.equal(text.includes("C:\\Users"), false);
     assert.equal(text.includes("[redacted]"), true);
     assert.equal(text.startsWith("missing "), true);
@@ -556,6 +569,12 @@ describe("codex app-server probe", () => {
       "failed to read [redacted] (os error 3)",
     );
     assert.equal(redactDiagnostic("see \\secret, then continue"), "see [redacted], then continue");
+    const manyRoots = `${"\\secret, ".repeat(8000)}later`;
+    const manyRootsStarted = Date.now();
+    const manyRootsRedacted = redactDiagnostic(manyRoots);
+    assert.equal(Date.now() - manyRootsStarted < 1000, true);
+    assert.equal(manyRootsRedacted.includes("secret"), false);
+    assert.equal(manyRootsRedacted.endsWith("later"), true);
     assert.equal(
       redactDiagnostic("The File Is Missing From Documents\\secrets\\key.txt"),
       "The File Is Missing From [redacted]",
@@ -950,6 +969,10 @@ describe("codex app-server probe", () => {
       "https://user:password@example.com/v1?token=secret#session=hidden failed",
     );
     assert.equal(signed, "https://example.com/v1 failed");
+    const credential = redactDiagnostic("see https://alice:C:secret@example.com/path later");
+    assert.equal(credential, "see https://example.com/path later");
+    assert.equal(credential.includes("alice"), false);
+    assert.equal(credential.includes("secret"), false);
     const mailed = redactDiagnostic("auth failed for alice@example.com");
     assert.equal(mailed, "auth failed for [redacted]");
     assert.equal(redactDiagnostic("bob@example.co.uk"), "[redacted]");
@@ -959,6 +982,12 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic('see "a@b"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice!private@example.com later"), "see [redacted] later");
+    const combining = `Jos${"e"}\u0301`;
+    assert.equal(redactDiagnostic(`see ${combining}@example.com later`), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic(`see ${combining}/secrets/key.txt later`),
+      "see [redacted] later",
+    );
     assert.equal(redactDiagnostic("see bob$name@example.com later"), "see [redacted] later");
     assert.equal(
       redactDiagnostic('auth failed for "a@b"@example.com.'),

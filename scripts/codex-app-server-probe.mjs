@@ -254,8 +254,15 @@ function remoteUriEnd(text, index) {
   if (text.slice(index, schemeEnd).toLowerCase() === "file") return -1;
   let cursor = schemeEnd + 3;
   if (cursor >= text.length || /[/\\\s"'`<>]/.test(text[cursor])) return -1;
+  let authorityEnd = cursor;
+  let userinfoAt = -1;
+  while (authorityEnd < text.length && !/[/\\\s"'`<>]/.test(text[authorityEnd])) {
+    if (text[authorityEnd] === "@") userinfoAt = authorityEnd;
+    authorityEnd += 1;
+  }
+  const hostAt = userinfoAt === -1 ? cursor : userinfoAt + 1;
   while (cursor < text.length && !/[\s"'`<>]/.test(text[cursor])) {
-    if (text[cursor] === ":") {
+    if (cursor >= hostAt && text[cursor] === ":") {
       const next = text[cursor + 1] ?? "";
       const after = text[cursor + 2] ?? "";
       if (
@@ -625,7 +632,7 @@ function bareWindowsPairEnd(text, index) {
 }
 
 function isWordChar(char) {
-  return /[\p{L}\p{N}]/u.test(char ?? "");
+  return /[\p{L}\p{N}\p{M}]/u.test(char ?? "");
 }
 
 function isWordStart(text, index) {
@@ -895,15 +902,36 @@ function extensionlessRootEnd(text, index, lineEnd) {
   return cursor;
 }
 
-function pathEnd(text, index) {
-  let lineEnd = index;
-  let closer = -1;
-  while (lineEnd < text.length) {
-    const char = text[lineEnd];
-    if (char === "\n" || char === "\r") break;
-    if (closer === -1 && (char === "`" || char === '"')) closer = lineEnd;
-    lineEnd += 1;
+let lineBoundText = null;
+let lineEnds = null;
+let lineClosers = null;
+
+/** One pass. Each index keeps the next newline and the next quote on that line. */
+function pathLineBounds(text) {
+  if (lineBoundText === text) return;
+  lineBoundText = text;
+  lineEnds = new Int32Array(text.length);
+  lineClosers = new Int32Array(text.length);
+  lineClosers.fill(-1);
+  let cursor = 0;
+  while (cursor < text.length) {
+    let end = cursor;
+    while (end < text.length && text[end] !== "\n" && text[end] !== "\r") end += 1;
+    let closer = -1;
+    for (let mark = end - 1; mark >= cursor; mark -= 1) {
+      const char = text[mark];
+      if (char === "`" || char === '"') closer = mark;
+      lineEnds[mark] = end;
+      lineClosers[mark] = closer;
+    }
+    cursor = end + 1;
   }
+}
+
+function pathEnd(text, index) {
+  pathLineBounds(text);
+  const lineEnd = lineEnds[index];
+  const closer = lineClosers[index];
   if (closer !== -1) return closer;
   const rootEnd = extensionlessRootEnd(text, index, lineEnd);
   if (rootEnd > index) return rootEnd;
@@ -1051,7 +1079,7 @@ export function redactDiagnostic(value) {
     index = Math.max(end, index + 1);
   }
   return redactEmails(redacted).replace(
-    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    /(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])/gi,
     "[redacted]",
   );
 }
@@ -1096,7 +1124,7 @@ function quotedMailboxEnd(text, open) {
   return emailEnd(text, at, domain);
 }
 
-const EMAIL_LOCAL = /[\p{L}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
+const EMAIL_LOCAL = /[\p{L}\p{M}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
 const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
 const EMAIL_TLD = /^\p{L}+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
