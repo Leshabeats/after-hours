@@ -677,26 +677,6 @@ function isWordStart(text, index) {
   return isWordChar(text[index]) && !isWordChar(text[index - 1]);
 }
 
-function wordTokenHas(text, index, mark) {
-  for (let cursor = index; cursor < text.length; cursor += 1) {
-    const char = text[cursor];
-    if (
-      char === " " ||
-      char === "\t" ||
-      char === "\n" ||
-      char === "\r" ||
-      char === "`" ||
-      char === '"' ||
-      char === ":" ||
-      char === "="
-    ) {
-      return false;
-    }
-    if (char === mark) return true;
-  }
-  return false;
-}
-
 function wordsStayOnOneLine(text, left, right) {
   for (let cursor = left; cursor < right; cursor += 1) {
     const char = text[cursor];
@@ -749,12 +729,37 @@ function windowsPathStarts(text) {
     if (isWordStart(text, index)) words.push(index);
   }
   const bodyAt = windowsBodyAt(text);
+  const tokenSep = new Uint8Array(text.length);
+  const tokenDot = new Uint8Array(text.length);
+  let seenSep = 0;
+  let seenDot = 0;
+  for (let cursor = text.length - 1; cursor >= 0; cursor -= 1) {
+    const char = text[cursor];
+    if (
+      char === " " ||
+      char === "\t" ||
+      char === "\n" ||
+      char === "\r" ||
+      char === "`" ||
+      char === '"' ||
+      char === ":" ||
+      char === "="
+    ) {
+      seenSep = 0;
+      seenDot = 0;
+      continue;
+    }
+    if (char === "\\") seenSep = 1;
+    else if (char === ".") seenDot = 1;
+    tokenSep[cursor] = seenSep;
+    tokenDot[cursor] = seenDot;
+  }
   for (let index = 0; index < words.length; index += 1) {
     if (bodyAt[words[index]] !== 1) continue;
     const start = words[index];
     windowsStarts[start] = 1;
     const upper = text[start] !== text[start].toLowerCase();
-    const dottedToken = wordTokenHas(text, start, "\\") && wordTokenHas(text, start, ".");
+    const dottedToken = tokenSep[start] === 1 && tokenDot[start] === 1;
     let previous = index - 1;
     if (upper) {
       const run = [];
@@ -811,6 +816,23 @@ function isPathTokenChar(char) {
 let posixText = null;
 let posixAt = null;
 
+function markPosixPrefix(text, marks, pathStart) {
+  let prefix = pathStart;
+  while (prefix > 0 && (text[prefix - 1] === " " || text[prefix - 1] === "\t")) {
+    let space = prefix - 1;
+    while (space > 0 && (text[space - 1] === " " || text[space - 1] === "\t")) space -= 1;
+    if (space === 0 || !isWordChar(text[space - 1])) break;
+    const wordEnd = space - 1;
+    let start = wordEnd;
+    while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+    if (!isWordStart(text, start) || text[start] === text[start].toLowerCase()) break;
+    if (!wordsStayOnOneLine(text, start, pathStart)) break;
+    if (PATH_CLAUSE.has(text.slice(start, wordEnd + 1))) break;
+    marks[start] = 1;
+    prefix = start;
+  }
+}
+
 function isRelativePosixPath(text, index) {
   if (!isWordStart(text, index)) return false;
   if (posixText !== text) {
@@ -847,12 +869,15 @@ function isRelativePosixPath(text, index) {
         }
         const lastIsVersion = isVersionSlash(text, lastSlash + 1);
         const dottedSlash = !stoppedOnBackslash || slashes.length >= 2;
+        let marked = false;
         for (let mark = cursor; mark < end; mark += 1) {
           if (!isWordStart(text, mark)) continue;
           if (twoSlashAt !== -1 && mark <= twoSlashAt) posixAt[mark] = 1;
           else if (dottedSlash && mark <= lastSlash && dotAfterLast && !lastIsVersion)
             posixAt[mark] = 1;
+          if (posixAt[mark] === 1) marked = true;
         }
+        if (marked) markPosixPrefix(text, posixAt, cursor);
       }
       cursor = Math.max(end, cursor + 1);
     }
@@ -1203,21 +1228,6 @@ function closingQuote(text, open) {
   return -1;
 }
 
-function closingComment(text, open) {
-  let depth = 0;
-  for (let index = open; index < text.length; index += 1) {
-    if (escapedAt(text, index, open)) continue;
-    const char = text[index];
-    if (char === "\n" || char === "\r") return -1;
-    if (char === "(") depth += 1;
-    else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-}
-
 function lineEndAt(text, index) {
   let end = text.length;
   const newline = text.indexOf("\n", index);
@@ -1227,8 +1237,26 @@ function lineEndAt(text, index) {
   return end;
 }
 
+let commentText = null;
+let commentCloses = null;
+
+/** One pass. Each `(` keeps the index of its matching `)`. */
+function commentCloseAt(text) {
+  if (commentText === text) return commentCloses;
+  commentText = text;
+  commentCloses = new Int32Array(text.length);
+  commentCloses.fill(-1);
+  const stack = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (escapedAt(text, index, 0)) continue;
+    if (text[index] === "(") stack.push(index);
+    else if (text[index] === ")" && stack.length > 0) commentCloses[stack.pop()] = index;
+  }
+  return commentCloses;
+}
+
 /** Spaces and a comment, then `@`. A group that does not introduce a mailbox stays text. */
-function cfwsThenAt(text, index) {
+function cfwsThenAt(text, index, closes) {
   let cursor = index;
   while (cursor < text.length) {
     const char = text[cursor];
@@ -1237,7 +1265,7 @@ function cfwsThenAt(text, index) {
       continue;
     }
     if (char === "(") {
-      const close = closingComment(text, cursor);
+      const close = closes[cursor] ?? -1;
       if (close === -1) return false;
       cursor = close + 1;
       continue;
@@ -1249,6 +1277,7 @@ function cfwsThenAt(text, index) {
 
 /** The `@` that separates a mailbox. Quotes and comments jump only when they introduce that `@`. */
 function nextMailboxAt(text, cursor) {
+  const closes = commentCloseAt(text);
   let index = cursor;
   let plainUntil = -1;
   while (index < text.length) {
@@ -1259,7 +1288,7 @@ function nextMailboxAt(text, cursor) {
         index += 1;
         continue;
       }
-      if (cfwsThenAt(text, close + 1)) {
+      if (cfwsThenAt(text, close + 1, closes)) {
         index = close + 1;
         continue;
       }
@@ -1267,13 +1296,13 @@ function nextMailboxAt(text, cursor) {
       continue;
     }
     if (index >= plainUntil && !escapedAt(text, index, cursor) && text[index] === "(") {
-      const close = closingComment(text, index);
+      const close = closes[index] ?? -1;
       if (close === -1) {
         plainUntil = lineEndAt(text, index);
         index += 1;
         continue;
       }
-      if (cfwsThenAt(text, close + 1)) {
+      if (cfwsThenAt(text, close + 1, closes)) {
         index = close + 1;
         continue;
       }

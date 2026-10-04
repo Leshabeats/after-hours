@@ -722,6 +722,23 @@ describe("codex app-server probe", () => {
       "Error reading [redacted] v2.0 now",
     );
     assert.equal(redactDiagnostic("see PrivateProject\\secrets later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see Private Project/secrets/key.txt later"),
+      "see [redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("The Private Project/secrets/key.txt was locked"),
+      "The [redacted] was locked",
+    );
+    const deepWindows = `${"a\\".repeat(16000)}a.txt`;
+    const deepWindowsStarted = Date.now();
+    const deepWindowsRedacted = redactDiagnostic(deepWindows);
+    assert.equal(Date.now() - deepWindowsStarted < 1000, true);
+    assert.equal(deepWindowsRedacted.includes("a\\"), false);
+    const nestedParens = `${"(".repeat(16000)}${")".repeat(16000)}`;
+    const nestedStarted = Date.now();
+    assert.equal(redactDiagnostic(nestedParens), nestedParens);
+    assert.equal(Date.now() - nestedStarted < 1000, true);
     assert.equal(redactDiagnostic("see sessions\\Jane Doe later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see sessions\\Jane Mary Doe later"), "see [redacted] later");
     assert.equal(redactDiagnostic("failed PrivateProject\\Jane Doe"), "failed [redacted]");
