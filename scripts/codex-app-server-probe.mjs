@@ -501,16 +501,7 @@ function scanDriveRelative(text) {
         end = piece.end;
         continue;
       }
-      let after = piece.end;
-      while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
-      let nextSeparated = false;
-      if (after < text.length && text[after] !== "\n" && text[after] !== "\r") {
-        const follow = driveTokenEnd(text, after);
-        nextSeparated =
-          driveSliceHas(text, after, follow.end, "\\") ||
-          driveSliceHas(text, after, follow.end, "/");
-      }
-      if (!(nextSeparated || isCapitalizedWord(text, next, piece.end))) break;
+      if (!isCapitalizedWord(text, next, piece.end)) break;
       end = piece.end;
     }
     drivePaths[cursor] = 1;
@@ -570,15 +561,26 @@ function windowsBodyAt(text) {
 let bareText = null;
 let bareEnds = null;
 
-function barePairContinues(text, end) {
-  let after = end;
-  while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
-  if (!isWordChar(text[after])) return false;
-  let wordEnd = after + 1;
-  while (wordEnd < text.length && isWordChar(text[wordEnd])) wordEnd += 1;
-  const follow = text[wordEnd] ?? "";
-  const word = text.slice(after, wordEnd);
-  return follow === "\\" || follow === "/" || follow === "." || word !== word.toLowerCase();
+function bareNameChar(char) {
+  return isWordChar(char) || char === "'" || char === "\u2019" || char === "_" || char === "-";
+}
+
+/** Include capitalized words. A `\\`, `/`, or `.` means the existing path scan owns the line. */
+function barePairEndWithNames(text, end) {
+  let cursor = end;
+  while (cursor < text.length) {
+    let after = cursor;
+    while (after < text.length && (text[after] === " " || text[after] === "\t")) after += 1;
+    if (after === cursor || !bareNameChar(text[after])) return cursor;
+    let wordEnd = after + 1;
+    while (wordEnd < text.length && bareNameChar(text[wordEnd])) wordEnd += 1;
+    const follow = text[wordEnd] ?? "";
+    if (follow === "\\" || follow === "/" || follow === ".") return -1;
+    const word = text.slice(after, wordEnd);
+    if (word === word.toLowerCase()) return cursor;
+    cursor = wordEnd;
+  }
+  return cursor;
 }
 
 /** One pass. `PrivateProject\\secrets` has no dot and no slash. A longer path stays with pathEnd. */
@@ -620,11 +622,12 @@ function bareWindowsPairEnd(text, index) {
           split = scan;
           continue;
         }
-        if (!isWordChar(piece)) words = false;
+        if (!bareNameChar(piece)) words = false;
       }
       if (!words || dot || split < start + 2 || end - split < 3) continue;
-      if (barePairContinues(text, end)) continue;
-      bareEnds[start] = end;
+      const named = barePairEndWithNames(text, end);
+      if (named < end) continue;
+      bareEnds[start] = named;
     }
   }
   const found = bareEnds[index] ?? -1;
@@ -1125,8 +1128,8 @@ function quotedMailboxEnd(text, open) {
 }
 
 const EMAIL_LOCAL = /[\p{L}\p{M}0-9!#$%&'*+/=?^_`{|}~.'\u2019-]/u;
-const EMAIL_DOMAIN = /[\p{L}0-9.-]/u;
-const EMAIL_TLD = /^\p{L}+$/u;
+const EMAIL_DOMAIN = /[\p{L}\p{M}0-9.-]/u;
+const EMAIL_TLD = /^[\p{L}\p{M}]+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
 
 function isEmailTld(label) {
@@ -1154,7 +1157,16 @@ function redactEmails(text) {
     if (at === -1) break;
     const quoted = quotedLocalStart(text, at, cursor);
     let local = quoted === -1 ? at : quoted;
-    while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) local -= 1;
+    let lastDot = -1;
+    if (quoted === -1) {
+      for (let scan = cursor; scan < at; scan += 1) {
+        if (text[scan] === ".") lastDot = scan;
+      }
+    }
+    while (quoted === -1 && local > cursor && EMAIL_LOCAL.test(text[local - 1])) {
+      if (text[local - 1] === "/" && lastDot !== -1 && lastDot < local - 1) break;
+      local -= 1;
+    }
     const literal = addressLiteralEnd(text, at);
     if (literal !== -1 && local < at) {
       redacted += `${text.slice(cursor, local)}[redacted]`;

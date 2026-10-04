@@ -722,6 +722,38 @@ describe("codex app-server probe", () => {
       "Error reading [redacted] v2.0 now",
     );
     assert.equal(redactDiagnostic("see PrivateProject\\secrets later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see sessions\\Jane Doe later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see sessions\\Jane Mary Doe later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("failed PrivateProject\\Jane Doe"), "failed [redacted]");
+    assert.equal(
+      redactDiagnostic("see PrivateProject\\secrets Please retry"),
+      "see [redacted] retry",
+    );
+    assert.equal(redactDiagnostic("see O'Brien\\secrets later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see my_project\\secrets later"), "see [redacted] later");
+    const namedPair = summarizeThreads([
+      {
+        id: "not-a-uuid",
+        originator: "sessions\\Jane Doe",
+        source: { custom: "O'Brien\\secrets" },
+        status: { type: "idle" },
+      },
+    ]);
+    const namedPairJson = JSON.stringify(namedPair);
+    assert.equal(namedPairJson.includes("Jane"), false);
+    assert.equal(namedPairJson.includes("sessions"), false);
+    assert.equal(namedPairJson.includes("O'Brien"), false);
+    assert.equal(namedPairJson.includes("secrets"), false);
+    assert.equal(namedPair.originators["[redacted]"], 1);
+    assert.equal(namedPair.sources["[redacted]"], 1);
+    assert.equal(
+      redactDiagnostic("Error reading C:data.bin because Users\\Alice is missing"),
+      "Error reading [redacted] because [redacted] is missing",
+    );
+    assert.equal(
+      redactDiagnostic("open C:secret.txt because Users\\Alice later"),
+      "open [redacted] because [redacted] later",
+    );
     assert.equal(redactDiagnostic("open \\^[ later"), "open \\^[ later");
     const driveRelative = summarizeThreads([
       {
@@ -982,6 +1014,23 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic('see "alice smith"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic('see "a@b"@example.com later'), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice!private@example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("alice@\u0909\u0926\u093e\u0939\u0930\u0923.\u092d\u093e\u0930\u0924"),
+      "[redacted]",
+    );
+    assert.equal(
+      redactDiagnostic("see https://example.com/path@attacker.com later"),
+      "see https://example.com/[redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("https://example.com/a/b@example.com"),
+      "https://example.com/a/[redacted]",
+    );
+    assert.equal(redactDiagnostic("alice/private@example.com"), "[redacted]");
+    assert.equal(
+      redactDiagnostic("https://alice:pass:word@example.com/path"),
+      "https://example.com/path",
+    );
     const combining = `Jos${"e"}\u0301`;
     assert.equal(redactDiagnostic(`see ${combining}@example.com later`), "see [redacted] later");
     assert.equal(
