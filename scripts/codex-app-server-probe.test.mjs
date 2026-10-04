@@ -866,6 +866,20 @@ describe("codex app-server probe", () => {
       redactDiagnostic("see project@client/secrets/key.txt later"),
       "see [redacted] later",
     );
+    assert.equal(redactDiagnostic("error R&D/client/secrets/key.txt"), "error [redacted]");
+    assert.equal(redactDiagnostic("see R&D later"), "see R&D later");
+    const punctPath = summarizeThreads([
+      {
+        source: { custom: "R&D/client/secrets/key.txt" },
+        originator: "R&D/client/secrets/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const punctJson = JSON.stringify(punctPath);
+    assert.equal(punctJson.includes("R&D"), false);
+    assert.equal(punctJson.includes("secrets"), false);
+    assert.equal(punctPath.originators["[redacted]"], 1);
+    assert.equal(punctPath.sources["[redacted]"], 1);
     const atPath = summarizeThreads([
       {
         source: { custom: "project@client/secrets/key.txt" },
@@ -2294,6 +2308,36 @@ describe("codex app-server probe", () => {
       () => {},
     );
     assert.deepEqual(plain, ["SIGTERM"]);
+    const windowsOrder = [];
+    const windowsKilled = [];
+    let windowsCode = null;
+    stopForSignal(
+      {
+        pid: 21,
+        exitCode: null,
+        signalCode: null,
+        stdin: { destroyed: true },
+        kill(signal) {
+          windowsKilled.push(signal);
+          if (signal === "SIGTERM") this.exitCode = 0;
+        },
+      },
+      "SIGINT",
+      (code) => {
+        windowsOrder.push("exit");
+        windowsCode = code;
+      },
+      {
+        platform: "win32",
+        launchSync() {
+          windowsOrder.push("taskkill");
+          return { status: 1 };
+        },
+      },
+    );
+    assert.deepEqual(windowsOrder, ["taskkill", "exit"]);
+    assert.deepEqual(windowsKilled, ["SIGTERM"]);
+    assert.equal(windowsCode, 130);
     const ended = [];
     const killed = [];
     const windows = {

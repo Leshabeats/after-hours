@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 /** Methods this probe may send. A model turn is intentionally absent. */
@@ -938,6 +938,23 @@ function isVersionSlash(text, index) {
   return /\d/.test(text[cursor] ?? "");
 }
 
+const PATH_PUNCTUATION = new Set([
+  "&",
+  "#",
+  "%",
+  "!",
+  "~",
+  ",",
+  ";",
+  "$",
+  "^",
+  "{",
+  "}",
+  "[",
+  "]",
+  "@",
+]);
+
 function isPathTokenChar(char) {
   return (
     isWordChar(char) ||
@@ -1033,6 +1050,7 @@ function isRelativePosixPath(text, index) {
     posixText = text;
     posixAt = new Uint8Array(text.length);
     let cursor = 0;
+    let barrenUntil = 0;
     while (cursor < text.length) {
       if (!isWordStart(text, cursor)) {
         cursor += 1;
@@ -1047,29 +1065,31 @@ function isRelativePosixPath(text, index) {
           stoppedOnBackslash = true;
           break;
         }
-        if (char === "@") {
+        if (PATH_PUNCTUATION.has(char)) {
           let look = end + 1;
           let pathAfter = false;
-          while (look < text.length) {
-            const next = pointAt(text, look);
-            const nextChar = next?.char ?? text[look];
-            if (nextChar === "/") {
-              pathAfter = true;
-              break;
+          if (look >= barrenUntil) {
+            while (look < text.length) {
+              const next = pointAt(text, look);
+              const nextChar = next?.char ?? text[look];
+              if (nextChar === "/") {
+                pathAfter = true;
+                break;
+              }
+              if (
+                nextChar === "\\" ||
+                nextChar === " " ||
+                nextChar === "\t" ||
+                nextChar === "\n" ||
+                nextChar === "\r" ||
+                nextChar === "("
+              ) {
+                break;
+              }
+              if (!isPathTokenChar(nextChar) && !PATH_PUNCTUATION.has(nextChar)) break;
+              look += next?.size ?? 1;
             }
-            if (
-              nextChar === "\\" ||
-              nextChar === "@" ||
-              nextChar === " " ||
-              nextChar === "\t" ||
-              nextChar === "\n" ||
-              nextChar === "\r" ||
-              nextChar === "("
-            ) {
-              break;
-            }
-            if (!isPathTokenChar(nextChar)) break;
-            look += next?.size ?? 1;
+            if (!pathAfter) barrenUntil = look;
           }
           if (!pathAfter) break;
           end += 1;
@@ -1889,7 +1909,9 @@ export function rememberProbeChild(child) {
  * Ctrl+C exits immediately, so the one-second SIGKILL timer never runs.
  * Signal the detached group here, then exit.
  */
-export function stopForSignal(child, signal, exit = process.exit) {
+export function stopForSignal(child, signal, exit = process.exit, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const launchSync = options.launchSync ?? spawnSync;
   if (typeof child?.killGroup === "function") {
     for (const name of ["SIGTERM", "SIGKILL"]) {
       try {
@@ -1898,9 +1920,31 @@ export function stopForSignal(child, signal, exit = process.exit) {
         // ESRCH means the group is already gone. The probe still exits below.
       }
     }
+  } else if (child && platform === "win32") {
+    let failed = false;
+    try {
+      const result = launchSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      failed = !result || result.status !== 0;
+    } catch {
+      failed = true;
+    }
+    if (failed) {
+      try {
+        // Exit follows immediately, so the one-second SIGKILL timer would never run.
+        killDirect(child, (finish) => {
+          finish();
+          return { unref() {} };
+        });
+      } catch {
+        // The probe still exits after the direct kill fails.
+      }
+    }
   } else if (child) {
     try {
-      stopChild(child);
+      stopChild(child, platform, options.launch);
     } catch {
       // A failed stop still has to leave the probe exiting.
     }
