@@ -1176,6 +1176,8 @@ describe("codex app-server probe", () => {
       "[redacted]",
     );
     assert.equal(redactDiagnostic("see user١@example.com later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("alice@مثال١.إختبار"), "[redacted]");
+    assert.equal(redactDiagnostic("see alice@مثال١.إختبار later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user★@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
@@ -2248,10 +2250,16 @@ describe("codex app-server probe", () => {
       },
     };
     const groupLater = [];
+    let groupUnref = 0;
     terminateChild(grouped, "linux", undefined, (fn) => {
       groupLater.push(fn);
-      return { unref() {} };
+      return {
+        unref() {
+          groupUnref += 1;
+        },
+      };
     });
+    assert.equal(groupUnref, 0);
     assert.deepEqual(groupSignals, ["SIGTERM"]);
     grouped.exitCode = 0;
     groupLater[0]();

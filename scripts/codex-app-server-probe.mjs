@@ -1441,7 +1441,7 @@ function isEmailLocalChar(char) {
   if (EMAIL_LOCAL.test(char)) return true;
   return char.codePointAt(0) > 127;
 }
-const EMAIL_DOMAIN = /[\p{L}\p{M}0-9.-]/u;
+const EMAIL_DOMAIN = /[\p{L}\p{M}\p{Nd}.-]/u;
 const EMAIL_TLD = /^[\p{L}\p{M}]+$/u;
 const EMAIL_PUNYCODE_TLD = /^xn--[a-z0-9-]{2,}$/i;
 
@@ -1696,9 +1696,9 @@ function redactEmails(text) {
 
 function isHostLabel(label) {
   if (label.length < 1 || label.length > 63) return false;
-  if (!/^[\p{L}\p{M}0-9][\p{L}\p{M}0-9-]*$/u.test(label)) return false;
+  if (!/^[\p{L}\p{M}\p{Nd}][\p{L}\p{M}\p{Nd}-]*$/u.test(label)) return false;
   const last = label[label.length - 1];
-  return last !== "-" && /[\p{L}\p{M}0-9]/u.test(last);
+  return last !== "-" && /[\p{L}\p{M}\p{Nd}]/u.test(last);
 }
 
 let forwardText = null;
@@ -1882,7 +1882,9 @@ function killDirect(child, signalLater = setTimeout) {
       // The pid can disappear between the check and the signal.
     }
   }, FORCE_KILL_WAIT_MS);
-  timer?.unref?.();
+  // A group descendant can ignore SIGTERM after the wrapper exits and closes stdio.
+  // The timer has to stay referenced or Node quits before SIGKILL.
+  if (typeof child.killGroup !== "function") timer?.unref?.();
   return true;
 }
 
