@@ -1256,21 +1256,21 @@ function commentCloseAt(text) {
 }
 
 let cfwsText = null;
-let cfwsMemo = null;
+let cfwsAtMemo = null;
 
-/** Whitespace, including a line break, and comments, then `@`. Each index is decided once. */
-function cfwsThenAt(text, index, closes) {
+/** Index of `@` after whitespace, a line break, and comments. Each index is decided once. */
+function cfwsAt(text, index, closes) {
   if (cfwsText !== text) {
     cfwsText = text;
-    cfwsMemo = new Int8Array(text.length);
+    cfwsAtMemo = new Int32Array(text.length);
   }
   let cursor = index;
   const pending = [];
   while (cursor < text.length) {
-    const known = cfwsMemo[cursor];
+    const known = cfwsAtMemo[cursor];
     if (known !== 0) {
-      for (const spot of pending) cfwsMemo[spot] = known;
-      return known === 1;
+      for (const spot of pending) cfwsAtMemo[spot] = known;
+      return known < 0 ? -1 : known - 1;
     }
     pending.push(cursor);
     const char = text[cursor];
@@ -1281,18 +1281,24 @@ function cfwsThenAt(text, index, closes) {
     if (char === "(") {
       const close = closes[cursor] ?? -1;
       if (close === -1) {
-        for (const spot of pending) cfwsMemo[spot] = 2;
-        return false;
+        for (const spot of pending) cfwsAtMemo[spot] = -1;
+        return -1;
       }
       cursor = close + 1;
       continue;
     }
-    const answer = char === "@" ? 1 : 2;
-    for (const spot of pending) cfwsMemo[spot] = answer;
-    return answer === 1;
+    const answer = char === "@" ? cursor + 1 : -1;
+    for (const spot of pending) cfwsAtMemo[spot] = answer;
+    return answer < 0 ? -1 : cursor;
   }
-  for (const spot of pending) cfwsMemo[spot] = 2;
-  return false;
+  for (const spot of pending) cfwsAtMemo[spot] = -1;
+  return -1;
+}
+
+/** A group introduces a mailbox only when the `@` after it has a real domain. */
+function groupIntroducesMailbox(text, close, closes) {
+  const at = cfwsAt(text, close + 1, closes);
+  return at !== -1 && mailboxEnd(text, at) !== -1;
 }
 
 /** The `@` that separates a mailbox. Quotes and comments jump only when they introduce that `@`. */
@@ -1308,7 +1314,7 @@ function nextMailboxAt(text, cursor) {
         index += 1;
         continue;
       }
-      if (cfwsThenAt(text, close + 1, closes)) {
+      if (groupIntroducesMailbox(text, close, closes)) {
         index = close + 1;
         continue;
       }
@@ -1322,7 +1328,7 @@ function nextMailboxAt(text, cursor) {
         index += 1;
         continue;
       }
-      if (cfwsThenAt(text, close + 1, closes)) {
+      if (groupIntroducesMailbox(text, close, closes)) {
         index = close + 1;
         continue;
       }
@@ -1357,18 +1363,13 @@ function redactEmails(text) {
       if (text[local - 1] === "/" && schemeAt !== -1 && schemeAt < local - 1) break;
       local -= 1;
     }
-    const literal = addressLiteralEnd(text, at);
-    if (literal !== -1 && local < at) {
-      redacted += `${text.slice(cursor, local)}[redacted]`;
-      cursor = literal;
-      continue;
-    }
-    let domain = at + 1;
-    while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
-    const end = local < at ? emailEnd(text, at, domain) : -1;
+    const end = local < at ? mailboxEnd(text, at) : -1;
     if (end !== -1) {
       redacted += `${text.slice(cursor, local)}[redacted]`;
       cursor = end;
+    } else if (local < at && bareAtInsideGroup(text, at)) {
+      redacted += `${text.slice(cursor, local)}[redacted]`;
+      cursor = at + 1;
     } else {
       redacted += text.slice(cursor, at + 1);
       cursor = at + 1;
@@ -1384,21 +1385,107 @@ function isHostLabel(label) {
   return last !== "-" && /[\p{L}\p{M}0-9]/u.test(last);
 }
 
+let forwardText = null;
+let forwardEnd = null;
+
+/** Where the domain starts after whitespace and comments that follow `@`. */
+function cfwsForwardTo(text) {
+  if (forwardText === text) return forwardEnd;
+  forwardText = text;
+  const closes = commentCloseAt(text);
+  forwardEnd = new Int32Array(text.length + 1);
+  forwardEnd[text.length] = text.length;
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    const char = text[index];
+    if (char === " " || char === "\t" || char === "\n" || char === "\r") {
+      forwardEnd[index] = forwardEnd[index + 1];
+      continue;
+    }
+    if (char === "(" && !escapedAt(text, index, 0)) {
+      const close = closes[index] ?? -1;
+      forwardEnd[index] = close === -1 ? index : forwardEnd[close + 1];
+      continue;
+    }
+    forwardEnd[index] = index;
+  }
+  return forwardEnd;
+}
+
+let groupText = null;
+let groupParen = null;
+let groupQuote = null;
+
+function insideGroup(text, index) {
+  if (groupText !== text) {
+    groupText = text;
+    groupParen = new Uint16Array(text.length);
+    groupQuote = new Uint8Array(text.length);
+    let paren = 0;
+    let quote = 0;
+    let escaped = false;
+    for (let cursor = 0; cursor < text.length; cursor += 1) {
+      groupParen[cursor] = paren;
+      groupQuote[cursor] = quote;
+      const char = text[cursor];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\n" || char === "\r") {
+        quote = 0;
+        continue;
+      }
+      if (quote) {
+        if (char === '"') quote = 0;
+        continue;
+      }
+      if (char === '"') quote = 1;
+      else if (char === "(") paren += 1;
+      else if (char === ")" && paren > 0) paren -= 1;
+    }
+  }
+  return groupParen[index] > 0 || groupQuote[index] > 0;
+}
+
+/** `word @` inside a comment or quotes is a local part even when no domain follows. */
+function bareAtInsideGroup(text, at) {
+  if (!insideGroup(text, at)) return false;
+  const next = text[at + 1];
+  if (next == null || next === "[") return false;
+  if (next === " " || next === "\t" || next === "\n" || next === "\r" || next === "(") return false;
+  return !EMAIL_DOMAIN.test(next);
+}
+
+function mailboxEnd(text, at) {
+  const domainStart = cfwsForwardTo(text)[at + 1];
+  if (text[domainStart] === "[") {
+    const literal = addressLiteralEnd(text, domainStart - 1);
+    if (literal !== -1) return literal;
+  }
+  let domain = domainStart;
+  while (domain < text.length && EMAIL_DOMAIN.test(text[domain])) domain += 1;
+  return emailEnd(text, domainStart, domain);
+}
+
 /** One pass over the dots. A label followed by @ belongs to the next address. */
-function emailEnd(text, at, domain) {
+function emailEnd(text, domainStart, domain) {
   let hostEnd = domain;
-  while (hostEnd > at + 1 && text[hostEnd - 1] === ".") hostEnd -= 1;
-  const bare = text.slice(at + 1, hostEnd);
+  while (hostEnd > domainStart && text[hostEnd - 1] === ".") hostEnd -= 1;
+  const bare = text.slice(domainStart, hostEnd);
   if (!bare.includes(".")) {
     return isHostLabel(bare) && text[domain] !== "@" ? hostEnd : -1;
   }
   const dots = [];
-  for (let index = at + 1; index < domain; index += 1) {
+  for (let index = domainStart; index < domain; index += 1) {
     if (text[index] === ".") dots.push(index);
   }
   for (let index = dots.length - 1; index >= 0; index -= 1) {
     const dot = dots[index];
-    if (dot <= at + 1) continue;
+    if (dot <= domainStart) continue;
     const labelEnd = index + 1 < dots.length ? dots[index + 1] : domain;
     const tld = text.slice(dot + 1, labelEnd);
     if (tld.length < 2 || !isEmailTld(tld)) continue;
@@ -1420,19 +1507,37 @@ export function shouldKillChild(child) {
   return child?.exitCode == null && child?.signalCode == null && child?.pid != null;
 }
 
-function killDirect(child) {
+const FORCE_KILL_WAIT_MS = 1000;
+
+/** SIGTERM first. A child that ignores it is SIGKILL'd once the wait elapses. */
+function killDirect(child, signalLater = setTimeout) {
   if (!shouldKillChild(child)) return false;
   try {
     child.kill("SIGTERM");
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
+    return true;
   }
+  const timer = signalLater(() => {
+    if (!shouldKillChild(child)) return;
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The pid can disappear between the check and the signal.
+    }
+  }, FORCE_KILL_WAIT_MS);
+  timer?.unref?.();
   return true;
 }
 
-export function terminateChild(child, platform = process.platform, launch = spawn) {
+export function terminateChild(
+  child,
+  platform = process.platform,
+  launch = spawn,
+  signalLater = setTimeout,
+) {
   if (!shouldKillChild(child)) return false;
-  if (platform !== "win32") return killDirect(child);
+  if (platform !== "win32") return killDirect(child, signalLater);
   let killer;
   try {
     killer = launch("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
@@ -1440,14 +1545,14 @@ export function terminateChild(child, platform = process.platform, launch = spaw
       windowsHide: true,
     });
   } catch {
-    return killDirect(child);
+    return killDirect(child, signalLater);
   }
   if (!killer || typeof killer.on !== "function") return true;
   killer.on("error", () => {
-    killDirect(child);
+    killDirect(child, signalLater);
   });
   killer.on("exit", (code) => {
-    if (code) killDirect(child);
+    if (code) killDirect(child, signalLater);
   });
   killer.unref?.();
   return true;
@@ -1468,6 +1573,19 @@ export function stopChild(child, platform = process.platform, launch = spawn) {
 export function bindStdin(stdin, rejectPending) {
   stdin.on("error", (error) => {
     rejectPending(new Error(`codex app-server stdin failed: ${error?.code || "unknown"}`));
+  });
+}
+
+/** A broken stdout pipe cannot deliver a response. Reject waiters and stop the child. */
+export function bindStdout(stdout, rejectPending, stop) {
+  stdout.on("error", (error) => {
+    const reason = error?.code || redactDiagnostic(error?.message ?? "");
+    rejectPending(
+      new Error(
+        reason ? `codex app-server output failed: ${reason}` : "codex app-server output failed",
+      ),
+    );
+    stop();
   });
 }
 
@@ -1588,7 +1706,12 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"]) {
     }
     if (stdoutBuffer.length > STDERR_LINE_LIMIT) rejectOversized();
   });
-  child.stdout.on("error", () => {});
+  bindStdout(child.stdout, rejectPending, () => {
+    if (stopping) return;
+    stopping = true;
+    if (outputTimer) clearTimeout(outputTimer);
+    stopChild(child);
+  });
   child.stdout.on("end", () => {
     if (stopping || failure) return;
     if (child.exitCode != null || child.signalCode != null) return;

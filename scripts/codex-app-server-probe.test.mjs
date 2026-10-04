@@ -8,6 +8,7 @@ import {
   appServerLaunch,
   assertProbeMethod,
   bindStdin,
+  bindStdout,
   formatFailure,
   shouldKillChild,
   stopChild,
@@ -1050,6 +1051,20 @@ describe("codex app-server probe", () => {
       "see [redacted] later",
     );
     assert.equal(
+      redactDiagnostic("see user(s3cr3t @)\n@x later"),
+      "see user([redacted])\n@x later",
+    );
+    assert.equal(redactDiagnostic("see (alice@secret.com)\n@x"), "see ([redacted])\n@x");
+    assert.equal(redactDiagnostic("see (alice@secret.com) @x"), "see ([redacted]) @x");
+    assert.equal(redactDiagnostic('prefix "alice@secret.com"\n@x'), 'prefix "[redacted]"\n@x');
+    assert.equal(redactDiagnostic("see alice@(private)example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see alice@ (private) example.com later"),
+      "see [redacted] later",
+    );
+    assert.equal(redactDiagnostic("failed (os error 3)\n@x"), "failed (os error 3)\n@x");
+    assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
+    assert.equal(
       redactDiagnostic("see user(note @)\r\n@example.com later"),
       "see [redacted] later",
     );
@@ -1787,6 +1802,27 @@ describe("codex app-server probe", () => {
     assert.match(rejected.message, /stdin failed: EPIPE/);
   });
 
+  it("rejects pending requests when stdout errors", () => {
+    const stdout = new EventEmitter();
+    let rejected = null;
+    let stopped = 0;
+    bindStdout(
+      stdout,
+      (error) => {
+        rejected = error;
+      },
+      () => {
+        stopped += 1;
+      },
+    );
+    stdout.emit("error", { code: "EPIPE" });
+    assert.match(rejected.message, /output failed: EPIPE/);
+    assert.equal(stopped, 1);
+    stdout.emit("error", new Error("broken /Users/ada/secret.jsonl"));
+    assert.equal(rejected.message.includes("secret.jsonl"), false);
+    assert.equal(rejected.message.includes("ada"), false);
+  });
+
   it("kills a live child after stdin fails and leaves a finished child alone", () => {
     const signals = [];
     const live = {
@@ -1800,6 +1836,38 @@ describe("codex app-server probe", () => {
     assert.equal(shouldKillChild(live), true);
     assert.equal(terminateChild(live, "linux"), true);
     assert.deepEqual(signals, ["SIGTERM"]);
+    const forced = [];
+    const pendingKill = [];
+    const stubborn = {
+      pid: 5,
+      exitCode: null,
+      signalCode: null,
+      kill(signal) {
+        forced.push(signal);
+      },
+    };
+    terminateChild(stubborn, "linux", undefined, (fn) => {
+      pendingKill.push(fn);
+      return { unref() {} };
+    });
+    assert.deepEqual(forced, ["SIGTERM"]);
+    pendingKill[0]();
+    assert.deepEqual(forced, ["SIGTERM", "SIGKILL"]);
+    const exited = {
+      pid: 6,
+      exitCode: null,
+      signalCode: null,
+      kill(signal) {
+        if (signal === "SIGTERM") this.exitCode = 0;
+      },
+    };
+    const afterExit = [];
+    terminateChild(exited, "linux", undefined, (fn) => {
+      afterExit.push(fn);
+      return { unref() {} };
+    });
+    afterExit[0]();
+    assert.equal(exited.exitCode, 0);
     const ended = [];
     const killed = [];
     const windows = {
