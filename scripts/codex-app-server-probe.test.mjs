@@ -1045,6 +1045,22 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see alice@b later"), "see alice@b later");
     assert.equal(redactDiagnostic("see user(comment)@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see user(note @)@example.com later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("see user(s3cr3t @)\n@example.com later"),
+      "see [redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("see user(note @)\r\n@example.com later"),
+      "see [redacted] later",
+    );
+    assert.equal(
+      redactDiagnostic("see user(alice@secret)\n@example.com later"),
+      "see [redacted] later",
+    );
+    const groups = "(os error 3) ".repeat(8000);
+    const groupsStarted = Date.now();
+    assert.equal(redactDiagnostic(groups), groups);
+    assert.equal(Date.now() - groupsStarted < 1000, true);
     assert.equal(redactDiagnostic("see user(@secret)@example.com later"), "see [redacted] later");
     assert.equal(
       redactDiagnostic("see user(alice@secret)@example.com later"),

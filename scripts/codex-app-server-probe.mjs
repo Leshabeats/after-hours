@@ -1255,23 +1255,43 @@ function commentCloseAt(text) {
   return commentCloses;
 }
 
-/** Spaces and a comment, then `@`. A group that does not introduce a mailbox stays text. */
+let cfwsText = null;
+let cfwsMemo = null;
+
+/** Whitespace, including a line break, and comments, then `@`. Each index is decided once. */
 function cfwsThenAt(text, index, closes) {
+  if (cfwsText !== text) {
+    cfwsText = text;
+    cfwsMemo = new Int8Array(text.length);
+  }
   let cursor = index;
+  const pending = [];
   while (cursor < text.length) {
+    const known = cfwsMemo[cursor];
+    if (known !== 0) {
+      for (const spot of pending) cfwsMemo[spot] = known;
+      return known === 1;
+    }
+    pending.push(cursor);
     const char = text[cursor];
-    if (char === " " || char === "\t") {
+    if (char === " " || char === "\t" || char === "\n" || char === "\r") {
       cursor += 1;
       continue;
     }
     if (char === "(") {
       const close = closes[cursor] ?? -1;
-      if (close === -1) return false;
+      if (close === -1) {
+        for (const spot of pending) cfwsMemo[spot] = 2;
+        return false;
+      }
       cursor = close + 1;
       continue;
     }
-    return char === "@";
+    const answer = char === "@" ? 1 : 2;
+    for (const spot of pending) cfwsMemo[spot] = answer;
+    return answer === 1;
   }
+  for (const spot of pending) cfwsMemo[spot] = 2;
   return false;
 }
 
