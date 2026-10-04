@@ -1294,6 +1294,7 @@ function pathEnd(text, index) {
 
 const STDERR_LINE_LIMIT = 100_000;
 const STDOUT_LINE_LIMIT = 8_000_000;
+const ERROR_DETAIL_LIMIT = 16_384;
 
 /**
  * Keep raw stderr only until a line can be redacted whole.
@@ -1413,14 +1414,23 @@ export function redactDiagnostic(value) {
   );
 }
 
+/** RFC 5322 dtext, plus the folding space a domain literal may contain. */
+function isDomainLiteral(body) {
+  let printable = false;
+  for (const char of body) {
+    const code = char.codePointAt(0);
+    if (code === 32 || code === 9) continue;
+    if (code < 33 || code > 126 || code === 91 || code === 92 || code === 93) return false;
+    printable = true;
+  }
+  return printable;
+}
+
 function addressLiteralEnd(text, at) {
   if (text[at + 1] !== "[") return -1;
   const close = text.indexOf("]", at + 2);
-  if (close === -1) return -1;
-  const body = text.slice(at + 2, close);
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(body)) return close + 1;
-  if (/^IPv6:[0-9A-Fa-f:.]+$/i.test(body) && body.includes(":")) return close + 1;
-  return -1;
+  if (close === -1 || !isDomainLiteral(text.slice(at + 2, close))) return -1;
+  return close + 1;
 }
 
 function quotedLocalStart(text, at, floor) {
@@ -1775,7 +1785,33 @@ function bareAtInsideGroup(text, at) {
   return !EMAIL_DOMAIN.test(next);
 }
 
+/** Index of the first decimal digit in [start, end), or -1. */
+function firstDecimalDigit(text, start, end) {
+  for (let index = start; index < end;) {
+    const point = pointAt(text, index);
+    const glyph = point?.char ?? text[index];
+    if (/\p{Nd}/u.test(glyph)) return index;
+    index += point?.size ?? 1;
+  }
+  return -1;
+}
+
+let mailboxText = null;
+let mailboxAt = null;
+
 function mailboxEnd(text, at) {
+  if (mailboxText !== text) {
+    mailboxText = text;
+    mailboxAt = new Int32Array(text.length);
+  }
+  const known = at >= 0 && at < mailboxAt.length ? mailboxAt[at] : 0;
+  if (known !== 0) return known < 0 ? -1 : known - 1;
+  const end = resolveMailboxEnd(text, at);
+  if (at >= 0 && at < mailboxAt.length) mailboxAt[at] = end < 0 ? -1 : end + 1;
+  return end;
+}
+
+function resolveMailboxEnd(text, at) {
   const domainStart = cfwsForwardTo(text)[at + 1];
   if (text[domainStart] === "[") {
     const literal = addressLiteralEnd(text, domainStart - 1);
@@ -1788,7 +1824,11 @@ function mailboxEnd(text, at) {
     if (!EMAIL_DOMAIN.test(glyph)) break;
     domain += point?.size ?? 1;
   }
-  const end = emailEnd(text, domainStart, domain);
+  let end = emailEnd(text, domainStart, domain);
+  if (end === -1) {
+    const cut = firstDecimalDigit(text, domainStart, domain);
+    if (cut > domainStart) end = emailEnd(text, domainStart, cut);
+  }
   if (end === -1) return -1;
   const before = text[domainStart - 1];
   if (text.slice(domainStart, end).includes(".") || before === "@" || before === ")") return end;
@@ -1831,8 +1871,9 @@ async function readRateLimits(client, { keepTransportFailure = false } = {}) {
   }
 }
 
-function rpcError(message) {
-  const text = redactDiagnostic(message?.message ?? "");
+export function rpcError(message) {
+  const raw = message?.message ?? "";
+  const text = raw.length > ERROR_DETAIL_LIMIT ? "[redacted]" : redactDiagnostic(raw);
   if (message?.code != null && text) return { error: `${message.code}: ${text}` };
   if (message?.code != null) return { error: String(message.code) };
   return { error: text || "request failed" };
@@ -1874,12 +1915,14 @@ function killDirect(child, signalLater = setTimeout) {
     if (!(error?.code === "EPERM" && error?.directKill === true)) throw error;
   }
   const timer = signalLater(() => {
-    if (!child.killGroup && !shouldKillChild(child)) return;
-    try {
-      signalChild(child, "SIGKILL");
-    } catch {
-      // The pid can disappear between the check and the signal.
+    if (child.killGroup || shouldKillChild(child)) {
+      try {
+        signalChild(child, "SIGKILL");
+      } catch {
+        // The pid can disappear between the check and the signal.
+      }
     }
+    if (activeProbeChild === child) activeProbeChild = null;
   }, FORCE_KILL_WAIT_MS);
   // A group descendant can ignore SIGTERM after the wrapper exits and closes stdio.
   // The timer has to stay referenced or Node quits before SIGKILL.
@@ -1919,6 +1962,13 @@ let activeProbeChild = null;
 
 export function rememberProbeChild(child) {
   activeProbeChild = child;
+}
+
+/** A live process group stays reachable until its forced SIGKILL runs. */
+export function releaseProbeChild(child) {
+  if (activeProbeChild !== child) return;
+  if (typeof child?.killGroup === "function" && shouldKillChild(child)) return;
+  activeProbeChild = null;
 }
 
 /**
@@ -2200,7 +2250,7 @@ function connect(bin, args = ["app-server", "--listen", "stdio://"], timeoutMs =
   const stop = () => {
     stopping = true;
     if (outputTimer) clearTimeout(outputTimer);
-    if (activeProbeChild === child) activeProbeChild = null;
+    releaseProbeChild(child);
     stopChild(child);
   };
 

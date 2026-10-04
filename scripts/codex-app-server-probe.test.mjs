@@ -13,6 +13,8 @@ import {
   formatFailure,
   handleProbeSignal,
   rememberProbeChild,
+  releaseProbeChild,
+  rpcError,
   shouldKillChild,
   stopChild,
   stopForSignal,
@@ -1193,6 +1195,18 @@ describe("codex app-server probe", () => {
     assert.equal(redactDiagnostic("see user١@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("alice@مثال١.إختبار"), "[redacted]");
     assert.equal(redactDiagnostic("see alice@مثال١.إختبار later"), "see [redacted] later");
+    assert.equal(
+      redactDiagnostic("contact alice@ex.com١, then stop"),
+      "contact [redacted]١, then stop",
+    );
+    assert.equal(redactDiagnostic("alice@example.co١m"), "[redacted]١m");
+    assert.equal(redactDiagnostic("alice@example.١com"), "[redacted].١com");
+    const commented = `user${"(a)".repeat(4000)}@${"a.".repeat(4000)}com`;
+    const commentStarted = Date.now();
+    const commentRedacted = redactDiagnostic(commented);
+    assert.equal(Date.now() - commentStarted < 1000, true);
+    assert.equal(commentRedacted.includes("user"), false);
+    assert.equal(commentRedacted.includes("@"), false);
     assert.equal(redactDiagnostic("see user★@example.com later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@localhost later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@mailserver1 later"), "see [redacted] later");
@@ -1342,7 +1356,9 @@ describe("codex app-server probe", () => {
     );
     assert.equal(redactDiagnostic("see alice@[192.0.2.1] later"), "see [redacted] later");
     assert.equal(redactDiagnostic("see alice@[IPv6:2001:db8::1] later"), "see [redacted] later");
-    assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see alice@[not-an-ip] later");
+    assert.equal(redactDiagnostic("see alice@[not-an-ip] later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@[private.example] later"), "see [redacted] later");
+    assert.equal(redactDiagnostic("see alice@[ later"), "see alice@[ later");
     assert.equal(redactDiagnostic("alice@example.xn--p1ai"), "[redacted]");
     const punycode = redactDiagnostic("wrote alice@example.xn--p1ai later");
     assert.equal(punycode.includes("alice"), false);
@@ -2402,6 +2418,59 @@ describe("codex app-server probe", () => {
     assert.deepEqual(windowsOrder, ["taskkill", "exit"]);
     assert.deepEqual(windowsKilled, ["SIGTERM"]);
     assert.equal(windowsCode, 130);
+    const held = [];
+    const heldChild = {
+      pid: 31,
+      exitCode: null,
+      signalCode: null,
+      killGroup(signal) {
+        held.push(signal);
+      },
+    };
+    rememberProbeChild(heldChild);
+    releaseProbeChild(heldChild);
+    let heldCode = null;
+    handleProbeSignal("SIGINT", (code) => {
+      heldCode = code;
+    });
+    assert.deepEqual(held, ["SIGTERM", "SIGKILL"]);
+    assert.equal(heldCode, 130);
+    const dropped = { pid: 32, exitCode: null, signalCode: null, kill() {} };
+    rememberProbeChild(dropped);
+    releaseProbeChild(dropped);
+    let droppedCode = null;
+    handleProbeSignal("SIGINT", (code) => {
+      droppedCode = code;
+    });
+    assert.equal(droppedCode, 130);
+    const retired = [];
+    const retireChild = {
+      pid: 33,
+      exitCode: null,
+      signalCode: null,
+      killGroup(signal) {
+        retired.push(signal);
+      },
+    };
+    rememberProbeChild(retireChild);
+    const retireLater = [];
+    terminateChild(retireChild, "linux", undefined, (fn) => {
+      retireLater.push(fn);
+      return { unref() {} };
+    });
+    retireLater[0]();
+    let retireCode = null;
+    handleProbeSignal("SIGINT", (code) => {
+      retireCode = code;
+    });
+    assert.deepEqual(retired, ["SIGTERM", "SIGKILL"]);
+    assert.equal(retireCode, 130);
+    const huge = rpcError({ code: -1, message: `${"x:".repeat(20_000)}/secret/key.txt` });
+    assert.equal(huge.error, "-1: [redacted]");
+    assert.equal(huge.error.includes("secret"), false);
+    const shortError = rpcError({ message: "failed for alice@example.com" });
+    assert.equal(shortError.error.includes("alice"), false);
+    assert.equal(shortError.error.includes("failed for"), true);
     const ended = [];
     const killed = [];
     const windows = {
