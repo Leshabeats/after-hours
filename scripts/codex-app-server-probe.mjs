@@ -1019,6 +1019,34 @@ function isRelativePosixPath(text, index) {
           stoppedOnBackslash = true;
           break;
         }
+        if (char === "@") {
+          let look = end + 1;
+          let pathAfter = false;
+          while (look < text.length) {
+            const next = pointAt(text, look);
+            const nextChar = next?.char ?? text[look];
+            if (nextChar === "/") {
+              pathAfter = true;
+              break;
+            }
+            if (
+              nextChar === "\\" ||
+              nextChar === "@" ||
+              nextChar === " " ||
+              nextChar === "\t" ||
+              nextChar === "\n" ||
+              nextChar === "\r" ||
+              nextChar === "("
+            ) {
+              break;
+            }
+            if (!isPathTokenChar(nextChar)) break;
+            look += next?.size ?? 1;
+          }
+          if (!pathAfter) break;
+          end += 1;
+          continue;
+        }
         if (char === " " || char === "\t" || char === "(") {
           if (PATH_CLAUSE.has(text.slice(cursor, end))) break;
           const slash = posixParenContinuation(text, end);
@@ -2166,7 +2194,7 @@ export async function runProbe({
       return {
         userAgent: shareableUserAgent(init.result?.userAgent),
         threads: rpcError(active.error),
-        rateLimits: await readRateLimits(client),
+        rateLimits: await readRateLimits(client, { keepTransportFailure: true }),
       };
     }
     const extra = await listThreads(client, {

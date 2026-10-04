@@ -858,6 +858,23 @@ describe("codex app-server probe", () => {
     ]);
     assert.equal(JSON.stringify(posixSummary).includes("private"), false);
     assert.equal(posixSummary.originators["[redacted]"], 1);
+    assert.equal(
+      redactDiagnostic("see project@client/secrets/key.txt later"),
+      "see [redacted] later",
+    );
+    const atPath = summarizeThreads([
+      {
+        source: { custom: "project@client/secrets/key.txt" },
+        originator: "project@client/secrets/key.txt",
+        status: { type: "idle" },
+      },
+    ]);
+    const atJson = JSON.stringify(atPath);
+    assert.equal(atJson.includes("project@"), false);
+    assert.equal(atJson.includes("secrets"), false);
+    assert.equal(atJson.includes("key.txt"), false);
+    assert.equal(atPath.originators["[redacted]"], 1);
+    assert.equal(atPath.sources["[redacted]"], 1);
     const version = "codex_cli_rs/0.159.0 (Linux 6.12.94; x86_64)";
     assert.equal(redactDiagnostic(version), version);
     const chained = `a:${"a:".repeat(20000)}a`;
@@ -1769,7 +1786,7 @@ describe("codex app-server probe", () => {
     }
   });
 
-  it("rejects a pending request when app-server output closes", async () => {
+  it("returns a thread error when app-server output closes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "stdout-close.mjs");
     writeFileSync(
@@ -1794,10 +1811,9 @@ describe("codex app-server probe", () => {
     );
     const started = Date.now();
     try {
-      await assert.rejects(
-        () => runProbe({ bin: process.execPath, args: [helper] }),
-        /output closed/,
-      );
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.match(summary.threads.error, /output closed/);
+      assert.match(summary.rateLimits.error, /output closed/);
       assert.equal(Date.now() - started < 5000, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1829,16 +1845,11 @@ describe("codex app-server probe", () => {
       ].join("\n"),
     );
     try {
-      await assert.rejects(
-        () => runProbe({ bin: process.execPath, args: [helper] }),
-        (error) => {
-          assert.match(error.message, /exited \(code 7\)/);
-          assert.match(error.message, /\[redacted\]/);
-          assert.equal(error.message.includes("secret.jsonl"), false);
-          assert.equal(error.message.includes("Ada"), false);
-          return true;
-        },
-      );
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.match(summary.threads.error, /exited \(code 7\)/);
+      assert.match(summary.threads.error, /\[redacted\]/);
+      assert.equal(summary.threads.error.includes("secret.jsonl"), false);
+      assert.equal(summary.threads.error.includes("Ada"), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1881,7 +1892,7 @@ describe("codex app-server probe", () => {
     }
   });
 
-  it("rejects an app-server line that exceeds the stdout limit", async () => {
+  it("reports an app-server line that exceeds the stdout limit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-probe-"));
     const helper = join(dir, "stdout-limit.mjs");
     writeFileSync(
@@ -1906,10 +1917,8 @@ describe("codex app-server probe", () => {
     );
     const started = Date.now();
     try {
-      await assert.rejects(
-        () => runProbe({ bin: process.execPath, args: [helper] }),
-        /output line exceeded the limit/,
-      );
+      const summary = await runProbe({ bin: process.execPath, args: [helper] });
+      assert.match(summary.threads.error, /output line exceeded the limit/);
       assert.equal(Date.now() - started < 5000, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
