@@ -5,12 +5,69 @@ import { Button } from "@/components/ui/button";
 import { reportLinkHref, spendLabel, type PublicReport } from "@/lib/research/catalog";
 import { setReportPublished } from "@/lib/research/api";
 import type { TurnSpend } from "@/lib/research/accounting";
+import { githubStateLabel, type GithubCard, type GithubHistory } from "@/lib/research/github-watch";
 
 function formatWhen(at: number) {
   return new Date(at).toLocaleString("ru-RU", {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function GithubLine({ card }: { card: GithubCard }) {
+  if (card.visibility === "hidden") {
+    return <p className="mt-2 text-sm text-muted">Источник больше не публичный.</p>;
+  }
+  const href = card.href ? reportLinkHref(card.href) : null;
+  const state = githubStateLabel(card);
+  const author =
+    card.kind === "pull" && card.visibility === "public"
+      ? card.byResearcher
+        ? "Автор отчёта"
+        : "другой автор"
+      : null;
+  return (
+    <div className="mt-2 text-sm leading-relaxed text-muted">
+      <p className="text-fg">
+        {href && card.title ? (
+          <a href={href} target="_blank" rel="noreferrer" className="hover:text-paper">
+            {card.title}
+          </a>
+        ) : (
+          (card.title ?? `${card.owner}/${card.repo}#${card.number}`)
+        )}
+      </p>
+      {state ? <p>{state}</p> : null}
+      {author ? <p>{author}</p> : null}
+      {card.fixedByResearcher ? <p>Исправлено автором</p> : null}
+      {card.kind === "pull" && card.byResearcher && card.state === "merged" && !card.fixedByResearcher ? (
+        <p>PR автора влит</p>
+      ) : null}
+      {card.review === "unknown" ? <p>Ревью не разобрано до конца.</p> : null}
+      {card.stale && card.checkedAt != null ? (
+        <p>Не удалось обновить. Последняя проверка {formatWhen(card.checkedAt)}.</p>
+      ) : card.checkedAt != null ? (
+        <p>Проверено {formatWhen(card.checkedAt)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function GithubBlock({ github }: { github: GithubHistory }) {
+  if (!github.source && github.links.length === 0) return null;
+  const pulls = github.links.filter((link) => link.kind === "pull");
+  return (
+    <section className="mt-3">
+      <p className="font-mono text-xs uppercase tracking-caps text-muted">На GitHub</p>
+      {github.source ? <GithubLine card={github.source} /> : null}
+      {github.links.map((link) => (
+        <GithubLine key={`${link.kind}:${link.owner}/${link.repo}#${link.number}`} card={link} />
+      ))}
+      {github.source && pulls.length === 0 ? (
+        <p className="mt-2 text-sm text-muted">Пока нет связанных PR.</p>
+      ) : null}
+    </section>
+  );
 }
 
 function SpendFigure({ label, spend }: { label: string; spend: TurnSpend }) {
@@ -106,6 +163,7 @@ function ReportCard({
       <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-fg">
         {report.report.findings}
       </p>
+      <GithubBlock github={report.github} />
       <SpendFigure label="Расход" spend={report.spend} />
       <details className="mt-3">
         <summary className="cursor-pointer text-sm text-muted">Подробности</summary>

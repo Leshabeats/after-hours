@@ -1,4 +1,5 @@
 import { sumTurnSnapshots, type TurnSpend } from "./accounting.ts";
+import { emptyHistory, type GithubHistory } from "./github-watch.ts";
 import type { ResearchReport, ResearchRun } from "./types.ts";
 
 export type ReportAuthor = {
@@ -21,6 +22,7 @@ export type PublicReport = {
   publishedAt: number | null;
   report: ResearchReport;
   spend: TurnSpend;
+  github: GithubHistory;
 };
 
 export type MissionBoard = {
@@ -73,6 +75,7 @@ function toCard(
   run: ResearchRun,
   author: ReportAuthor,
   viewerId: string | null,
+  histories: ReadonlyMap<string, GithubHistory>,
 ): PublicReport | null {
   if (run.status !== "completed" || run.report == null) return null;
   return {
@@ -88,6 +91,7 @@ function toCard(
     publishedAt: run.publishedAt,
     report: run.report,
     spend: sumTurnSnapshots(run.turns),
+    github: histories.get(run.id) ?? emptyHistory(),
   };
 }
 
@@ -113,6 +117,7 @@ export function buildMissionBoard(
   authors: ReadonlyMap<string, ReportAuthor>,
   mission: { owner: string; repo: string; number: number },
   viewerId: string | null,
+  histories: ReadonlyMap<string, GithubHistory> = new Map(),
 ): MissionBoard {
   const matching = runs.filter((run) => sameMission(run, mission));
   const published = matching.filter(
@@ -120,7 +125,7 @@ export function buildMissionBoard(
   );
   const reports = published
     .flatMap((run) => {
-      const card = toCard(run, authorOf(authors, run.userId), viewerId);
+      const card = toCard(run, authorOf(authors, run.userId), viewerId, histories);
       return card ? [card] : [];
     })
     .sort(byNewest);
@@ -130,7 +135,7 @@ export function buildMissionBoard(
       : matching
           .filter((run) => run.userId === viewerId && run.publishedAt == null)
           .flatMap((run) => {
-            const card = toCard(run, authorOf(authors, run.userId), viewerId);
+            const card = toCard(run, authorOf(authors, run.userId), viewerId, histories);
             return card ? [card] : [];
           })
           .sort(byNewest);
@@ -148,6 +153,7 @@ export function buildAuthorBoard(
   matched: readonly (ReportAuthor & { id: string })[],
   requestedLogin: string,
   viewerId: string | null,
+  histories: ReadonlyMap<string, GithubHistory> = new Map(),
 ): AuthorBoard {
   const header = matched[0] ?? {
     login: requestedLogin.trim(),
@@ -162,7 +168,7 @@ export function buildAuthorBoard(
   );
   const reports = published
     .flatMap((run) => {
-      const card = toCard(run, authorOf(authors, run.userId), viewerId);
+      const card = toCard(run, authorOf(authors, run.userId), viewerId, histories);
       return card ? [card] : [];
     })
     .sort(byNewest);
@@ -172,7 +178,7 @@ export function buildAuthorBoard(
       : matching
           .filter((run) => run.userId === viewerId && run.publishedAt == null)
           .flatMap((run) => {
-            const card = toCard(run, authorOf(authors, run.userId), viewerId);
+            const card = toCard(run, authorOf(authors, run.userId), viewerId, histories);
             return card ? [card] : [];
           })
           .sort(byNewest);

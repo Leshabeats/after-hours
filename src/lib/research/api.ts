@@ -80,16 +80,31 @@ const missionQuery = z.object({
   number: z.number().int().positive(),
 });
 
+async function refreshThen<T extends { reports: { id: string }[]; hidden: { id: string }[] }>(
+  load: () => T,
+) {
+  const repo = await loadResearch();
+  const first = load();
+  const ids = [...first.reports, ...first.hidden].map((item) => item.id);
+  if (ids.length > 0) {
+    try {
+      await repo.refreshGithub(ids);
+    } catch {
+      // A failed poll still leaves the last saved board readable.
+    }
+  }
+  return load();
+}
+
 export const listMissionReports = createServerFn({ method: "GET" })
   .validator(missionQuery)
   .handler(async ({ data }): Promise<MissionReportLoad> => {
     try {
       const user = await loadSession();
-      const board = (await loadResearch()).missionBoard(
-        data.owner,
-        data.repo,
-        data.number,
-        user?.id ?? null,
+      const repo = await loadResearch();
+      const viewer = user?.id ?? null;
+      const board = await refreshThen(() =>
+        repo.missionBoard(data.owner, data.repo, data.number, viewer),
       );
       return { ok: "ready", board };
     } catch {
@@ -102,7 +117,8 @@ export const listAuthorReports = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<AuthorReportLoad> => {
     try {
       const user = await loadSession();
-      const board = (await loadResearch()).authorBoard(data.login, user?.id ?? null);
+      const repo = await loadResearch();
+      const board = await refreshThen(() => repo.authorBoard(data.login, user?.id ?? null));
       return { ok: "ready", board };
     } catch {
       return { ok: "error" };

@@ -21,6 +21,9 @@ import type {
 } from "./types.ts";
 import { emptyUsage } from "./types.ts";
 import { upsertUser } from "../journal/store.ts";
+import type { WatchRun } from "./github-watch.ts";
+import { refreshWatch } from "./github-sync.ts";
+import { createMemoryWatch, createSqliteWatch } from "./watch-book.ts";
 
 export type IngestResult =
   | { ok: true; replay: boolean; run: ResearchRun }
@@ -60,6 +63,11 @@ export type ResearchRepo = {
     published: boolean,
     at: number,
   ) => PublishResult;
+  refreshGithub: (
+    runIds: readonly string[],
+    now?: number,
+    fetchImpl?: typeof fetch,
+  ) => Promise<void>;
 };
 
 type StoredRun = ResearchRun & { deliveryHash: string };
@@ -268,6 +276,23 @@ export function createMemoryResearch(): ResearchRepo {
   const runs: StoredRun[] = [];
   const limits = new Map<string, LimitSnapshot>();
   const authors = new Map<string, ResearchAuthor>();
+  const book = createMemoryWatch(() => newId("gh"));
+
+  function watchOf(run: StoredRun): { run: WatchRun; researcherLogin: string } {
+    return {
+      run: {
+        id: run.id,
+        owner: run.owner,
+        repo: run.repo,
+        number: run.number,
+        isPr: run.isPr,
+        publishedAt: run.publishedAt,
+        status: run.status,
+        report: run.report,
+      },
+      researcherLogin: authors.get(run.userId)?.login ?? "",
+    };
+  }
 
   function listGrants(userId: string) {
     return grants
@@ -348,11 +373,18 @@ export function createMemoryResearch(): ResearchRepo {
       });
     },
     missionBoard(owner, repo, number, viewerId) {
+      const visible = runs.map(toPublic);
       return buildMissionBoard(
-        runs.map(toPublic),
+        visible,
         authors,
         { owner, repo, number },
         viewerId,
+        book.history(
+          visible.map((run) => ({
+            id: run.id,
+            researcherLogin: authors.get(run.userId)?.login ?? "",
+          })),
+        ),
       );
     },
     authorBoard(login, viewerId) {
@@ -360,12 +392,38 @@ export function createMemoryResearch(): ResearchRepo {
       const matched = [...authors.values()].filter(
         (author) => author.login.toLowerCase() === key,
       );
-      return buildAuthorBoard(runs.map(toPublic), matched, login, viewerId);
+      const visible = runs.map(toPublic);
+      return buildAuthorBoard(
+        visible,
+        matched,
+        login,
+        viewerId,
+        book.history(
+          visible.map((run) => ({
+            id: run.id,
+            researcherLogin: authors.get(run.userId)?.login ?? "",
+          })),
+        ),
+      );
     },
     setPublished(userId, runId, published, at) {
       const run = runs.find((item) => item.id === runId && item.userId === userId);
       if (!run) return "missing";
       return publishRun(run, published, at);
+    },
+    async refreshGithub(runIds, now = Date.now(), fetchImpl = fetch) {
+      await refreshWatch(
+        {
+          book,
+          runs(ids) {
+            const wanted = new Set(ids);
+            return runs.filter((run) => wanted.has(run.id)).map(watchOf);
+          },
+        },
+        runIds,
+        now,
+        fetchImpl,
+      );
     },
   };
 }
@@ -537,6 +595,7 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
       individual_remaining_percent REAL
     );
   `);
+  const book = createSqliteWatch(db, () => newId("gh"));
 
   const insertGrant = db.prepare(
     `INSERT INTO connector_grants
@@ -872,7 +931,19 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
     },
     missionBoard(owner, repo, number, viewerId) {
       const loaded = loadRows(runsByMission.all(owner, repo, number) as RunRow[]);
-      return buildMissionBoard(loaded, authorsFor(loaded), { owner, repo, number }, viewerId);
+      const authors = authorsFor(loaded);
+      return buildMissionBoard(
+        loaded,
+        authors,
+        { owner, repo, number },
+        viewerId,
+        book.history(
+          loaded.map((run) => ({
+            id: run.id,
+            researcherLogin: authors.get(run.userId)?.login ?? "",
+          })),
+        ),
+      );
     },
     authorBoard(login, viewerId) {
       const matched = (usersByLogin.all(login.trim()) as {
@@ -884,7 +955,19 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
       const loaded = matched.flatMap((author) =>
         loadRows(runsByUser.all(author.id) as RunRow[]),
       );
-      return buildAuthorBoard(loaded, matched, login, viewerId);
+      const authors = authorsFor(loaded);
+      return buildAuthorBoard(
+        loaded,
+        matched,
+        login,
+        viewerId,
+        book.history(
+          loaded.map((run) => ({
+            id: run.id,
+            researcherLogin: authors.get(run.userId)?.login ?? "",
+          })),
+        ),
+      );
     },
     setPublished(userId, runId, published, at) {
       const row = runById.get(runId) as RunRow | undefined;
@@ -894,6 +977,39 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
       if (decision !== "updated") return decision;
       setPublishedStmt.run(run.publishedAt, run.updatedAt, run.id, run.userId);
       return "updated";
+    },
+    async refreshGithub(runIds, now = Date.now(), fetchImpl = fetch) {
+      await refreshWatch(
+        {
+          book,
+          runs(ids) {
+            return ids.flatMap((id) => {
+              const row = runById.get(id) as RunRow | undefined;
+              const stored = row ? storedFrom(row) : null;
+              if (!stored) return [];
+              const user = userById.get(stored.userId) as { login: string } | undefined;
+              return [
+                {
+                  run: {
+                    id: stored.id,
+                    owner: stored.owner,
+                    repo: stored.repo,
+                    number: stored.number,
+                    isPr: stored.isPr,
+                    publishedAt: stored.publishedAt,
+                    status: stored.status,
+                    report: stored.report,
+                  },
+                  researcherLogin: user?.login ?? "",
+                },
+              ];
+            });
+          },
+        },
+        runIds,
+        now,
+        fetchImpl,
+      );
     },
   };
 }
