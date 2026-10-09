@@ -7,7 +7,8 @@ import { ConnectorAccess } from "@/components/connector-access";
 import { KIND_META } from "@/lib/kinds";
 import { summarizeJournal } from "@/lib/journal/stats";
 import type { LogStatus } from "@/lib/journal/types";
-import { listConnectorGrants } from "@/lib/research/api";
+import { LimitSnapshotPanel } from "@/components/limit-snapshot";
+import { listConnectorGrants, readOwnLimit } from "@/lib/research/api";
 import { getUsageSummary, type UsageLoad } from "@/lib/usage/api";
 
 export const Route = createFileRoute("/log")({
@@ -15,11 +16,12 @@ export const Route = createFileRoute("/log")({
     auth: search.auth === "error" ? ("error" as const) : undefined,
   }),
   loader: async () => {
-    const [usage, grants] = await Promise.all([
+    const [usage, grants, limit] = await Promise.all([
       getUsageSummary(),
       listConnectorGrants(),
+      readOwnLimit(),
     ]);
-    return { usage, grants };
+    return { usage, grants, limit };
   },
   component: LogPage,
 });
@@ -82,7 +84,7 @@ function UsagePanel({ user, load }: { user: boolean; load: UsageLoad }) {
 
 function LogPage() {
   const { entries, setStatus, drop, user } = useAccount();
-  const { usage, grants } = Route.useLoaderData();
+  const { usage, grants, limit } = Route.useLoaderData();
   const authError = Route.useSearch().auth === "error";
   const shown = entries;
   const stats = summarizeJournal(shown);
@@ -100,6 +102,17 @@ function LogPage() {
           ? `Ночи аккаунта ${user.login}: взято, в работе, закрыто.`
           : "То, что ты взял этой и прошлыми ночами. Без входа — только на этом устройстве."}
       </p>
+      {user ? (
+        <p className="mt-3 text-sm">
+          <Link
+            to="/u/$login"
+            params={{ login: user.login }}
+            className="text-muted hover:text-fg"
+          >
+            Публичный профиль
+          </Link>
+        </p>
+      ) : null}
       {authError ? (
         <p className="mt-3 text-sm text-accent" role="alert">
           GitHub не пустил. Проверь OAuth-приложение и попробуй ещё раз.
@@ -107,6 +120,7 @@ function LogPage() {
       ) : null}
 
       <UsagePanel user={Boolean(user)} load={usage} />
+      <LimitSnapshotPanel signedIn={Boolean(user)} load={limit} />
       <ConnectorAccess signedIn={Boolean(user)} initial={grants} />
 
       {shown.length > 0 ? (

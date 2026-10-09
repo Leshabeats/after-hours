@@ -11,21 +11,33 @@ import { repoIssuesLink } from "@/lib/repo-issues";
 import { shouldMarkShipping } from "@/lib/take-night";
 import { KIND_META, relativeTime } from "@/lib/kinds";
 import { useAccount } from "@/components/account-session";
+import { ResearchReportSection } from "@/components/research-reports";
+import { listMissionReports } from "@/lib/research/api";
 import { ExternalLink } from "lucide-react";
 
 export const Route = createFileRoute("/m/$owner/$repo/$number")({
-  loader: ({ params }) => {
+  loader: async ({ params }) => {
     const number = Number(params.number);
     if (!Number.isFinite(number) || number <= 0) {
       throw new Error("Нет такого ишью");
     }
-    return getMission({
-      data: {
-        owner: params.owner,
-        repo: params.repo,
-        number,
-      },
-    });
+    const [mission, reports] = await Promise.all([
+      getMission({
+        data: {
+          owner: params.owner,
+          repo: params.repo,
+          number,
+        },
+      }),
+      listMissionReports({
+        data: {
+          owner: params.owner,
+          repo: params.repo,
+          number,
+        },
+      }),
+    ]);
+    return { mission, reports };
   },
   pendingComponent: MissionPending,
   component: MissionPage,
@@ -42,7 +54,7 @@ function MissionPending() {
 }
 
 function MissionPage() {
-  const mission = Route.useLoaderData();
+  const { mission, reports } = Route.useLoaderData();
   const issuesLink = repoIssuesLink(mission.owner, mission.repo);
   const meta = KIND_META[mission.kind];
   const { take, setStatus, entries } = useAccount();
@@ -157,6 +169,20 @@ function MissionPage() {
         </section>
       ) : (
         <p className="mt-10 text-sm text-muted">{mission.excerpt}</p>
+      )}
+
+      {reports.ok === "error" ? (
+        <p className="mt-12 text-sm text-muted">Не удалось прочитать отчёты.</p>
+      ) : (
+        <ResearchReportSection
+          title="Отчёты"
+          empty="Пока нет опубликованных отчётов."
+          reports={reports.board.reports}
+          publicSpend={reports.board.publicSpend}
+          viewerSpend={reports.board.viewerSpend}
+          hidden={reports.board.hidden}
+          showMission={false}
+        />
       )}
 
       <section className="mt-12 rounded-xl bg-surface p-6 shadow-border sm:p-8">

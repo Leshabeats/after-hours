@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import type { ConnectorGrant } from "./types.ts";
+import type { AuthorBoard, MissionBoard } from "./catalog.ts";
+import type { LimitSnapshot, ConnectorGrant } from "./types.ts";
 
 export type GrantLoad =
   | { ok: "anonymous" }
@@ -65,3 +66,81 @@ export const revokeConnectorGrant = createServerFn({ method: "POST" })
       }
     },
   );
+
+export type MissionReportLoad = { ok: "ready"; board: MissionBoard } | { ok: "error" };
+export type AuthorReportLoad = { ok: "ready"; board: AuthorBoard } | { ok: "error" };
+export type LimitLoad =
+  | { ok: "anonymous" }
+  | { ok: "error" }
+  | { ok: "account"; limit: LimitSnapshot | null };
+
+const missionQuery = z.object({
+  owner: z.string().trim().min(1).max(80),
+  repo: z.string().trim().min(1).max(120),
+  number: z.number().int().positive(),
+});
+
+export const listMissionReports = createServerFn({ method: "GET" })
+  .validator(missionQuery)
+  .handler(async ({ data }): Promise<MissionReportLoad> => {
+    try {
+      const user = await loadSession();
+      const board = (await loadResearch()).missionBoard(
+        data.owner,
+        data.repo,
+        data.number,
+        user?.id ?? null,
+      );
+      return { ok: "ready", board };
+    } catch {
+      return { ok: "error" };
+    }
+  });
+
+export const listAuthorReports = createServerFn({ method: "GET" })
+  .validator(z.object({ login: z.string().trim().regex(/^[A-Za-z0-9-]{1,39}$/) }))
+  .handler(async ({ data }): Promise<AuthorReportLoad> => {
+    try {
+      const user = await loadSession();
+      const board = (await loadResearch()).authorBoard(data.login, user?.id ?? null);
+      return { ok: "ready", board };
+    } catch {
+      return { ok: "error" };
+    }
+  });
+
+export const readOwnLimit = createServerFn({ method: "GET" }).handler(
+  async (): Promise<LimitLoad> => {
+    try {
+      const user = await loadSession();
+      if (!user) return { ok: "anonymous" };
+      return { ok: "account", limit: (await loadResearch()).readLimit(user.id) };
+    } catch {
+      return { ok: "error" };
+    }
+  },
+);
+
+export const setReportPublished = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      id: z.string().trim().min(1).max(80),
+      published: z.boolean(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    try {
+      const user = await loadSession();
+      if (!user) return { ok: "anonymous" as const };
+      const result = (await loadResearch()).setPublished(
+        user.id,
+        data.id,
+        data.published,
+        Date.now(),
+      );
+      if (result === "updated") return { ok: "account" as const };
+      return { ok: result };
+    } catch {
+      return { ok: "error" as const };
+    }
+  });
