@@ -66,3 +66,17 @@ export const researchDeliverySchema = z.object({
 });
 
 export type ResearchDeliveryInput = z.infer<typeof researchDeliverySchema>;
+
+/** Last ```json fence that matches schema v1. Token fields in the object are dropped. */
+export function parseResearchReport(text: string) {
+  const jsonFence = /```json\s*([\s\S]*?)```/gi;
+  let last: string | null = null;
+  for (const match of text.matchAll(jsonFence)) last = match[1] ?? null;
+  if (last == null) return null;
+  try {
+    const parsed = reportSchema.safeParse(JSON.parse(last));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}

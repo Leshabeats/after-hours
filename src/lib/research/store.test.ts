@@ -187,6 +187,7 @@ function assertContract(repo: ResearchRepo) {
   const quietRun = repo.readRun("owner", "thread_quiet0001");
   assert.equal(quietRun?.turns[0]?.usageKnown, false);
   assert.equal(quietRun?.turns[0]?.usage.inputTokens, null);
+  assert.equal(quietRun?.publishedAt, null);
   assert.equal(sumTurnSnapshots(quietRun?.turns ?? []).inputTokens, null);
 
   const unfinished = repo.ingest(
@@ -208,7 +209,7 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(done.ok && done.run.status, "completed");
-  assert.equal(done.ok && done.run.publishedAt, null);
+  assert.equal(done.ok && done.run.publishedAt, AT + 6);
   assert.equal(done.ok && done.run.report?.findings, "Уже исправлено");
   assert.deepEqual(repo.readLimit("owner")?.primary, {
     usedPercent: 12,
@@ -231,7 +232,10 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(sameDone.ok && sameDone.replay, true);
-  if (sameDone.ok) assert.equal(sameDone.run.updatedAt, AT + 6);
+  if (sameDone.ok) {
+    assert.equal(sameDone.run.updatedAt, AT + 6);
+    assert.equal(sameDone.run.publishedAt, AT + 6);
+  }
   assert.equal(repo.readRun("owner", "thread_done00001")?.turns.length, 1);
   assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 18);
 
@@ -248,6 +252,7 @@ function assertContract(repo: ResearchRepo) {
   );
   assert.deepEqual(changed, { ok: false, error: "conflict" });
   assert.equal(repo.readRun("owner", "thread_done00001")?.report?.findings, "Уже исправлено");
+  assert.equal(repo.readRun("owner", "thread_done00001")?.publishedAt, AT + 6);
   assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 33);
 
   const regressed = repo.ingest(
@@ -296,6 +301,45 @@ function assertContract(repo: ResearchRepo) {
   );
   assert.deepEqual(duplicated, { ok: false, error: "invalid" });
   assert.equal(repo.readRun("owner", "thread_dup000001"), null);
+
+  const held = repo.ingest(
+    "owner",
+    delivery({
+      threadId: "thread_park00001",
+      status: "interrupted",
+      at: AT + 12,
+      report: report(),
+      turns: [turn("turn_park0001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "interrupted")],
+    }),
+  );
+  assert.equal(held.ok && held.run.status, "interrupted");
+  assert.equal(held.ok && held.run.publishedAt, null);
+  assert.equal(held.ok && held.run.report, null);
+  assert.equal(held.ok && held.run.turns[0]?.usage.inputTokens, 4);
+
+  const drafting = repo.ingest(
+    "owner",
+    delivery({
+      threadId: "thread_pub000001",
+      status: "in_progress",
+      at: AT + 13,
+      turns: [turn("turn_pub00001", { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, "inProgress")],
+    }),
+  );
+  assert.equal(drafting.ok && drafting.run.publishedAt, null);
+  const finished = repo.ingest(
+    "owner",
+    delivery({
+      threadId: "thread_pub000001",
+      status: "completed",
+      at: AT + 14,
+      report: report(),
+      turns: [turn("turn_pub00001", { inputTokens: 2, outputTokens: 1, totalTokens: 3 })],
+    }),
+  );
+  assert.equal(finished.ok && finished.run.publishedAt, AT + 14);
+  assert.equal(repo.readRun("owner", "thread_pub000001")?.publishedAt, AT + 14);
+  assert.equal(repo.readRun("owner", "thread_pub000001")?.turns[0]?.usage.inputTokens, 2);
 }
 
 describe("research contract", () => {
@@ -349,6 +393,7 @@ describe("research contract", () => {
         }),
       );
       assert.equal(saved.ok, true);
+      if (saved.ok) assert.equal(saved.run.publishedAt, AT);
       assert.deepEqual(usage.list("owner"), [
         {
           at: 5,
