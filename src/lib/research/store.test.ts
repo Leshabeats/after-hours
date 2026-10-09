@@ -342,6 +342,139 @@ function assertContract(repo: ResearchRepo) {
   assert.equal(repo.readRun("owner", "thread_pub000001")?.turns[0]?.usage.inputTokens, 2);
 }
 
+function assertPublication(repo: ResearchRepo) {
+  repo.upsertAuthor({ id: "gh-a", login: "Lesha", name: "Lesha", avatarUrl: "https://example.com/a.png" });
+  repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
+  const known = { inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 0, totalTokens: 9 };
+  const first = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_pub_a001",
+      status: "completed",
+      model: "gpt-6-astra",
+      report: report("Уже исправлено"),
+      turns: [turn("turn_pub_a001", known)],
+      limit: limit(12),
+      at: AT,
+    }),
+  );
+  const second = repo.ingest(
+    "gh-b",
+    delivery({
+      threadId: "thread_pub_b001",
+      status: "completed",
+      report: report("Нужно уточнение"),
+      turns: [turn("turn_pub_b001", null)],
+      at: AT + 1,
+    }),
+  );
+  const again = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_pub_a002",
+      status: "completed",
+      report: report("Второй заход"),
+      turns: [turn("turn_pub_a002", { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 })],
+      at: AT + 2,
+    }),
+  );
+  const quiet = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_hide001",
+      status: "in_progress",
+      turns: [turn("turn_hide001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "inProgress")],
+      at: AT + 3,
+    }),
+  );
+  assert.equal(first.ok && second.ok && again.ok && quiet.ok, true);
+  if (!first.ok || !second.ok || !again.ok) return;
+
+  const board = repo.missionBoard("Vitejs", "vite", 1, "gh-a");
+  assert.deepEqual(
+    board.reports.map((item) => item.report.findings),
+    ["Второй заход", "Нужно уточнение", "Уже исправлено"],
+  );
+  assert.equal(board.reports[2]?.author.login, "Lesha");
+  assert.equal(board.publicSpend.totalTokens, 9);
+  assert.equal(board.publicSpend.unknownTurns, 1);
+  assert.equal(board.viewerSpend?.totalTokens, 14);
+  assert.equal(board.hidden.length, 0);
+  const leaked = JSON.stringify(board);
+  assert.equal(leaked.includes("thread_"), false);
+  assert.equal(leaked.includes("gh-a"), false);
+  assert.equal(leaked.includes("individualRemainingPercent"), false);
+  assert.equal(repo.readLimit("gh-a")?.primary?.usedPercent, 12);
+  assert.equal(repo.missionBoard("vitejs", "vite", 1, null).viewerSpend, null);
+  assert.equal(repo.missionBoard("vitejs", "vite", 1, "gh-b").hidden.length, 0);
+
+  assert.equal(repo.setPublished("gh-b", first.run.id, false, AT + 4), "missing");
+  assert.equal(repo.missionBoard("vitejs", "vite", 1, null).reports.length, 3);
+  assert.equal(repo.setPublished("gh-a", first.run.id, false, AT + 5), "updated");
+  const hidden = repo.missionBoard("vitejs", "vite", 1, "gh-a");
+  assert.deepEqual(
+    hidden.reports.map((item) => item.report.findings),
+    ["Второй заход", "Нужно уточнение"],
+  );
+  assert.equal(hidden.hidden[0]?.report.findings, "Уже исправлено");
+  assert.equal(hidden.hidden[0]?.spend.totalTokens, 9);
+  assert.equal(hidden.viewerSpend?.inputTokens, 11);
+  assert.equal(repo.authorBoard("lesha", "gh-b").hidden.length, 0);
+  assert.equal(repo.authorBoard("lesha", "gh-a").reports.length, 1);
+  assert.equal(repo.authorBoard("lesha", "gh-a").hidden.length, 1);
+  assert.equal(repo.authorBoard("nobody", null).login, "nobody");
+  assert.equal(repo.authorBoard("nobody", null).reports.length, 0);
+
+  const replay = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_pub_a001",
+      status: "completed",
+      model: "gpt-6-astra",
+      report: report("Уже исправлено"),
+      turns: [turn("turn_pub_a001", known)],
+      at: AT + 6,
+    }),
+  );
+  assert.equal(replay.ok && replay.replay, true);
+  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, null);
+  const conflict = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_pub_a001",
+      status: "completed",
+      model: "gpt-6-astra",
+      report: report("Другой вывод"),
+      turns: [turn("turn_pub_a001", known)],
+      at: AT + 7,
+    }),
+  );
+  assert.deepEqual(conflict, { ok: false, error: "conflict" });
+  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, null);
+  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.report?.findings, "Уже исправлено");
+  assert.equal(repo.setPublished("gh-a", quiet.ok ? quiet.run.id : "missing", true, AT + 7), "blocked");
+  assert.equal(repo.setPublished("gh-a", first.run.id, true, AT + 8), "updated");
+  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, AT + 8);
+  assert.equal(repo.missionBoard("vitejs", "vite", 1, "gh-a").reports[0]?.report.findings, "Уже исправлено");
+  const zero = repo.missionBoard("vitejs", "vite", 1, null).reports.find((item) => item.report.findings === "Второй заход");
+  assert.equal(zero?.spend.totalTokens, 0);
+}
+
+describe("research publication", () => {
+  it("memory: public boards hide private fields and keep an unpublish", () => {
+    assertPublication(createMemoryResearch());
+  });
+
+  it("sqlite: public boards hide private fields and keep an unpublish", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      assertPublication(createSqliteResearch(db));
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("research contract", () => {
   it("memory: grants, snapshots, and completion stay idempotent", () => {
     assertContract(createMemoryResearch());

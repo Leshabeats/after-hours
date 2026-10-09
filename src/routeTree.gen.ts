@@ -15,6 +15,7 @@ import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
 import { Route as ApiResearchRouteImport } from './routes/api/research'
 import { Route as ApiUsageRouteImport } from './routes/api/usage'
+import { Route as ULoginRouteImport } from './routes/u.$login'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as ROwnerRepoRouteImport } from './routes/r.$owner.$repo'
@@ -50,6 +51,11 @@ const ApiUsageRoute = ApiUsageRouteImport.update({
   path: '/api/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ULoginRoute = ULoginRouteImport.update({
+  id: '/u/$login',
+  path: '/u/$login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
   id: '/api/auth/callback',
   path: '/api/auth/callback',
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/log': typeof LogRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/r/$owner/$repo': typeof ROwnerRepoRoute
@@ -90,6 +97,7 @@ export interface FileRoutesByTo {
   '/log': typeof LogRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/r/$owner/$repo': typeof ROwnerRepoRoute
@@ -103,6 +111,7 @@ export interface FileRoutesById {
   '/log': typeof LogRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/r/$owner/$repo': typeof ROwnerRepoRoute
@@ -117,6 +126,7 @@ export interface FileRouteTypes {
     | '/log'
     | '/api/research'
     | '/api/usage'
+    | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/r/$owner/$repo'
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/log'
     | '/api/research'
     | '/api/usage'
+    | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/r/$owner/$repo'
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/log'
     | '/api/research'
     | '/api/usage'
+    | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
     | '/r/$owner/$repo'
@@ -154,6 +166,7 @@ export interface RootRouteChildren {
   LogRoute: typeof LogRoute
   ApiResearchRoute: typeof ApiResearchRoute
   ApiUsageRoute: typeof ApiUsageRoute
+  ULoginRoute: typeof ULoginRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ROwnerRepoRoute: typeof ROwnerRepoRoute
@@ -204,6 +217,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/u/$login': {
+      id: '/u/$login'
+      path: '/u/$login'
+      fullPath: '/u/$login'
+      preLoaderRoute: typeof ULoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/callback': {
       id: '/api/auth/callback'
       path: '/api/auth/callback'
@@ -242,6 +262,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogRoute: LogRoute,
   ApiResearchRoute: ApiResearchRoute,
   ApiUsageRoute: ApiUsageRoute,
+  ULoginRoute: ULoginRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ROwnerRepoRoute: ROwnerRepoRoute,

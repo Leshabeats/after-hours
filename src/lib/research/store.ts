@@ -1,5 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  buildAuthorBoard,
+  buildMissionBoard,
+  type AuthorBoard,
+  type MissionBoard,
+  type ReportAuthor,
+} from "./catalog.ts";
 import type {
   ConnectorGrant,
   LimitSnapshot,
@@ -13,10 +20,15 @@ import type {
   TurnUsage,
 } from "./types.ts";
 import { emptyUsage } from "./types.ts";
+import { upsertUser } from "../journal/store.ts";
 
 export type IngestResult =
   | { ok: true; replay: boolean; run: ResearchRun }
   | { ok: false; error: "forbidden" | "conflict" | "invalid" };
+
+export type PublishResult = "updated" | "missing" | "blocked";
+
+export type ResearchAuthor = ReportAuthor & { id: string };
 
 export type ResearchRepo = {
   createGrant: (
@@ -34,6 +46,20 @@ export type ResearchRepo = {
   ingest: (userId: string, delivery: ResearchDelivery) => IngestResult;
   readRun: (userId: string, threadId: string) => ResearchRun | null;
   readLimit: (userId: string) => LimitSnapshot | null;
+  upsertAuthor: (user: ResearchAuthor) => void;
+  missionBoard: (
+    owner: string,
+    repo: string,
+    number: number,
+    viewerId: string | null,
+  ) => MissionBoard;
+  authorBoard: (login: string, viewerId: string | null) => AuthorBoard;
+  setPublished: (
+    userId: string,
+    runId: string,
+    published: boolean,
+    at: number,
+  ) => PublishResult;
 };
 
 type StoredRun = ResearchRun & { deliveryHash: string };
@@ -226,10 +252,22 @@ function compareGrants(a: GrantRecord, b: GrantRecord) {
   return b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1);
 }
 
+function publishRun(run: StoredRun, published: boolean, at: number): PublishResult {
+  if (published) {
+    if (run.status !== "completed" || run.report == null) return "blocked";
+    run.publishedAt = at;
+  } else {
+    run.publishedAt = null;
+  }
+  run.updatedAt = at;
+  return "updated";
+}
+
 export function createMemoryResearch(): ResearchRepo {
   const grants: GrantRecord[] = [];
   const runs: StoredRun[] = [];
   const limits = new Map<string, LimitSnapshot>();
+  const authors = new Map<string, ResearchAuthor>();
 
   function listGrants(userId: string) {
     return grants
@@ -300,6 +338,34 @@ export function createMemoryResearch(): ResearchRepo {
     readLimit(userId) {
       const limit = limits.get(userId);
       return limit ? cloneLimit(limit) : null;
+    },
+    upsertAuthor(user) {
+      authors.set(user.id, {
+        id: user.id,
+        login: user.login,
+        name: user.name,
+        avatarUrl: user.avatarUrl,
+      });
+    },
+    missionBoard(owner, repo, number, viewerId) {
+      return buildMissionBoard(
+        runs.map(toPublic),
+        authors,
+        { owner, repo, number },
+        viewerId,
+      );
+    },
+    authorBoard(login, viewerId) {
+      const key = login.trim().toLowerCase();
+      const matched = [...authors.values()].filter(
+        (author) => author.login.toLowerCase() === key,
+      );
+      return buildAuthorBoard(runs.map(toPublic), matched, login, viewerId);
+    },
+    setPublished(userId, runId, published, at) {
+      const run = runs.find((item) => item.id === runId && item.userId === userId);
+      if (!run) return "missing";
+      return publishRun(run, published, at);
     },
   };
 }
@@ -404,6 +470,13 @@ function tri(value: boolean | null) {
 
 export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      login TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS connector_grants (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -434,6 +507,10 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
     );
     CREATE INDEX IF NOT EXISTS research_runs_user
       ON research_runs (user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS research_runs_mission_published
+      ON research_runs (owner, repo, number, published_at);
+    CREATE INDEX IF NOT EXISTS research_runs_user_published
+      ON research_runs (user_id, published_at);
     CREATE TABLE IF NOT EXISTS research_turns (
       run_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
@@ -486,10 +563,28 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
     `UPDATE connector_grants SET last_used_at = ?
      WHERE id = ? AND revoked_at IS NULL`,
   );
+  const runColumns = `id, user_id, mission_id, owner, repo, number, is_pr, thread_id, status,
+            model, report_json, published_at, delivery_hash, created_at, updated_at`;
   const runByThread = db.prepare(
-    `SELECT id, user_id, mission_id, owner, repo, number, is_pr, thread_id, status,
-            model, report_json, published_at, delivery_hash, created_at, updated_at
-     FROM research_runs WHERE thread_id = ?`,
+    `SELECT ${runColumns} FROM research_runs WHERE thread_id = ?`,
+  );
+  const runById = db.prepare(`SELECT ${runColumns} FROM research_runs WHERE id = ?`);
+  const runsByMission = db.prepare(
+    `SELECT ${runColumns} FROM research_runs
+     WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ?`,
+  );
+  const runsByUser = db.prepare(
+    `SELECT ${runColumns} FROM research_runs WHERE user_id = ?`,
+  );
+  const usersByLogin = db.prepare(
+    `SELECT id, login, name, avatar_url FROM users
+     WHERE login = ? COLLATE NOCASE ORDER BY created_at DESC, id ASC`,
+  );
+  const userById = db.prepare(
+    `SELECT id, login, name, avatar_url FROM users WHERE id = ?`,
+  );
+  const setPublishedStmt = db.prepare(
+    `UPDATE research_runs SET published_at = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
   );
   const turnsByRun = db.prepare(
     `SELECT turn_id, status, usage_known, input_tokens, cached_input_tokens,
@@ -550,9 +645,12 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
     };
   }
 
-  function loadRun(threadId: string): StoredRun | null {
-    const row = runByThread.get(threadId) as RunRow | undefined;
-    if (!row || !isRunStatus(row.status)) return null;
+  function authorFrom(row: { id: string; login: string; name: string; avatar_url: string }): ResearchAuthor {
+    return { id: row.id, login: row.login, name: row.name, avatarUrl: row.avatar_url };
+  }
+
+  function storedFrom(row: RunRow): StoredRun | null {
+    if (!isRunStatus(row.status)) return null;
     let report: ResearchReport | null = null;
     if (row.report_json) {
       const parsed = JSON.parse(row.report_json) as ResearchReport;
@@ -589,6 +687,30 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
       turns,
       deliveryHash: row.delivery_hash,
     };
+  }
+
+  function loadRun(threadId: string): StoredRun | null {
+    const row = runByThread.get(threadId) as RunRow | undefined;
+    return row ? storedFrom(row) : null;
+  }
+
+  function loadRows(rows: readonly RunRow[]): ResearchRun[] {
+    return rows.flatMap((row) => {
+      const stored = storedFrom(row);
+      return stored ? [toPublic(stored)] : [];
+    });
+  }
+
+  function authorsFor(runs: readonly ResearchRun[]) {
+    const authors = new Map<string, ReportAuthor>();
+    for (const run of runs) {
+      if (authors.has(run.userId)) continue;
+      const row = userById.get(run.userId) as
+        | { id: string; login: string; name: string; avatar_url: string }
+        | undefined;
+      if (row) authors.set(row.id, authorFrom(row));
+    }
+    return authors;
   }
 
   function writeRun(run: StoredRun, existed: boolean) {
@@ -744,6 +866,34 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
           row.spend_control_reached == null ? null : Boolean(row.spend_control_reached),
         individualRemainingPercent: row.individual_remaining_percent,
       };
+    },
+    upsertAuthor(user) {
+      upsertUser(db, user);
+    },
+    missionBoard(owner, repo, number, viewerId) {
+      const loaded = loadRows(runsByMission.all(owner, repo, number) as RunRow[]);
+      return buildMissionBoard(loaded, authorsFor(loaded), { owner, repo, number }, viewerId);
+    },
+    authorBoard(login, viewerId) {
+      const matched = (usersByLogin.all(login.trim()) as {
+        id: string;
+        login: string;
+        name: string;
+        avatar_url: string;
+      }[]).map(authorFrom);
+      const loaded = matched.flatMap((author) =>
+        loadRows(runsByUser.all(author.id) as RunRow[]),
+      );
+      return buildAuthorBoard(loaded, matched, login, viewerId);
+    },
+    setPublished(userId, runId, published, at) {
+      const row = runById.get(runId) as RunRow | undefined;
+      const run = row ? storedFrom(row) : null;
+      if (!run || run.userId !== userId) return "missing";
+      const decision = publishRun(run, published, at);
+      if (decision !== "updated") return decision;
+      setPublishedStmt.run(run.publishedAt, run.updatedAt, run.id, run.userId);
+      return "updated";
     },
   };
 }
