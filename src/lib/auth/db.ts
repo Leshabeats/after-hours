@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createSqliteJournal, upsertUser, type JournalRepo } from "@/lib/journal/store";
 import type { SessionUser } from "@/lib/journal/types";
+import { createSqliteResearch, type ResearchRepo } from "@/lib/research/store";
 import { createSqliteUsage, type UsageRepo } from "@/lib/usage/store";
 
 let journal: JournalRepo | undefined;
 let usage: UsageRepo | undefined;
+let research: ResearchRepo | undefined;
 let sqlite: DatabaseSync | undefined;
 
 function openDb() {
@@ -25,6 +27,11 @@ export function getJournalRepo(): JournalRepo {
 export function getUsageRepo(): UsageRepo {
   if (!usage) usage = createSqliteUsage(openDb());
   return usage;
+}
+
+export function getResearchRepo(): ResearchRepo {
+  if (!research) research = createSqliteResearch(openDb());
+  return research;
 }
 
 export function saveUser(user: SessionUser) {

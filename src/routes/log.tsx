@@ -3,16 +3,24 @@ import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAccount } from "@/components/account-session";
+import { ConnectorAccess } from "@/components/connector-access";
 import { KIND_META } from "@/lib/kinds";
 import { summarizeJournal } from "@/lib/journal/stats";
 import type { LogStatus } from "@/lib/journal/types";
+import { listConnectorGrants } from "@/lib/research/api";
 import { getUsageSummary, type UsageLoad } from "@/lib/usage/api";
 
 export const Route = createFileRoute("/log")({
   validateSearch: (search: Record<string, unknown>) => ({
     auth: search.auth === "error" ? ("error" as const) : undefined,
   }),
-  loader: () => getUsageSummary(),
+  loader: async () => {
+    const [usage, grants] = await Promise.all([
+      getUsageSummary(),
+      listConnectorGrants(),
+    ]);
+    return { usage, grants };
+  },
   component: LogPage,
 });
 
@@ -74,7 +82,7 @@ function UsagePanel({ user, load }: { user: boolean; load: UsageLoad }) {
 
 function LogPage() {
   const { entries, setStatus, drop, user } = useAccount();
-  const usage = Route.useLoaderData();
+  const { usage, grants } = Route.useLoaderData();
   const authError = Route.useSearch().auth === "error";
   const shown = entries;
   const stats = summarizeJournal(shown);
@@ -99,6 +107,7 @@ function LogPage() {
       ) : null}
 
       <UsagePanel user={Boolean(user)} load={usage} />
+      <ConnectorAccess signedIn={Boolean(user)} initial={grants} />
 
       {shown.length > 0 ? (
         <dl className="mt-8 grid max-w-xl grid-cols-3 gap-3">
