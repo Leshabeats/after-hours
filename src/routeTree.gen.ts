@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as FateRouteImport } from './routes/fate'
 import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
+import { Route as ApiResearchRouteImport } from './routes/api/research'
 import { Route as ApiUsageRouteImport } from './routes/api/usage'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
@@ -37,6 +38,11 @@ const ListRoute = ListRouteImport.update({
 const LogRoute = LogRouteImport.update({
   id: '/log',
   path: '/log',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiResearchRoute = ApiResearchRouteImport.update({
+  id: '/api/research',
+  path: '/api/research',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiUsageRoute = ApiUsageRouteImport.update({
@@ -70,6 +76,7 @@ export interface FileRoutesByFullPath {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -81,6 +88,7 @@ export interface FileRoutesByTo {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -93,6 +101,7 @@ export interface FileRoutesById {
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -106,6 +115,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/research'
     | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -117,6 +127,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/research'
     | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -128,6 +139,7 @@ export interface FileRouteTypes {
     | '/fate'
     | '/list'
     | '/log'
+    | '/api/research'
     | '/api/usage'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -140,6 +152,7 @@ export interface RootRouteChildren {
   FateRoute: typeof FateRoute
   ListRoute: typeof ListRoute
   LogRoute: typeof LogRoute
+  ApiResearchRoute: typeof ApiResearchRoute
   ApiUsageRoute: typeof ApiUsageRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
@@ -175,6 +188,13 @@ declare module '@tanstack/react-router' {
       path: '/log'
       fullPath: '/log'
       preLoaderRoute: typeof LogRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/research': {
+      id: '/api/research'
+      path: '/api/research'
+      fullPath: '/api/research'
+      preLoaderRoute: typeof ApiResearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/usage': {
@@ -220,6 +240,7 @@ const rootRouteChildren: RootRouteChildren = {
   FateRoute: FateRoute,
   ListRoute: ListRoute,
   LogRoute: LogRoute,
+  ApiResearchRoute: ApiResearchRoute,
   ApiUsageRoute: ApiUsageRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
