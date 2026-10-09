@@ -143,6 +143,48 @@ describe("research session", () => {
     assert.equal(interrupted.turns[0]?.usage?.inputTokens, 7);
   });
 
+  it("does not publish a parsed report when the stop happens during a wait", () => {
+    let current = session();
+    current = applyCodexEvent(current, {
+      type: "usage",
+      threadId: THREAD,
+      turnId: TURN,
+      last: last(7, 1),
+    });
+    current = applyCodexEvent(current, {
+      type: "turn",
+      threadId: THREAD,
+      turnId: TURN,
+      status: "completed",
+      text: report,
+    });
+    current = applyCodexEvent(current, {
+      type: "thread-status",
+      threadId: THREAD,
+      status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+    });
+    const stopped = buildDelivery(interruptSession(current));
+    assert.equal(stopped.status, "interrupted");
+    assert.equal(stopped.report, undefined);
+    assert.ok(stopped.turns);
+    assert.equal(stopped.turns[0]?.status, "interrupted");
+    assert.equal(stopped.turns[0]?.usage?.inputTokens, 7);
+
+    const finished = buildDelivery(
+      interruptSession(
+        applyCodexEvent(session(), {
+          type: "turn",
+          threadId: THREAD,
+          turnId: TURN,
+          status: "completed",
+          text: report,
+        }),
+      ),
+    );
+    assert.equal(finished.status, "completed");
+    assert.equal(finished.report?.findings, "Уже исправлено");
+  });
+
   it("sends failed instead of completed when the answer has no report", () => {
     const current = applyCodexEvent(session(), {
       type: "turn",

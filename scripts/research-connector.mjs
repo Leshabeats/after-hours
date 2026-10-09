@@ -35,6 +35,31 @@ export function isSupportedCodexVersion(text) {
   return match != null && match[1].startsWith("0.159.");
 }
 
+/**
+ * The turn/start result can still say inProgress after turn/completed was already applied.
+ * A stale start must not replace that completion: the report would stay out of the queue.
+ */
+export function applyTurnStartResult({ threadId, response, terminalMessage, listener }) {
+  if (response?.error) throw new Error(response.error.message || "turn/start failed");
+  const turn = response?.result?.turn;
+  if (!terminalMessage && turn) {
+    listener({ method: "turn/started", params: { threadId, turn } });
+    if (TERMINAL.has(turn.status)) {
+      listener({ method: "turn/completed", params: { threadId, turn } });
+    }
+  }
+  if (terminalMessage) {
+    listener(terminalMessage);
+    return "done";
+  }
+  return turn && TERMINAL.has(turn.status) ? "done" : "wait";
+}
+
+export function connectorStatus(result) {
+  if (result?.stopped) return result.stopped;
+  return result?.delivery?.status ?? "flushed";
+}
+
 export function serverRequestReply(method) {
   if (
     method === "item/commandExecution/requestApproval" ||
@@ -418,14 +443,8 @@ export function createCodexClient(bin = "codex") {
         },
         0,
       );
-      if (response.error) throw new Error(response.error.message || "turn/start failed");
-      const turn = response.result?.turn;
-      if (turn) listener({ method: "turn/started", params: { threadId, turn } });
-      if (turn && TERMINAL.has(turn.status)) {
-        listener({ method: "turn/completed", params: { threadId, turn } });
-        return;
-      }
-      if (terminalMessage) return;
+      const outcome = applyTurnStartResult({ threadId, response, terminalMessage, listener });
+      if (outcome === "done") return;
       await new Promise((resolve, reject) => {
         terminalWait = { resolve, reject };
         if (terminalMessage) {
@@ -476,7 +495,7 @@ async function main() {
       connect: () => createCodexClient(options.bin),
     },
   );
-  const status = result.delivery?.status ?? (result.stopped ? result.stopped : "flushed");
+  const status = connectorStatus(result);
   console.log(status);
   if (result.stopped) process.exitCode = 1;
 }

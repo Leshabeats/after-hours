@@ -165,6 +165,7 @@ export function applyCodexEvent(session: ResearchSession, event: CodexEvent): Re
 }
 
 export function interruptSession(session: ResearchSession): ResearchSession {
+  const holdBack = session.waiting;
   if (session.turns.length === 0) {
     return { ...session, waiting: false, localInterrupt: true };
   }
@@ -174,7 +175,9 @@ export function interruptSession(session: ResearchSession): ResearchSession {
     waiting: false,
     localInterrupt: false,
     turns: session.turns.map((turn, index) =>
-      index === last && turn.status === "inProgress" ? { ...turn, status: "interrupted" } : turn,
+      index === last && (turn.status === "inProgress" || holdBack)
+        ? { ...turn, status: "interrupted" }
+        : turn,
     ),
   };
 }

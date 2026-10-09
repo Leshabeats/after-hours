@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { assertProbeMethod } from "./codex-app-server-probe.mjs";
 import {
+  applyCodexEvent,
+  createSession,
+  deliveryForWire,
+  eventFromNotification,
+} from "../src/lib/research/session.ts";
+import {
+  applyTurnStartResult,
+  connectorStatus,
   fetchPublicMission,
   handleProtocolMessage,
   isSupportedCodexVersion,
@@ -307,6 +315,54 @@ describe("research connector", () => {
     assert.equal(result.delivery?.report, undefined);
     assert.equal(result.delivery?.turns[0].usage.inputTokens, 12);
     assert.equal(posts.at(-1).status, "interrupted");
+  });
+
+  it("keeps a completion that arrived before the turn/start result", () => {
+    const terminalMessage = {
+      method: "turn/completed",
+      params: {
+        threadId: THREAD,
+        turn: { id: TURN, status: "completed", items: [{ type: "agentMessage", text: reportText }] },
+      },
+    };
+    let current = createSession({
+      threadId: THREAD,
+      missionId: "vitejs/vite#1",
+      isPr: false,
+      model: null,
+    });
+    const seen = eventFromNotification(terminalMessage, THREAD);
+    assert.ok(seen);
+    current = applyCodexEvent(current, seen);
+    const methods = [];
+    const outcome = applyTurnStartResult({
+      threadId: THREAD,
+      response: { result: { turn: { id: TURN, status: "inProgress", items: [] } } },
+      terminalMessage,
+      listener(message) {
+        methods.push(message.method);
+        const event = eventFromNotification(message, THREAD);
+        if (event) current = applyCodexEvent(current, event);
+      },
+    });
+    const body = deliveryForWire(current);
+    assert.equal(outcome, "done");
+    assert.deepEqual(methods, ["turn/completed"]);
+    assert.equal(body?.status, "completed");
+    assert.equal(body?.report?.findings, "Уже исправлено");
+  });
+
+  it("prints a failed flush instead of the local snapshot", () => {
+    assert.equal(
+      connectorStatus({ stopped: "network", delivery: { status: "completed" } }),
+      "network",
+    );
+    assert.equal(
+      connectorStatus({ stopped: "unauthorized", delivery: { status: "interrupted" } }),
+      "unauthorized",
+    );
+    assert.equal(connectorStatus({ stopped: null, delivery: { status: "completed" } }), "completed");
+    assert.equal(connectorStatus({ stopped: null, delivery: null }), "flushed");
   });
 
   it("does not echo the bearer token from the post result", async () => {
