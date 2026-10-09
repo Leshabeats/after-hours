@@ -140,6 +140,11 @@ export function ConnectorAccess({
                 <p className="mt-1 text-sm text-muted">
                   {grant.revokedAt ? "Отозван" : "Действует"} · {formatWhen(grant.createdAt)}
                 </p>
+                <p className="mt-1 text-sm text-muted">
+                  {grant.lastUsedAt
+                    ? `Последнее обращение ${formatWhen(grant.lastUsedAt)}`
+                    : "Ещё не обращался"}
+                </p>
               </div>
               {grant.revokedAt ? null : (
                 <Button

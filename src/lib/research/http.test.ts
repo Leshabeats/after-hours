@@ -143,6 +143,8 @@ describe("research delivery http", () => {
       NOW,
     );
     assert.equal(first.status, 200);
+    const firstBody = (await first.json()) as { run: { publishedAt: number | null } };
+    assert.equal(firstBody.run.publishedAt, NOW);
     const replay = await handleResearchPost(
       request(owner, body({ status: "completed", report, turns: [
         {
@@ -160,10 +162,14 @@ describe("research delivery http", () => {
       repo,
       NOW + 5,
     );
-    const replayBody = (await replay.json()) as { replay: boolean; run: { turns: unknown[] } };
+    const replayBody = (await replay.json()) as {
+      replay: boolean;
+      run: { turns: unknown[]; publishedAt: number | null };
+    };
     assert.equal(replay.status, 200);
     assert.equal(replayBody.replay, true);
     assert.equal(replayBody.run.turns.length, 1);
+    assert.equal(replayBody.run.publishedAt, NOW);
 
     const stolen = await handleResearchPost(
       request(other, body({ status: "failed" })),

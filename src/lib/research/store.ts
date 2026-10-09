@@ -184,10 +184,20 @@ function planIngest(
   }
   if (existing?.status === "completed") return { kind: "conflict" };
 
+  // A report on a run that is still waiting, interrupted, or in progress is not stored.
+  // Publication sticks: a later delivery does not clear publishedAt.
   const report =
-    delivery.report === undefined
-      ? (existing?.report ? cloneReport(existing.report) : null)
-      : cloneReport(delivery.report);
+    delivery.status === "completed" && delivery.report
+      ? cloneReport(delivery.report)
+      : existing?.report
+        ? cloneReport(existing.report)
+        : null;
+  const publishedAt =
+    existing?.publishedAt != null
+      ? existing.publishedAt
+      : delivery.status === "completed" && report
+        ? delivery.at
+        : null;
 
   return {
     kind: "apply",
@@ -203,7 +213,7 @@ function planIngest(
       status: delivery.status,
       model: delivery.model === undefined ? (existing?.model ?? null) : delivery.model,
       report,
-      publishedAt: existing?.publishedAt ?? null,
+      publishedAt,
       createdAt: existing?.createdAt ?? delivery.at,
       updatedAt: delivery.at,
       turns: mergeTurns(existing?.turns ?? [], delivery.turns),
@@ -494,8 +504,8 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
   );
   const updateRun = db.prepare(
     `UPDATE research_runs
-     SET status = ?, model = ?, report_json = ?, report_schema = ?, delivery_hash = ?,
-         updated_at = ?
+     SET status = ?, model = ?, report_json = ?, report_schema = ?, published_at = ?,
+         delivery_hash = ?, updated_at = ?
      WHERE id = ?`,
   );
   const deleteTurns = db.prepare(`DELETE FROM research_turns WHERE run_id = ?`);
@@ -609,6 +619,7 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
         run.model,
         reportJson,
         reportSchema,
+        run.publishedAt,
         run.deliveryHash,
         run.updatedAt,
         run.id,
