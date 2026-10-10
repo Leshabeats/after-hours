@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { installShutdown, stopPreview } from "./preview-process.mjs";
+import { installShutdown, previewLaunch, stopPreview } from "./preview-process.mjs";
 
 const port = 4173;
 const origin = `http://127.0.0.1:${port}`;
@@ -11,6 +11,7 @@ const dir = mkdtempSync(join(tmpdir(), "ah12-smoke-"));
 const dbPath = join(dir, "after-hours.sqlite");
 let pid = 0;
 let child = null;
+let launchError = null;
 
 installShutdown({
   pid: () => pid,
@@ -102,9 +103,13 @@ function counts() {
 function start() {
   // Unix: a new process group so one signal reaches npm and the preview.
   // Windows has no negative-pid groups; stop uses taskkill /t on this pid.
-  child = spawn("npm", ["run", "preview"], {
+  const launch = previewLaunch();
+  launchError = null;
+  child = spawn(launch.command, launch.args, {
     cwd: process.cwd(),
     detached: process.platform !== "win32",
+    shell: launch.shell,
+    windowsHide: true,
     env: {
       ...process.env,
       DATA_DIR: dir,
@@ -112,6 +117,9 @@ function start() {
       NODE_ENV: "production",
     },
     stdio: "ignore",
+  });
+  child.once("error", (error) => {
+    launchError = error;
   });
   child.unref();
   pid = child.pid ?? 0;
@@ -122,19 +130,24 @@ function stop(current) {
   const tracked = child;
   return stopPreview(current, {
     listening: async () => {
-      if (await listening()) return true;
+      if (await portOpen()) return true;
       return tracked?.pid === current && tracked.exitCode === null && tracked.signalCode === null;
     },
   });
 }
 
-async function listening() {
+async function portOpen() {
   try {
     const response = await fetch(origin, { signal: AbortSignal.timeout(1000) });
     return response.ok || response.status < 500;
   } catch {
     return false;
   }
+}
+
+async function listening() {
+  if (launchError) throw launchError;
+  return portOpen();
 }
 
 async function waitUntilUp() {

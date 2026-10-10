@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { isAlive, killTree, stopPreview, treeKillPlan } from "./preview-process.mjs";
+import { isAlive, killTree, previewLaunch, procStatState, stopPreview, treeKillPlan } from "./preview-process.mjs";
 
 const moduleUrl = new URL("./preview-process.mjs", import.meta.url).href;
 
@@ -40,7 +40,7 @@ async function readReadyFile(file, timeoutMs = 5_000) {
 }
 
 describe("preview process stop", () => {
-  it("plans a windows tree kill and a unix process-group kill", () => {
+  it("plans windows launch and stop, and reads a defunct proc state", () => {
     assert.equal(treeKillPlan(0, "SIGTERM", "win32"), null);
     assert.deepEqual(treeKillPlan(42, "SIGTERM", "win32"), {
       kind: "taskkill",
@@ -55,6 +55,19 @@ describe("preview process stop", () => {
       signal: "SIGTERM",
       pid: -42,
     });
+    assert.deepEqual(previewLaunch("win32"), {
+      command: "npm.cmd",
+      args: ["run", "preview"],
+      shell: true,
+    });
+    assert.deepEqual(previewLaunch("linux"), {
+      command: "npm",
+      args: ["run", "preview"],
+      shell: false,
+    });
+    assert.equal(procStatState("123 (node) Z 1 1"), "Z");
+    assert.equal(procStatState("123 (foo) bar) S 1"), "S");
+    assert.equal(procStatState("no paren"), "");
   });
 
   it("kills a detached process group, including the grandchild", async () => {
