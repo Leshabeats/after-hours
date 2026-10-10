@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -145,6 +146,23 @@ async function portOpen() {
   }
 }
 
+/** Any accepted TCP connection means 4173 is taken, including 5xx and non-HTTP. */
+function portTaken() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = connect({ host: "127.0.0.1", port, timeout: 1000 });
+    const finish = (taken) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(taken);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
 async function listening() {
   if (launchError) throw launchError;
   return portOpen();
@@ -167,7 +185,7 @@ async function hit() {
 }
 
 try {
-  if (await portOpen()) throw new Error("port 4173 is already in use");
+  if (await portTaken()) throw new Error("port 4173 is already in use");
   seed();
   pid = start();
   await waitUntilUp();
