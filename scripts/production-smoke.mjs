@@ -166,12 +166,8 @@ async function hit() {
   if (!profile.ok) throw new Error(`profile ${profile.status}`);
 }
 
-if (await listening()) {
-  console.error("port 4173 is already in use");
-  process.exit(1);
-}
-
 try {
+  if (await portOpen()) throw new Error("port 4173 is already in use");
   seed();
   pid = start();
   await waitUntilUp();

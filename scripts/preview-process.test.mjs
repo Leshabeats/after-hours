@@ -152,7 +152,15 @@ describe("preview process stop", () => {
     }
   });
 
-  it("kills the detached child when the parent receives SIGTERM", async () => {
+  it(
+    "kills the detached child when the parent receives SIGTERM",
+    {
+      skip:
+        process.platform === "win32"
+          ? "process.kill(SIGTERM) terminates the process without the signal handler"
+          : false,
+    },
+    async () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-preview-stop-"));
     const pidFile = join(dir, "pid");
     const cleanFile = join(dir, "clean");
