@@ -5,6 +5,7 @@ import { createSqliteJournal, upsertUser, type JournalRepo } from "@/lib/journal
 import type { SessionUser } from "@/lib/journal/types";
 import { createSqliteResearch, type ResearchRepo } from "@/lib/research/store";
 import { createSqliteUsage, type UsageRepo } from "@/lib/usage/store";
+import { dataDir } from "./paths.ts";
 
 let journal: JournalRepo | undefined;
 let usage: UsageRepo | undefined;
@@ -13,7 +14,7 @@ let sqlite: DatabaseSync | undefined;
 
 function openDb() {
   if (sqlite) return sqlite;
-  const dir = join(process.cwd(), "data");
+  const dir = dataDir();
   mkdirSync(dir, { recursive: true });
   sqlite = new DatabaseSync(join(dir, "after-hours.sqlite"));
   return sqlite;

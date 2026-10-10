@@ -218,12 +218,12 @@ export function AccountControl({ className }: { className?: string }) {
 
   if (user) {
     return (
-      <div className={cn("flex items-center gap-2", className)}>
+      <div className={cn("flex shrink-0 items-center gap-2", className)}>
         {user.avatarUrl ? (
           <img
             src={user.avatarUrl}
             alt=""
-            className="size-7 rounded-full"
+            className="hidden size-7 rounded-full sm:block"
             width={28}
             height={28}
           />
