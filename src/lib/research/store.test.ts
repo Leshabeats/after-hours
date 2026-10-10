@@ -552,3 +552,200 @@ describe("research contract", () => {
     }
   });
 });
+
+async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number; links: number }) {
+  repo.upsertAuthor({ id: "gh-a", login: "Lesha", name: "Lesha", avatarUrl: "" });
+  repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
+  const body = (findings: string): ResearchReport => ({
+    ...report(findings),
+    links: [
+      { url: "https://github.com/vitejs/vite/issues/1", kind: "issue" },
+      { url: "https://github.com/vitejs/vite/pull/9", kind: "pull" },
+      { url: "https://github.com/vitejs/vite/pull/3", kind: "pull" },
+    ],
+  });
+  const first = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_watch_a",
+      status: "completed",
+      report: body("Первый"),
+      turns: [turn("turn_watch_a", { inputTokens: 1, outputTokens: 1, totalTokens: 2 })],
+    }),
+  );
+  const second = repo.ingest(
+    "gh-b",
+    delivery({
+      threadId: "thread_watch_b",
+      status: "completed",
+      report: body("Второй"),
+      turns: [turn("turn_watch_b", { inputTokens: 1, outputTokens: 1, totalTokens: 2 })],
+      at: AT + 1,
+    }),
+  );
+  assert.equal(first.ok && second.ok, true);
+  if (!first.ok || !second.ok) return;
+  let calls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    calls += 1;
+    const url = String(input);
+    const payload = url.includes("/reviews")
+      ? []
+      : url.includes("/pulls/9")
+        ? {
+            node_id: "P9",
+            number: 9,
+            title: "Общий",
+            html_url: "https://github.com/vitejs/vite/pull/9",
+            state: "closed",
+            merged: true,
+            draft: false,
+            comments: 1,
+            user: { login: "Lesha" },
+          }
+        : url.includes("/pulls/3")
+          ? {
+              node_id: "P3",
+              number: 3,
+              title: "Чужой",
+              html_url: "https://github.com/vitejs/vite/pull/3",
+              state: "closed",
+              merged: true,
+              draft: false,
+              comments: 1,
+              user: { login: "other" },
+            }
+          : url.includes("/issues/1")
+            ? {
+                node_id: "I1",
+                number: 1,
+                title: "Задача",
+                html_url: "https://github.com/vitejs/vite/issues/1",
+                state: "open",
+                comments: 0,
+                user: { login: "octocat" },
+              }
+            : null;
+    if (!payload) return new Response("missing", { status: 404 });
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const ids = [first.run.id, second.run.id];
+  await repo.refreshGithub(ids, AT, fetchImpl);
+  assert.equal(calls, 5);
+  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
+  const board = repo.missionBoard("vitejs", "vite", 1, null);
+  assert.deepEqual(
+    board.reports.map((item) => item.github.links.map((link) => link.title)),
+    [
+      ["Общий", "Чужой"],
+      ["Общий", "Чужой"],
+    ],
+  );
+  const own = board.reports.find((item) => item.report.findings === "Первый")?.github.links ?? [];
+  assert.equal(own.find((link) => link.number === 9)?.byResearcher, true);
+  assert.equal(own.find((link) => link.number === 9)?.fixedByResearcher, false);
+  assert.equal(own.find((link) => link.number === 3)?.byResearcher, false);
+  assert.equal(own.find((link) => link.number === 3)?.fixedByResearcher, false);
+  const leaked = JSON.stringify(board);
+  assert.equal(leaked.includes("thread_"), false);
+  assert.equal(leaked.includes("gh-a"), false);
+  assert.equal(leaked.includes("P9"), false);
+  assert.equal(leaked.includes("individualRemainingPercent"), false);
+
+  await repo.refreshGithub(ids, AT + 1_000, fetchImpl);
+  assert.equal(calls, 5);
+  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
+
+  assert.equal(repo.setPublished("gh-a", first.run.id, false, AT + 2), "updated");
+  const hidden = repo.missionBoard("vitejs", "vite", 1, null);
+  assert.deepEqual(hidden.reports.map((item) => item.report.findings), ["Второй"]);
+  assert.equal(hidden.reports[0]?.github.links.some((link) => link.title === "Общий"), true);
+  assert.equal(JSON.stringify(hidden).includes("Первый"), false);
+  const owner = repo.missionBoard("vitejs", "vite", 1, "gh-a");
+  assert.equal(owner.hidden[0]?.github.source?.title, "Задача");
+  const stranger = repo.authorBoard("lesha", null);
+  assert.equal(stranger.reports.some((item) => item.report.findings === "Первый"), false);
+  assert.equal(stranger.hidden.length, 0);
+  const self = repo.authorBoard("lesha", "gh-a");
+  assert.equal(self.hidden[0]?.github.links.some((link) => link.title === "Общий"), true);
+
+  assert.equal(repo.setPublished("gh-a", first.run.id, true, AT + 3), "updated");
+  await repo.refreshGithub([first.run.id], AT + 4_000, fetchImpl);
+  assert.equal(calls, 5);
+  assert.equal(
+    repo.missionBoard("vitejs", "vite", 1, null).reports.some((item) => item.github.source?.title === "Задача"),
+    true,
+  );
+
+  const quiet = repo.ingest(
+    "gh-a",
+    delivery({
+      threadId: "thread_watch_q",
+      status: "in_progress",
+      report: body("Черновик"),
+      at: AT + 5,
+    }),
+  );
+  assert.equal(quiet.ok, true);
+  if (quiet.ok) await repo.refreshGithub([quiet.run.id], AT + 6_000, fetchImpl);
+  assert.equal(calls, 5);
+  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
+}
+
+describe("research github history", () => {
+  it("memory: two reports share one pull and an unpublished card leaves the public board", async () => {
+    await assertWatch(createMemoryResearch());
+  });
+
+  it("sqlite: two reports share one pull, and the journal stays intact", async () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      const usage = createSqliteUsage(db);
+      const journal = createSqliteJournal(db);
+      const night: LogEntry = {
+        id: "vitejs/vite#9",
+        owner: "vitejs",
+        repo: "vite",
+        number: 9,
+        title: "Night",
+        kind: "blinding",
+        url: "https://github.com/vitejs/vite/issues/9",
+        isPr: false,
+        status: "taken",
+        takenAt: 5,
+      };
+      usage.record("owner", {
+        at: 5,
+        harness: "codex",
+        model: "gpt-6-astra",
+        inputTokens: 3,
+        outputTokens: 4,
+        missionId: "vitejs/vite#9",
+      });
+      journal.take("owner", night);
+      const repo = createSqliteResearch(db);
+      await assertWatch(repo, () => ({
+        subjects: (db.prepare("SELECT COUNT(*) AS n FROM github_subjects").get() as { n: number }).n,
+        links: (db.prepare("SELECT COUNT(*) AS n FROM research_links").get() as { n: number }).n,
+      }));
+      assert.equal(journal.list("owner")[0]?.id, "vitejs/vite#9");
+      assert.deepEqual(usage.list("owner"), [
+        {
+          at: 5,
+          harness: "codex",
+          model: "gpt-6-astra",
+          inputTokens: 3,
+          outputTokens: 4,
+          missionId: "vitejs/vite#9",
+        },
+      ]);
+      const facts = db.prepare("SELECT COUNT(*) AS n FROM github_facts").get() as { n: number };
+      assert.equal(facts.n, 2);
+    } finally {
+      db.close();
+    }
+  });
+});
