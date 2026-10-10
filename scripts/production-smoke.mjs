@@ -3,11 +3,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { installShutdown, stopPreview } from "./preview-process.mjs";
 
 const port = 4173;
 const origin = `http://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), "ah12-smoke-"));
 const dbPath = join(dir, "after-hours.sqlite");
+let pid = 0;
+let child = null;
+
+installShutdown({
+  pid: () => pid,
+  afterKill() {
+    rmSync(dir, { recursive: true, force: true });
+  },
+});
 
 function seed() {
   const db = new DatabaseSync(dbPath);
@@ -90,9 +100,11 @@ function counts() {
 }
 
 function start() {
-  const child = spawn("npm", ["run", "preview"], {
+  // Unix: a new process group so one signal reaches npm and the preview.
+  // Windows has no negative-pid groups; stop uses taskkill /t on this pid.
+  child = spawn("npm", ["run", "preview"], {
     cwd: process.cwd(),
-    detached: true,
+    detached: process.platform !== "win32",
     env: {
       ...process.env,
       DATA_DIR: dir,
@@ -102,26 +114,18 @@ function start() {
     stdio: "ignore",
   });
   child.unref();
-  return child.pid;
+  pid = child.pid ?? 0;
+  return pid;
 }
 
-async function stop(pid) {
-  if (!pid) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    // already gone
-  }
-  const deadline = Date.now() + 8_000;
-  while (Date.now() < deadline) {
-    if (!(await listening())) return;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // already gone
-  }
+function stop(current) {
+  const tracked = child;
+  return stopPreview(current, {
+    listening: async () => {
+      if (await listening()) return true;
+      return tracked?.pid === current && tracked.exitCode === null && tracked.signalCode === null;
+    },
+  });
 }
 
 async function listening() {
@@ -154,7 +158,6 @@ if (await listening()) {
   process.exit(1);
 }
 
-let pid = 0;
 try {
   seed();
   pid = start();
