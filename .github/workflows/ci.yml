@@ -46,3 +46,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Production smoke (isolated SQLite, no external services)
+        run: npm run test:production
