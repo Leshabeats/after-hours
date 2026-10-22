@@ -8,23 +8,21 @@ export const Route = createFileRoute("/api/auth/callback")({
         const origin = process.env.APP_ORIGIN?.replace(/\/$/, "") || getRequestUrl().origin;
         const fail = () => Response.redirect(`${origin}/log?auth=error`, 302);
         try {
+          const { githubOAuthConfigured } = await import("@/lib/auth/flags");
+          if (!githubOAuthConfigured()) return fail();
           const url = new URL(request.url);
           if (url.searchParams.get("error")) return fail();
           const code = url.searchParams.get("code");
           const state = url.searchParams.get("state");
-          const {
-            OAUTH_COOKIE,
-            clearCookie,
-            readOAuthStateFromRequest,
-            sessionCookie,
-          } = await import("@/lib/auth/session");
+          const { OAUTH_COOKIE, clearCookie, readOAuthStateFromRequest, sessionCookie } =
+            await import("@/lib/auth/session");
           const expected = readOAuthStateFromRequest(request);
           if (!code || !state || !expected || state !== expected) return fail();
           const { exchangeGithubCode, fetchGithubUser } = await import("@/lib/auth/github");
           const token = await exchangeGithubCode(code);
           const user = await fetchGithubUser(token);
           const { saveUser } = await import("@/lib/auth/db");
-          saveUser(user);
+          await saveUser(user);
           const headers = new Headers();
           headers.append("Location", `${origin}/log`);
           headers.append("Set-Cookie", sessionCookie(user));

@@ -12,6 +12,7 @@ it("keeps the development signing secret in DATA_DIR across release directories"
     DATA_DIR: process.env.DATA_DIR,
     AUTH_SECRET: process.env.AUTH_SECRET,
     NODE_ENV: process.env.NODE_ENV,
+    VERCEL: process.env.VERCEL,
   };
   t.after(() => {
     for (const [key, value] of Object.entries(saved)) {
@@ -21,6 +22,7 @@ it("keeps the development signing secret in DATA_DIR across release directories"
     rmSync(root, { recursive: true, force: true });
   });
   process.env.NODE_ENV = "development";
+  delete process.env.VERCEL;
   delete process.env.AUTH_SECRET;
   process.env.DATA_DIR = join(root, "persistent");
   const first = join(root, "release-one");
@@ -35,5 +37,8 @@ it("keeps the development signing secret in DATA_DIR across release directories"
   delete process.env.DATA_DIR;
   assert.equal(dataDirectory(), join(second, "data"));
   process.env.NODE_ENV = "production";
+  assert.throws(() => readAuthSecret(), /AUTH_SECRET is required/);
+  process.env.NODE_ENV = "development";
+  process.env.VERCEL = "1";
   assert.throws(() => readAuthSecret(), /AUTH_SECRET is required/);
 });

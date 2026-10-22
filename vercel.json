@@ -1,0 +1,6 @@
+{
+  "buildCommand": "npm run build:vercel",
+  "installCommand": "npx --yes npm@11.9.0 ci",
+  "framework": null,
+  "regions": ["fra1"]
+}

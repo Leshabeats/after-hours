@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-/** Use an absolute DATA_DIR to keep the same database across release directories. */
+/** Directory for the development-only session signing secret. No application database files. */
 export function dataDirectory() {
   return resolve(process.env.DATA_DIR?.trim() || "data");
 }

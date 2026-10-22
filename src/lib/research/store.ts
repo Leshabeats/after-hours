@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { Pool } from "pg";
+import { transaction, type Database } from "../db/postgres.ts";
 import {
   buildAuthorBoard,
   buildMissionBoard,
@@ -10,20 +11,17 @@ import {
 import type {
   ConnectorGrant,
   LimitSnapshot,
-  LimitWindow,
   ResearchDelivery,
   ResearchReport,
   ResearchRun,
   ResearchTurn,
-  RunStatus,
-  TurnStatus,
   TurnUsage,
 } from "./types.ts";
 import { emptyUsage } from "./types.ts";
 import { upsertUser } from "../journal/store.ts";
 import type { WatchRun } from "./github-watch.ts";
 import { refreshWatch } from "./github-sync.ts";
-import { createMemoryWatch, createSqliteWatch } from "./watch-book.ts";
+import { createMemoryWatch, createPostgresWatch } from "./watch-book.ts";
 
 export type IngestResult =
   | { ok: true; replay: boolean; run: ResearchRun }
@@ -34,35 +32,28 @@ export type PublishResult = "updated" | "missing" | "blocked";
 export type ResearchAuthor = ReportAuthor & { id: string };
 
 export type ResearchRepo = {
-  createGrant: (
-    userId: string,
-    at: number,
-  ) => { grant: ConnectorGrant; token: string };
-  listGrants: (userId: string) => ConnectorGrant[];
-  revokeGrant: (
-    userId: string,
-    grantId: string,
-    at: number,
-  ) => ConnectorGrant[] | null;
-  authenticate: (token: string) => { userId: string; grantId: string } | null;
-  markUsed: (grantId: string, at: number) => void;
-  ingest: (userId: string, delivery: ResearchDelivery) => IngestResult;
-  readRun: (userId: string, threadId: string) => ResearchRun | null;
-  readLimit: (userId: string) => LimitSnapshot | null;
-  upsertAuthor: (user: ResearchAuthor) => void;
+  createGrant: (userId: string, at: number) => Promise<{ grant: ConnectorGrant; token: string }>;
+  listGrants: (userId: string) => Promise<ConnectorGrant[]>;
+  revokeGrant: (userId: string, grantId: string, at: number) => Promise<ConnectorGrant[] | null>;
+  authenticate: (token: string) => Promise<{ userId: string; grantId: string } | null>;
+  markUsed: (grantId: string, at: number) => Promise<void>;
+  ingest: (userId: string, delivery: ResearchDelivery) => Promise<IngestResult>;
+  readRun: (userId: string, threadId: string) => Promise<ResearchRun | null>;
+  readLimit: (userId: string) => Promise<LimitSnapshot | null>;
+  upsertAuthor: (user: ResearchAuthor) => Promise<void>;
   missionBoard: (
     owner: string,
     repo: string,
     number: number,
     viewerId: string | null,
-  ) => MissionBoard;
-  authorBoard: (login: string, viewerId: string | null) => AuthorBoard;
+  ) => Promise<MissionBoard>;
+  authorBoard: (login: string, viewerId: string | null) => Promise<AuthorBoard>;
   setPublished: (
     userId: string,
     runId: string,
     published: boolean,
     at: number,
-  ) => PublishResult;
+  ) => Promise<PublishResult>;
   refreshGithub: (
     runIds: readonly string[],
     now?: number,
@@ -181,10 +172,7 @@ function normalizeTurn(turn: ResearchTurn): ResearchTurn {
   };
 }
 
-function mergeTurns(
-  current: readonly ResearchTurn[],
-  incoming: readonly ResearchTurn[],
-) {
+function mergeTurns(current: readonly ResearchTurn[], incoming: readonly ResearchTurn[]) {
   const byId = new Map(current.map((turn) => [turn.turnId, cloneTurn(turn)]));
   for (const turn of incoming) byId.set(turn.turnId, normalizeTurn(turn));
   return [...byId.values()].sort((a, b) =>
@@ -205,10 +193,7 @@ function planIngest(
     turnIds.add(turn.turnId);
   }
   if (existing && existing.userId !== userId) return { kind: "forbidden" };
-  if (
-    existing &&
-    (existing.missionId !== delivery.missionId || existing.isPr !== delivery.isPr)
-  ) {
+  if (existing && (existing.missionId !== delivery.missionId || existing.isPr !== delivery.isPr)) {
     return { kind: "conflict" };
   }
 
@@ -302,11 +287,13 @@ export function createMemoryResearch(): ResearchRepo {
   }
 
   function rememberLimit(userId: string, delivery: ResearchDelivery) {
-    if (delivery.limit) limits.set(userId, cloneLimit(delivery.limit));
+    if (delivery.limit && delivery.limit.readAt >= (limits.get(userId)?.readAt ?? -Infinity)) {
+      limits.set(userId, cloneLimit(delivery.limit));
+    }
   }
 
   return {
-    createGrant(userId, at) {
+    async createGrant(userId, at) {
       const token = `ahc_${randomBytes(32).toString("base64url")}`;
       const grant: GrantRecord = {
         id: newId("gr"),
@@ -319,14 +306,16 @@ export function createMemoryResearch(): ResearchRepo {
       grants.push(grant);
       return { grant: publicGrant(grant), token };
     },
-    listGrants,
-    revokeGrant(userId, grantId, at) {
+    async listGrants(userId) {
+      return listGrants(userId);
+    },
+    async revokeGrant(userId, grantId, at) {
       const grant = grants.find((item) => item.id === grantId);
       if (!grant || grant.userId !== userId) return null;
       if (grant.revokedAt == null) grant.revokedAt = at;
       return listGrants(userId);
     },
-    authenticate(token) {
+    async authenticate(token) {
       const hash = hashToken(token);
       const grant = grants.find((item) => item.tokenHash === hash);
       if (!grant || grant.revokedAt != null || !tokenMatches(token, grant.tokenHash)) {
@@ -334,12 +323,12 @@ export function createMemoryResearch(): ResearchRepo {
       }
       return { userId: grant.userId, grantId: grant.id };
     },
-    markUsed(grantId, at) {
+    async markUsed(grantId, at) {
       const grant = grants.find((item) => item.id === grantId);
       if (!grant || grant.revokedAt != null) return;
       grant.lastUsedAt = at;
     },
-    ingest(userId, delivery) {
+    async ingest(userId, delivery) {
       const existing = runs.find((run) => run.threadId === delivery.threadId) ?? null;
       const decision = planIngest(existing, userId, delivery, newId("run"));
       if (decision.kind === "invalid" || decision.kind === "forbidden") {
@@ -356,15 +345,15 @@ export function createMemoryResearch(): ResearchRepo {
       else runs[index] = stored;
       return { ok: true, replay: false, run: toPublic(stored) };
     },
-    readRun(userId, threadId) {
+    async readRun(userId, threadId) {
       const run = runs.find((item) => item.threadId === threadId && item.userId === userId);
       return run ? toPublic(run) : null;
     },
-    readLimit(userId) {
+    async readLimit(userId) {
       const limit = limits.get(userId);
       return limit ? cloneLimit(limit) : null;
     },
-    upsertAuthor(user) {
+    async upsertAuthor(user) {
       authors.set(user.id, {
         id: user.id,
         login: user.login,
@@ -372,14 +361,14 @@ export function createMemoryResearch(): ResearchRepo {
         avatarUrl: user.avatarUrl,
       });
     },
-    missionBoard(owner, repo, number, viewerId) {
+    async missionBoard(owner, repo, number, viewerId) {
       const visible = runs.map(toPublic);
       return buildMissionBoard(
         visible,
         authors,
         { owner, repo, number },
         viewerId,
-        book.history(
+        await book.history(
           visible.map((run) => ({
             id: run.id,
             researcherLogin: authors.get(run.userId)?.login ?? "",
@@ -387,18 +376,16 @@ export function createMemoryResearch(): ResearchRepo {
         ),
       );
     },
-    authorBoard(login, viewerId) {
+    async authorBoard(login, viewerId) {
       const key = login.trim().toLowerCase();
-      const matched = [...authors.values()].filter(
-        (author) => author.login.toLowerCase() === key,
-      );
+      const matched = [...authors.values()].filter((author) => author.login.toLowerCase() === key);
       const visible = runs.map(toPublic);
       return buildAuthorBoard(
         visible,
         matched,
         login,
         viewerId,
-        book.history(
+        await book.history(
           visible.map((run) => ({
             id: run.id,
             researcherLogin: authors.get(run.userId)?.login ?? "",
@@ -406,7 +393,7 @@ export function createMemoryResearch(): ResearchRepo {
         ),
       );
     },
-    setPublished(userId, runId, published, at) {
+    async setPublished(userId, runId, published, at) {
       const run = runs.find((item) => item.id === runId && item.userId === userId);
       if (!run) return "missing";
       return publishRun(run, published, at);
@@ -415,7 +402,7 @@ export function createMemoryResearch(): ResearchRepo {
       await refreshWatch(
         {
           book,
-          runs(ids) {
+          async runs(ids) {
             const wanted = new Set(ids);
             return runs.filter((run) => wanted.has(run.id)).map(watchOf);
           },
@@ -428,426 +415,136 @@ export function createMemoryResearch(): ResearchRepo {
   };
 }
 
-type GrantRow = {
-  id: string;
-  user_id: string;
-  token_hash: string;
-  created_at: number;
-  revoked_at: number | null;
-  last_used_at: number | null;
-};
+// A single SELECT reads each run and all its turns from one PostgreSQL snapshot.
+const runSelect = `SELECT r.id, r.user_id AS "userId", r.mission_id AS "missionId",
+  r.owner, r.repo, r.number, r.is_pr AS "isPr", r.thread_id AS "threadId", r.status,
+  r.model, r.report_json AS report, r.published_at AS "publishedAt",
+  r.created_at AS "createdAt", r.updated_at AS "updatedAt", r.delivery_hash AS "deliveryHash",
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'turnId', t.turn_id, 'status', t.status, 'usageKnown', t.usage_known,
+    'updatedAt', t.updated_at, 'usage', jsonb_build_object(
+      'inputTokens', t.input_tokens, 'cachedInputTokens', t.cached_input_tokens,
+      'outputTokens', t.output_tokens, 'reasoningOutputTokens', t.reasoning_output_tokens,
+      'totalTokens', t.total_tokens)) ORDER BY t.turn_id COLLATE "C")
+    FROM research_turns t WHERE t.run_id = r.id), '[]'::jsonb) AS turns
+  FROM research_runs r`;
+const authorSelect = `SELECT id, login, name, avatar_url AS "avatarUrl" FROM users`;
+const grantSelect = `SELECT id, user_id AS "userId", token_hash AS "tokenHash",
+  created_at AS "createdAt", revoked_at AS "revokedAt", last_used_at AS "lastUsedAt"
+  FROM connector_grants`;
 
-type RunRow = {
-  id: string;
-  user_id: string;
-  mission_id: string;
-  owner: string;
-  repo: string;
-  number: number;
-  is_pr: number;
-  thread_id: string;
-  status: string;
-  model: string | null;
-  report_json: string | null;
-  published_at: number | null;
-  delivery_hash: string;
-  created_at: number;
-  updated_at: number;
-};
-
-type TurnRow = {
-  turn_id: string;
-  status: string;
-  usage_known: number;
-  input_tokens: number | null;
-  cached_input_tokens: number | null;
-  output_tokens: number | null;
-  reasoning_output_tokens: number | null;
-  total_tokens: number | null;
-  updated_at: number;
-};
-
-type LimitRow = {
-  read_at: number;
-  primary_used_percent: number | null;
-  primary_window_mins: number | null;
-  primary_resets_at: number | null;
-  secondary_used_percent: number | null;
-  secondary_window_mins: number | null;
-  secondary_resets_at: number | null;
-  spend_control_reached: number | null;
-  individual_remaining_percent: number | null;
-};
-
-function isRunStatus(value: string): value is RunStatus {
-  return (
-    value === "in_progress" ||
-    value === "waiting" ||
-    value === "interrupted" ||
-    value === "failed" ||
-    value === "completed"
-  );
-}
-
-function isTurnStatus(value: string): value is TurnStatus {
-  return (
-    value === "inProgress" ||
-    value === "completed" ||
-    value === "interrupted" ||
-    value === "failed"
-  );
-}
-
-function usageFromRow(row: TurnRow): TurnUsage {
-  return {
-    inputTokens: row.input_tokens,
-    cachedInputTokens: row.cached_input_tokens,
-    outputTokens: row.output_tokens,
-    reasoningOutputTokens: row.reasoning_output_tokens,
-    totalTokens: row.total_tokens,
-  };
-}
-
-function windowFrom(
-  used: number | null,
-  mins: number | null,
-  resets: number | null,
-): LimitWindow | null {
-  if (used == null && mins == null && resets == null) return null;
-  return {
-    usedPercent: used,
-    windowDurationMins: mins,
-    resetsAt: resets,
-  };
-}
-
-function tri(value: boolean | null) {
-  if (value == null) return null;
-  return value ? 1 : 0;
-}
-
-export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      login TEXT NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      avatar_url TEXT NOT NULL DEFAULT '',
-      created_at INTEGER NOT NULL
+export function createPostgresResearch(pool: Pool): ResearchRepo {
+  const book = createPostgresWatch(pool, () => newId("gh"));
+  async function loadRuns(db: Database, where: string, values: unknown[]): Promise<StoredRun[]> {
+    return (await db.query<StoredRun>(`${runSelect} ${where}`, values)).rows;
+  }
+  async function loadRun(db: Database, threadId: string) {
+    return (await loadRuns(db, "WHERE r.thread_id = $1", [threadId]))[0] ?? null;
+  }
+  async function listGrants(userId: string) {
+    return (
+      await pool.query<GrantRecord>(
+        `${grantSelect} WHERE user_id = $1 ORDER BY created_at DESC, id COLLATE "C" ASC`,
+        [userId],
+      )
+    ).rows.map(publicGrant);
+  }
+  async function authorsFor(runs: readonly ResearchRun[]) {
+    const ids = [...new Set(runs.map((run) => run.userId))];
+    const rows = (
+      await pool.query<ResearchAuthor>(`${authorSelect} WHERE id = ANY($1::text[])`, [ids])
+    ).rows;
+    return new Map(rows.map((author) => [author.id, author]));
+  }
+  async function history(runs: readonly ResearchRun[], authors: Map<string, ReportAuthor>) {
+    return book.history(
+      runs.map((run) => ({ id: run.id, researcherLogin: authors.get(run.userId)?.login ?? "" })),
     );
-    CREATE TABLE IF NOT EXISTS connector_grants (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      token_hash TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL,
-      revoked_at INTEGER,
-      last_used_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS connector_grants_user
-      ON connector_grants (user_id, created_at DESC);
-    CREATE TABLE IF NOT EXISTS research_runs (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      mission_id TEXT NOT NULL,
-      owner TEXT NOT NULL,
-      repo TEXT NOT NULL,
-      number INTEGER NOT NULL,
-      is_pr INTEGER NOT NULL,
-      thread_id TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL,
-      model TEXT,
-      report_json TEXT,
-      report_schema INTEGER,
-      published_at INTEGER,
-      delivery_hash TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS research_runs_user
-      ON research_runs (user_id, updated_at DESC);
-    CREATE INDEX IF NOT EXISTS research_runs_mission_published
-      ON research_runs (owner, repo, number, published_at);
-    CREATE INDEX IF NOT EXISTS research_runs_user_published
-      ON research_runs (user_id, published_at);
-    CREATE TABLE IF NOT EXISTS research_turns (
-      run_id TEXT NOT NULL,
-      turn_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      usage_known INTEGER NOT NULL,
-      input_tokens INTEGER,
-      cached_input_tokens INTEGER,
-      output_tokens INTEGER,
-      reasoning_output_tokens INTEGER,
-      total_tokens INTEGER,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (run_id, turn_id)
-    );
-    CREATE TABLE IF NOT EXISTS account_limit_snapshots (
-      user_id TEXT PRIMARY KEY,
-      read_at INTEGER NOT NULL,
-      primary_used_percent REAL,
-      primary_window_mins INTEGER,
-      primary_resets_at INTEGER,
-      secondary_used_percent REAL,
-      secondary_window_mins INTEGER,
-      secondary_resets_at INTEGER,
-      spend_control_reached INTEGER,
-      individual_remaining_percent REAL
-    );
-  `);
-  const book = createSqliteWatch(db, () => newId("gh"));
-
-  const insertGrant = db.prepare(
-    `INSERT INTO connector_grants
-      (id, user_id, token_hash, created_at, revoked_at, last_used_at)
-     VALUES (?, ?, ?, ?, NULL, NULL)`,
-  );
-  const listGrantStmt = db.prepare(
-    `SELECT id, user_id, token_hash, created_at, revoked_at, last_used_at
-     FROM connector_grants WHERE user_id = ? ORDER BY created_at DESC, id ASC`,
-  );
-  const grantById = db.prepare(
-    `SELECT id, user_id, token_hash, created_at, revoked_at, last_used_at
-     FROM connector_grants WHERE id = ?`,
-  );
-  const grantByHash = db.prepare(
-    `SELECT id, user_id, token_hash, created_at, revoked_at, last_used_at
-     FROM connector_grants WHERE token_hash = ?`,
-  );
-  const revokeStmt = db.prepare(
-    `UPDATE connector_grants SET revoked_at = ?
-     WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
-  );
-  const touchStmt = db.prepare(
-    `UPDATE connector_grants SET last_used_at = ?
-     WHERE id = ? AND revoked_at IS NULL`,
-  );
-  const runColumns = `id, user_id, mission_id, owner, repo, number, is_pr, thread_id, status,
-            model, report_json, published_at, delivery_hash, created_at, updated_at`;
-  const runByThread = db.prepare(
-    `SELECT ${runColumns} FROM research_runs WHERE thread_id = ?`,
-  );
-  const runById = db.prepare(`SELECT ${runColumns} FROM research_runs WHERE id = ?`);
-  const runsByMission = db.prepare(
-    `SELECT ${runColumns} FROM research_runs
-     WHERE owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ?`,
-  );
-  const runsByUser = db.prepare(
-    `SELECT ${runColumns} FROM research_runs WHERE user_id = ?`,
-  );
-  const usersByLogin = db.prepare(
-    `SELECT id, login, name, avatar_url FROM users
-     WHERE login = ? COLLATE NOCASE ORDER BY created_at DESC, id ASC`,
-  );
-  const userById = db.prepare(
-    `SELECT id, login, name, avatar_url FROM users WHERE id = ?`,
-  );
-  const setPublishedStmt = db.prepare(
-    `UPDATE research_runs SET published_at = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-  );
-  const turnsByRun = db.prepare(
-    `SELECT turn_id, status, usage_known, input_tokens, cached_input_tokens,
-            output_tokens, reasoning_output_tokens, total_tokens, updated_at
-     FROM research_turns WHERE run_id = ? ORDER BY turn_id ASC`,
-  );
-  const insertRun = db.prepare(
-    `INSERT INTO research_runs
-      (id, user_id, mission_id, owner, repo, number, is_pr, thread_id, status, model,
-       report_json, report_schema, published_at, delivery_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const updateRun = db.prepare(
-    `UPDATE research_runs
-     SET status = ?, model = ?, report_json = ?, report_schema = ?, published_at = ?,
-         delivery_hash = ?, updated_at = ?
-     WHERE id = ?`,
-  );
-  const deleteTurns = db.prepare(`DELETE FROM research_turns WHERE run_id = ?`);
-  const insertTurn = db.prepare(
-    `INSERT INTO research_turns
-      (run_id, turn_id, status, usage_known, input_tokens, cached_input_tokens,
-       output_tokens, reasoning_output_tokens, total_tokens, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const upsertLimit = db.prepare(
-    `INSERT INTO account_limit_snapshots
+  }
+  async function rememberLimit(db: Database, userId: string, delivery: ResearchDelivery) {
+    const limit = delivery.limit;
+    if (!limit) return;
+    await db.query(
+      `INSERT INTO account_limit_snapshots
       (user_id, read_at, primary_used_percent, primary_window_mins, primary_resets_at,
        secondary_used_percent, secondary_window_mins, secondary_resets_at,
        spend_control_reached, individual_remaining_percent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET
-       read_at = excluded.read_at,
-       primary_used_percent = excluded.primary_used_percent,
-       primary_window_mins = excluded.primary_window_mins,
-       primary_resets_at = excluded.primary_resets_at,
-       secondary_used_percent = excluded.secondary_used_percent,
-       secondary_window_mins = excluded.secondary_window_mins,
-       secondary_resets_at = excluded.secondary_resets_at,
-       spend_control_reached = excluded.spend_control_reached,
-       individual_remaining_percent = excluded.individual_remaining_percent`,
-  );
-  const limitByUser = db.prepare(
-    `SELECT read_at, primary_used_percent, primary_window_mins, primary_resets_at,
-            secondary_used_percent, secondary_window_mins, secondary_resets_at,
-            spend_control_reached, individual_remaining_percent
-     FROM account_limit_snapshots WHERE user_id = ?`,
-  );
-
-  function rowToGrant(row: GrantRow): GrantRecord {
-    return {
-      id: row.id,
-      userId: row.user_id,
-      tokenHash: row.token_hash,
-      createdAt: row.created_at,
-      revokedAt: row.revoked_at,
-      lastUsedAt: row.last_used_at,
-    };
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (user_id) DO UPDATE SET
+      read_at = excluded.read_at, primary_used_percent = excluded.primary_used_percent,
+      primary_window_mins = excluded.primary_window_mins, primary_resets_at = excluded.primary_resets_at,
+      secondary_used_percent = excluded.secondary_used_percent, secondary_window_mins = excluded.secondary_window_mins,
+      secondary_resets_at = excluded.secondary_resets_at, spend_control_reached = excluded.spend_control_reached,
+      individual_remaining_percent = excluded.individual_remaining_percent
+      WHERE excluded.read_at >= account_limit_snapshots.read_at`,
+      [
+        userId,
+        limit.readAt,
+        limit.primary?.usedPercent ?? null,
+        limit.primary?.windowDurationMins ?? null,
+        limit.primary?.resetsAt ?? null,
+        limit.secondary?.usedPercent ?? null,
+        limit.secondary?.windowDurationMins ?? null,
+        limit.secondary?.resetsAt ?? null,
+        limit.spendControlReached,
+        limit.individualRemainingPercent,
+      ],
+    );
   }
-
-  function authorFrom(row: { id: string; login: string; name: string; avatar_url: string }): ResearchAuthor {
-    return { id: row.id, login: row.login, name: row.name, avatarUrl: row.avatar_url };
-  }
-
-  function storedFrom(row: RunRow): StoredRun | null {
-    if (!isRunStatus(row.status)) return null;
-    let report: ResearchReport | null = null;
-    if (row.report_json) {
-      const parsed = JSON.parse(row.report_json) as ResearchReport;
-      report = cloneReport(parsed);
-    }
-    const turns = (turnsByRun.all(row.id) as TurnRow[]).flatMap((turn) => {
-      if (!isTurnStatus(turn.status)) return [];
-      const usage = turn.usage_known ? usageFromRow(turn) : emptyUsage();
-      return [
-        {
-          turnId: turn.turn_id,
-          status: turn.status,
-          usageKnown: Boolean(turn.usage_known),
-          usage,
-          updatedAt: turn.updated_at,
-        },
-      ];
-    });
-    return {
-      id: row.id,
-      userId: row.user_id,
-      missionId: row.mission_id,
-      owner: row.owner,
-      repo: row.repo,
-      number: row.number,
-      isPr: Boolean(row.is_pr),
-      threadId: row.thread_id,
-      status: row.status,
-      model: row.model,
-      report,
-      publishedAt: row.published_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      turns,
-      deliveryHash: row.delivery_hash,
-    };
-  }
-
-  function loadRun(threadId: string): StoredRun | null {
-    const row = runByThread.get(threadId) as RunRow | undefined;
-    return row ? storedFrom(row) : null;
-  }
-
-  function loadRows(rows: readonly RunRow[]): ResearchRun[] {
-    return rows.flatMap((row) => {
-      const stored = storedFrom(row);
-      return stored ? [toPublic(stored)] : [];
-    });
-  }
-
-  function authorsFor(runs: readonly ResearchRun[]) {
-    const authors = new Map<string, ReportAuthor>();
-    for (const run of runs) {
-      if (authors.has(run.userId)) continue;
-      const row = userById.get(run.userId) as
-        | { id: string; login: string; name: string; avatar_url: string }
-        | undefined;
-      if (row) authors.set(row.id, authorFrom(row));
-    }
-    return authors;
-  }
-
-  function writeRun(run: StoredRun, existed: boolean) {
-    const reportJson = run.report ? JSON.stringify(run.report) : null;
-    const reportSchema = run.report ? run.report.schemaVersion : null;
-    if (!existed) {
-      insertRun.run(
+  async function writeRun(db: Database, run: StoredRun) {
+    await db.query(
+      `INSERT INTO research_runs
+      (id,user_id,mission_id,owner,repo,number,is_pr,thread_id,status,model,report_json,
+       report_schema,published_at,delivery_hash,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      ON CONFLICT (thread_id) DO UPDATE SET status = excluded.status, model = excluded.model,
+      report_json = excluded.report_json, report_schema = excluded.report_schema,
+      published_at = excluded.published_at, delivery_hash = excluded.delivery_hash, updated_at = excluded.updated_at`,
+      [
         run.id,
         run.userId,
         run.missionId,
         run.owner,
         run.repo,
         run.number,
-        run.isPr ? 1 : 0,
+        run.isPr,
         run.threadId,
         run.status,
         run.model,
-        reportJson,
-        reportSchema,
+        run.report ? JSON.stringify(run.report) : null,
+        run.report?.schemaVersion ?? null,
         run.publishedAt,
         run.deliveryHash,
         run.createdAt,
         run.updatedAt,
-      );
-    } else {
-      updateRun.run(
-        run.status,
-        run.model,
-        reportJson,
-        reportSchema,
-        run.publishedAt,
-        run.deliveryHash,
-        run.updatedAt,
-        run.id,
-      );
-    }
-    deleteTurns.run(run.id);
+      ],
+    );
     for (const turn of run.turns) {
-      insertTurn.run(
-        run.id,
-        turn.turnId,
-        turn.status,
-        turn.usageKnown ? 1 : 0,
-        turn.usageKnown ? turn.usage.inputTokens : null,
-        turn.usageKnown ? turn.usage.cachedInputTokens : null,
-        turn.usageKnown ? turn.usage.outputTokens : null,
-        turn.usageKnown ? turn.usage.reasoningOutputTokens : null,
-        turn.usageKnown ? turn.usage.totalTokens : null,
-        turn.updatedAt,
+      await db.query(
+        `INSERT INTO research_turns
+        (run_id,turn_id,status,usage_known,input_tokens,cached_input_tokens,output_tokens,
+         reasoning_output_tokens,total_tokens,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (run_id,turn_id) DO UPDATE SET
+        status = excluded.status, usage_known = excluded.usage_known, input_tokens = excluded.input_tokens,
+        cached_input_tokens = excluded.cached_input_tokens, output_tokens = excluded.output_tokens,
+        reasoning_output_tokens = excluded.reasoning_output_tokens, total_tokens = excluded.total_tokens,
+        updated_at = excluded.updated_at`,
+        [
+          run.id,
+          turn.turnId,
+          turn.status,
+          turn.usageKnown,
+          turn.usageKnown ? turn.usage.inputTokens : null,
+          turn.usageKnown ? turn.usage.cachedInputTokens : null,
+          turn.usageKnown ? turn.usage.outputTokens : null,
+          turn.usageKnown ? turn.usage.reasoningOutputTokens : null,
+          turn.usageKnown ? turn.usage.totalTokens : null,
+          turn.updatedAt,
+        ],
       );
     }
   }
-
-  function rememberLimit(userId: string, delivery: ResearchDelivery) {
-    const limit = delivery.limit;
-    if (!limit) return;
-    upsertLimit.run(
-      userId,
-      limit.readAt,
-      limit.primary?.usedPercent ?? null,
-      limit.primary?.windowDurationMins ?? null,
-      limit.primary?.resetsAt ?? null,
-      limit.secondary?.usedPercent ?? null,
-      limit.secondary?.windowDurationMins ?? null,
-      limit.secondary?.resetsAt ?? null,
-      tri(limit.spendControlReached),
-      limit.individualRemainingPercent,
-    );
-  }
-
-  function listGrants(userId: string) {
-    return (listGrantStmt.all(userId) as GrantRow[]).map((row) =>
-      publicGrant(rowToGrant(row)),
-    );
-  }
-
   return {
-    createGrant(userId, at) {
+    async createGrant(userId, at) {
       const token = `ahc_${randomBytes(32).toString("base64url")}`;
       const grant: GrantRecord = {
         id: newId("gr"),
@@ -857,153 +554,151 @@ export function createSqliteResearch(db: DatabaseSync): ResearchRepo {
         revokedAt: null,
         lastUsedAt: null,
       };
-      insertGrant.run(grant.id, grant.userId, grant.tokenHash, grant.createdAt);
+      await pool.query(
+        `INSERT INTO connector_grants (id,user_id,token_hash,created_at)
+        VALUES ($1,$2,$3,$4)`,
+        [grant.id, userId, grant.tokenHash, at],
+      );
       return { grant: publicGrant(grant), token };
     },
     listGrants,
-    revokeGrant(userId, grantId, at) {
-      const row = grantById.get(grantId) as GrantRow | undefined;
-      if (!row || row.user_id !== userId) return null;
-      revokeStmt.run(at, grantId, userId);
-      return listGrants(userId);
+    async revokeGrant(userId, grantId, at) {
+      const result = await pool.query(
+        `UPDATE connector_grants SET revoked_at = COALESCE(revoked_at,$3)
+        WHERE user_id = $1 AND id = $2 RETURNING id`,
+        [userId, grantId, at],
+      );
+      return result.rowCount ? listGrants(userId) : null;
     },
-    authenticate(token) {
-      const row = grantByHash.get(hashToken(token)) as GrantRow | undefined;
-      if (!row || row.revoked_at != null || !tokenMatches(token, row.token_hash)) {
-        return null;
-      }
-      return { userId: row.user_id, grantId: row.id };
+    async authenticate(token) {
+      const grant = (
+        await pool.query<GrantRecord>(`${grantSelect} WHERE token_hash = $1`, [hashToken(token)])
+      ).rows[0];
+      if (!grant || grant.revokedAt != null || !tokenMatches(token, grant.tokenHash)) return null;
+      return { userId: grant.userId, grantId: grant.id };
     },
-    markUsed(grantId, at) {
-      touchStmt.run(at, grantId);
+    async markUsed(grantId, at) {
+      await pool.query(
+        "UPDATE connector_grants SET last_used_at = $2 WHERE id = $1 AND revoked_at IS NULL",
+        [grantId, at],
+      );
     },
-    ingest(userId, delivery) {
-      const existing = loadRun(delivery.threadId);
-      const decision = planIngest(existing, userId, delivery, newId("run"));
-      if (decision.kind === "invalid" || decision.kind === "forbidden") {
-        return { ok: false, error: decision.kind };
-      }
-      rememberLimit(userId, delivery);
-      if (decision.kind === "conflict") return { ok: false, error: "conflict" };
-      if (decision.kind === "replay") {
-        return { ok: true, replay: true, run: toPublic(decision.run) };
-      }
-      const existed = existing != null;
-      db.exec("BEGIN");
-      try {
-        writeRun(decision.run, existed);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      const stored = loadRun(decision.run.threadId);
-      if (!stored) throw new Error("Research run disappeared after write.");
-      return { ok: true, replay: false, run: toPublic(stored) };
+    ingest: (userId, delivery) =>
+      transaction(pool, `research:${delivery.threadId}`, async (db): Promise<IngestResult> => {
+        const existing = await loadRun(db, delivery.threadId);
+        const decision = planIngest(existing, userId, delivery, newId("run"));
+        if (decision.kind === "invalid" || decision.kind === "forbidden")
+          return { ok: false, error: decision.kind };
+        // Limit refreshes on a replay/conflict preserve the existing connector contract.
+        await rememberLimit(db, userId, delivery);
+        if (decision.kind === "conflict") return { ok: false, error: "conflict" };
+        if (decision.kind === "replay")
+          return { ok: true, replay: true, run: toPublic(decision.run) };
+        await writeRun(db, decision.run);
+        return { ok: true, replay: false, run: toPublic(decision.run) };
+      }),
+    async readRun(userId, threadId) {
+      const run = await loadRun(pool, threadId);
+      return run?.userId === userId ? toPublic(run) : null;
     },
-    readRun(userId, threadId) {
-      const run = loadRun(threadId);
-      if (!run || run.userId !== userId) return null;
-      return toPublic(run);
-    },
-    readLimit(userId) {
-      const row = limitByUser.get(userId) as LimitRow | undefined;
+    async readLimit(userId) {
+      const row = (
+        await pool.query<{
+          read_at: number;
+          primary_used_percent: number | null;
+          primary_window_mins: number | null;
+          primary_resets_at: number | null;
+          secondary_used_percent: number | null;
+          secondary_window_mins: number | null;
+          secondary_resets_at: number | null;
+          spend_control_reached: boolean | null;
+          individual_remaining_percent: number | null;
+        }>("SELECT * FROM account_limit_snapshots WHERE user_id = $1", [userId])
+      ).rows[0];
       if (!row) return null;
+      const window = (used: number | null, mins: number | null, resets: number | null) =>
+        used == null && mins == null && resets == null
+          ? null
+          : { usedPercent: used, windowDurationMins: mins, resetsAt: resets };
       return {
         readAt: row.read_at,
-        primary: windowFrom(
-          row.primary_used_percent,
-          row.primary_window_mins,
-          row.primary_resets_at,
-        ),
-        secondary: windowFrom(
+        primary: window(row.primary_used_percent, row.primary_window_mins, row.primary_resets_at),
+        secondary: window(
           row.secondary_used_percent,
           row.secondary_window_mins,
           row.secondary_resets_at,
         ),
-        spendControlReached:
-          row.spend_control_reached == null ? null : Boolean(row.spend_control_reached),
+        spendControlReached: row.spend_control_reached,
         individualRemainingPercent: row.individual_remaining_percent,
       };
     },
-    upsertAuthor(user) {
-      upsertUser(db, user);
+    async upsertAuthor(user) {
+      await upsertUser(pool, user);
     },
-    missionBoard(owner, repo, number, viewerId) {
-      const loaded = loadRows(runsByMission.all(owner, repo, number) as RunRow[]);
-      const authors = authorsFor(loaded);
+    async missionBoard(owner, repo, number, viewerId) {
+      const runs = (
+        await loadRuns(
+          pool,
+          "WHERE lower(r.owner) = lower($1) AND lower(r.repo) = lower($2) AND r.number = $3",
+          [owner, repo, number],
+        )
+      ).map(toPublic);
+      const authors = await authorsFor(runs);
       return buildMissionBoard(
-        loaded,
+        runs,
         authors,
         { owner, repo, number },
         viewerId,
-        book.history(
-          loaded.map((run) => ({
-            id: run.id,
-            researcherLogin: authors.get(run.userId)?.login ?? "",
-          })),
-        ),
+        await history(runs, authors),
       );
     },
-    authorBoard(login, viewerId) {
-      const matched = (usersByLogin.all(login.trim()) as {
-        id: string;
-        login: string;
-        name: string;
-        avatar_url: string;
-      }[]).map(authorFrom);
-      const loaded = matched.flatMap((author) =>
-        loadRows(runsByUser.all(author.id) as RunRow[]),
-      );
-      const authors = authorsFor(loaded);
-      return buildAuthorBoard(
-        loaded,
-        matched,
-        login,
-        viewerId,
-        book.history(
-          loaded.map((run) => ({
-            id: run.id,
-            researcherLogin: authors.get(run.userId)?.login ?? "",
-          })),
-        ),
-      );
+    async authorBoard(login, viewerId) {
+      const matched = (
+        await pool.query<ResearchAuthor>(
+          `${authorSelect} WHERE lower(login) = lower($1)
+        ORDER BY created_at DESC, id COLLATE "C" ASC`,
+          [login.trim()],
+        )
+      ).rows;
+      const runs = (
+        await loadRuns(pool, "WHERE r.user_id = ANY($1::text[])", [
+          matched.map((author) => author.id),
+        ])
+      ).map(toPublic);
+      const authors = await authorsFor(runs);
+      return buildAuthorBoard(runs, matched, login, viewerId, await history(runs, authors));
     },
-    setPublished(userId, runId, published, at) {
-      const row = runById.get(runId) as RunRow | undefined;
-      const run = row ? storedFrom(row) : null;
-      if (!run || run.userId !== userId) return "missing";
-      const decision = publishRun(run, published, at);
-      if (decision !== "updated") return decision;
-      setPublishedStmt.run(run.publishedAt, run.updatedAt, run.id, run.userId);
-      return "updated";
+    async setPublished(userId, runId, published, at) {
+      const found = (
+        await pool.query<{ thread_id: string }>(
+          "SELECT thread_id FROM research_runs WHERE id = $1 AND user_id = $2",
+          [runId, userId],
+        )
+      ).rows[0];
+      if (!found) return "missing";
+      return transaction(pool, `research:${found.thread_id}`, async (db) => {
+        const run = await loadRun(db, found.thread_id);
+        if (!run || run.userId !== userId) return "missing";
+        const decision = publishRun(run, published, at);
+        if (decision === "updated")
+          await db.query(
+            "UPDATE research_runs SET published_at = $2, updated_at = $3 WHERE id = $1",
+            [runId, run.publishedAt, run.updatedAt],
+          );
+        return decision;
+      });
     },
     async refreshGithub(runIds, now = Date.now(), fetchImpl = fetch) {
       await refreshWatch(
         {
           book,
-          runs(ids) {
-            return ids.flatMap((id) => {
-              const row = runById.get(id) as RunRow | undefined;
-              const stored = row ? storedFrom(row) : null;
-              if (!stored) return [];
-              const user = userById.get(stored.userId) as { login: string } | undefined;
-              return [
-                {
-                  run: {
-                    id: stored.id,
-                    owner: stored.owner,
-                    repo: stored.repo,
-                    number: stored.number,
-                    isPr: stored.isPr,
-                    publishedAt: stored.publishedAt,
-                    status: stored.status,
-                    report: stored.report,
-                  },
-                  researcherLogin: user?.login ?? "",
-                },
-              ];
-            });
+          async runs(ids) {
+            const runs = await loadRuns(pool, "WHERE r.id = ANY($1::text[])", [ids]);
+            const authors = await authorsFor(runs);
+            return runs.map((run) => ({
+              run,
+              researcherLogin: authors.get(run.userId)?.login ?? "",
+            }));
           },
         },
         runIds,

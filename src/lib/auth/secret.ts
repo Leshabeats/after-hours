@@ -16,7 +16,7 @@ export function readAuthSecret(): string {
     }
     return fromEnv;
   }
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL) {
     throw new Error("AUTH_SECRET is required in production.");
   }
   const file = join(dataDirectory(), ".auth-secret");

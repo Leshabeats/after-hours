@@ -20,7 +20,12 @@ export default defineConfig(({ command, isPreview }) => ({
     tailwindcss(),
     tanstackStart(),
     ...(command === "build" || isPreview
-      ? [nitro({ preset: process.env.NITRO_PRESET || "node-server" })]
+      ? [
+          nitro({
+            preset: process.env.NITRO_PRESET || "node-server",
+            vercel: { functions: { regions: ["fra1"], runtime: "nodejs22.x" } },
+          }),
+        ]
       : []),
     viteReact(),
   ],

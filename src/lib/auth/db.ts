@@ -1,41 +1,22 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { dataDirectory } from "./data-dir.ts";
-import { createSqliteJournal, upsertUser, type JournalRepo } from "@/lib/journal/store";
-import type { SessionUser } from "@/lib/journal/types";
-import { createSqliteResearch, type ResearchRepo } from "@/lib/research/store";
-import { createSqliteUsage, type UsageRepo } from "@/lib/usage/store";
+import { getPool } from "../db/postgres.ts";
+import { createPostgresJournal, upsertUser, type JournalRepo } from "../journal/store.ts";
+import type { SessionUser } from "../journal/types.ts";
+import { createPostgresResearch, type ResearchRepo } from "../research/store.ts";
+import { createPostgresUsage, type UsageRepo } from "../usage/store.ts";
 
 let journal: JournalRepo | undefined;
 let usage: UsageRepo | undefined;
 let research: ResearchRepo | undefined;
-let sqlite: DatabaseSync | undefined;
-
-function openDb() {
-  if (sqlite) return sqlite;
-  const dir = dataDirectory();
-  mkdirSync(dir, { recursive: true });
-  sqlite = new DatabaseSync(join(dir, "after-hours.sqlite"));
-  return sqlite;
-}
 
 export function getJournalRepo(): JournalRepo {
-  if (!journal) journal = createSqliteJournal(openDb());
-  return journal;
+  return (journal ??= createPostgresJournal(getPool()));
 }
-
 export function getUsageRepo(): UsageRepo {
-  if (!usage) usage = createSqliteUsage(openDb());
-  return usage;
+  return (usage ??= createPostgresUsage(getPool()));
 }
-
 export function getResearchRepo(): ResearchRepo {
-  if (!research) research = createSqliteResearch(openDb());
-  return research;
+  return (research ??= createPostgresResearch(getPool()));
 }
-
-export function saveUser(user: SessionUser) {
-  getJournalRepo();
-  upsertUser(openDb(), user);
+export async function saveUser(user: SessionUser) {
+  await upsertUser(getPool(), user);
 }

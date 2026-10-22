@@ -14,53 +14,48 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { isolatedDatabase } from "../src/lib/db/testing.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { signPayload } from "../src/lib/auth/secret.ts";
-import { createSqliteJournal, upsertUser } from "../src/lib/journal/store.ts";
-import { createSqliteResearch } from "../src/lib/research/store.ts";
+import { createPostgresJournal, upsertUser } from "../src/lib/journal/store.ts";
+import { createPostgresResearch } from "../src/lib/research/store.ts";
 import { enqueue, emptyQueue, readQueue, writeQueue } from "../src/lib/research/queue.ts";
-import { createSqliteUsage } from "../src/lib/usage/store.ts";
+import { createPostgresUsage } from "../src/lib/usage/store.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const entry = join(root, ".output/server/index.mjs");
 assert.ok(existsSync(entry), "Run npm run build with the node-server preset first.");
 const temp = mkdtempSync(join(tmpdir(), "after-hours-production-"));
-const dataDir = join(temp, "persistent");
-mkdirSync(dataDir);
-const db = new DatabaseSync(join(dataDir, "after-hours.sqlite"));
+const isolated = await isolatedDatabase();
+const db = isolated.pool;
 const user = { id: "smoke-owner", login: "after-hours-smoke", name: "Smoke", avatarUrl: "" };
 const other = { ...user, id: "smoke-other", login: "after-hours-other" };
 const secret = randomBytes(32).toString("hex");
 const cookie = (account) =>
   `ah_session=${signPayload({ ...account, exp: Date.now() + 600_000 }, secret)}`;
-const journal = createSqliteJournal(db);
-upsertUser(db, user);
-upsertUser(db, other);
-journal.take(user.id, {
+const journal = createPostgresJournal(db);
+await upsertUser(db, user);
+await upsertUser(db, other);
+await journal.take(user.id, {
   id: "vitejs/vite#23221",
   owner: "vitejs",
   repo: "vite",
   number: 23221,
-  title: "Existing journal before research upgrade",
+  title: "Existing persistent journal",
   kind: "blinding",
   url: "https://github.com/vitejs/vite/issues/23221",
   isPr: false,
   status: "taken",
   takenAt: Date.now(),
 });
-createSqliteUsage(db).record(user.id, {
+await createPostgresUsage(db).record(user.id, {
   at: Date.now(),
   harness: "legacy-smoke",
   model: "fixture",
   inputTokens: 7,
   outputTokens: 3,
 });
-assert.equal(
-  db.prepare("SELECT name FROM sqlite_master WHERE name = 'research_runs'").get(),
-  undefined,
-);
 
 const reservation = createServer();
 reservation.listen(0, "127.0.0.1");
@@ -73,7 +68,7 @@ const origin = `http://127.0.0.1:${port}`;
 const env = {
   ...process.env,
   NODE_ENV: "production",
-  DATA_DIR: dataDir,
+  DATABASE_URL: isolated.connectionString,
   AUTH_SECRET: secret,
   APP_ORIGIN: origin,
   GITHUB_CLIENT_ID: "",
@@ -195,14 +190,39 @@ try {
   assert.equal(callback.headers.get("location"), `${origin}/log?auth=error`);
   assert.equal(callback.headers.get("set-cookie"), null);
   assert.equal((await post({})).status, 401);
-  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'research_runs'").get());
-  assert.equal(journal.list(user.id).length, 1);
-  assert.equal(createSqliteUsage(db).list(user.id)[0].inputTokens, 7);
-  console.log("PASS production HTTP, anonymous auth rejection, existing database upgrade");
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 1);
+  assert.equal((await journal.list(user.id)).length, 1);
+  assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
+  const usageBody = {
+    harness: "http-smoke",
+    model: "fixture",
+    inputTokens: 11,
+    outputTokens: 4,
+    userId: other.id,
+  };
+  assert.equal(
+    (
+      await request("/api/usage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(usageBody),
+      })
+    ).status,
+    401,
+  );
+  const usageResponse = await request("/api/usage", {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: cookie(user) },
+    body: JSON.stringify(usageBody),
+  });
+  assert.equal(usageResponse.status, 200);
+  assert.equal((await usageResponse.json()).usage.allTimeTokens, 25);
+  assert.deepEqual(await createPostgresUsage(db).list(other.id), []);
+  console.log("PASS production HTTP, anonymous auth rejection, persistent PostgreSQL schema");
 
-  const repo = createSqliteResearch(db);
-  const ownerGrant = repo.createGrant(user.id, Date.now());
-  const otherGrant = repo.createGrant(other.id, Date.now());
+  const repo = createPostgresResearch(db);
+  const ownerGrant = await repo.createGrant(user.id, Date.now());
+  const otherGrant = await repo.createGrant(other.id, Date.now());
   const body = {
     threadId: "smoke_thread_0001",
     missionId: "vitejs/vite#23221",
@@ -243,13 +263,13 @@ try {
   const first = await post(body, ownerGrant.token);
   assert.equal(first.status, 200);
   assert.equal(first.body.replay, false);
-  assert.equal(repo.readRun(user.id, body.threadId)?.userId, user.id);
+  assert.equal((await repo.readRun(user.id, body.threadId))?.userId, user.id);
   assert.equal((await post(body, ownerGrant.token)).body.replay, true);
   assert.equal((await post(body, otherGrant.token)).status, 403);
-  assert.equal(repo.readRun(other.id, body.threadId), null);
-  assert.equal(repo.readLimit(other.id), null);
-  assert.equal(repo.setPublished(other.id, first.body.run.id, false, Date.now()), "missing");
-  assert.equal(repo.authorBoard(user.login, null).publicSpend.totalTokens, 125);
+  assert.equal(await repo.readRun(other.id, body.threadId), null);
+  assert.equal(await repo.readLimit(other.id), null);
+  assert.equal(await repo.setPublished(other.id, first.body.run.id, false, Date.now()), "missing");
+  assert.equal((await repo.authorBoard(user.login, null)).publicSpend.totalTokens, 125);
 
   for (const path of ["/m/vitejs/vite/23221", `/u/${user.login}`]) {
     const publicPage = await html(path);
@@ -260,8 +280,8 @@ try {
       "No private limit on public page",
     );
   }
-  assert.ok((await html("/log", user)).includes("Existing journal before research upgrade"));
-  assert.ok(!(await html("/log", other)).includes("Existing journal before research upgrade"));
+  assert.ok((await html("/log", user)).includes("Existing persistent journal"));
+  assert.ok(!(await html("/log", other)).includes("Existing persistent journal"));
   console.log(
     "PASS authenticated delivery, public mission/profile, replay, token accounting, account isolation",
   );
@@ -277,10 +297,10 @@ try {
   await start();
   assert.equal(await flush(tokenFile, queuePath, 0), "flushed");
   assert.equal(Object.keys(readQueue(queuePath).pending).length, 0);
-  assert.equal(repo.authorBoard(user.login, null).publicSpend.totalTokens, 125);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM research_turns").get().n, 1);
+  assert.equal((await repo.authorBoard(user.login, null)).publicSpend.totalTokens, 125);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM research_turns")).rows[0].n, 1);
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
-  assert.ok((await html("/log", user)).includes("Existing journal before research upgrade"));
+  assert.ok((await html("/log", user)).includes("Existing persistent journal"));
   console.log("PASS production restart from a new cwd, disk queue recovery, no duplicate spend");
 
   for (const status of ["waiting", "interrupted"]) {
@@ -290,7 +310,7 @@ try {
     assert.equal(result.body.run.publishedAt, null);
     assert.equal(result.body.run.report, null);
   }
-  assert.equal(repo.authorBoard(user.login, null).reports.length, 1);
+  assert.equal((await repo.authorBoard(user.login, null)).reports.length, 1);
   const second = await post(
     {
       ...body,
@@ -301,24 +321,30 @@ try {
     ownerGrant.token,
   );
   assert.equal(second.status, 200);
-  assert.equal(repo.authorBoard(user.login, null).reports.length, 2);
-  assert.equal(repo.authorBoard(user.login, null).publicSpend.totalTokens, 250);
-  repo.setPublished(user.id, first.body.run.id, false, Date.now());
+  assert.equal((await repo.authorBoard(user.login, null)).reports.length, 2);
+  assert.equal((await repo.authorBoard(user.login, null)).publicSpend.totalTokens, 250);
+  await repo.setPublished(user.id, first.body.run.id, false, Date.now());
   for (const path of ["/m/vitejs/vite/23221", `/u/${user.login}`]) {
     assert.ok(!(await html(path)).includes(body.report.findings), path);
   }
-  assert.equal(repo.authorBoard(user.login, null).publicSpend.totalTokens, 125);
+  assert.equal((await repo.authorBoard(user.login, null)).publicSpend.totalTokens, 125);
   assert.ok((await html(`/u/${user.login}`, user)).includes(body.report.findings));
-  repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
+  assert.equal(await repo.setPublished(user.id, first.body.run.id, true, Date.now()), "updated");
+  assert.equal((await repo.authorBoard(user.login, null)).publicSpend.totalTokens, 250);
+  assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
+  await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 1);
   console.log(
-    "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, SQLite integrity",
+    "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );
   passed = true;
 } finally {
   await stop();
-  db.close();
+  await isolated.close();
   if (passed) rmSync(temp, { recursive: true, force: true });
-  else console.error(`Smoke failed; isolated data and server logs retained in ${temp}`);
+  else
+    console.error(
+      `Smoke failed; server logs and queue retained in ${temp}; isolated DB schema removed.`,
+    );
 }

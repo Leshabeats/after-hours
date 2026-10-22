@@ -63,7 +63,7 @@ describe("research delivery queue", () => {
     const dir = mkdtempSync(join(tmpdir(), "ah-queue-"));
     const path = join(dir, "queue.json");
     const repo = createMemoryResearch();
-    const token = repo.createGrant("owner", NOW).token;
+    const token = (await repo.createGrant("owner", NOW)).token;
     let fail = true;
     const post = async (payload: unknown): Promise<QueuePostResult> => {
       if (fail) throw new Error("offline");
@@ -84,7 +84,7 @@ describe("research delivery queue", () => {
     assert.deepEqual(readQueue(path).pending, {});
     const again = await flushQueue(readQueue(path), post);
     assert.equal(again.stopped, null);
-    const run = repo.readRun("owner", THREAD);
+    const run = await repo.readRun("owner", THREAD);
     assert.equal(run?.turns.length, 1);
     assert.equal(run?.turns[0]?.usage.inputTokens, 12);
     assert.equal(run?.publishedAt, NOW);
@@ -94,7 +94,7 @@ describe("research delivery queue", () => {
 
   it("parks a conflicting completion and stops the rest of the pass on 401", async () => {
     const repo = createMemoryResearch();
-    const token = repo.createGrant("owner", NOW).token;
+    const token = (await repo.createGrant("owner", NOW)).token;
     await handleResearchPost(request(token, body(THREAD)), repo, NOW);
     let posts = 0;
     const post = async (payload: unknown): Promise<QueuePostResult> => {
@@ -113,8 +113,8 @@ describe("research delivery queue", () => {
     assert.equal(flushed.stopped, "unauthorized");
     assert.equal(flushed.queue.blocked[THREAD]?.status, 409);
     assert.equal(flushed.queue.pending[OTHER] != null, true);
-    assert.equal(repo.readRun("owner", THREAD)?.report?.findings, "Уже исправлено");
-    assert.equal(repo.readRun("owner", OTHER), null);
+    assert.equal((await repo.readRun("owner", THREAD))?.report?.findings, "Уже исправлено");
+    assert.equal(await repo.readRun("owner", OTHER), null);
     const parked = await flushQueue(flushed.queue, post);
     assert.equal(parked.stopped, "unauthorized");
     assert.equal(posts, 3);
