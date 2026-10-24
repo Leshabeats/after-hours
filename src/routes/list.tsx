@@ -1,16 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { NightShell } from "@/components/night-shell";
-import { ProjectCard } from "@/components/project-card";
+import { ProjectCard, DiscoveryStatus } from "@/components/project-card";
 import { UrlIntake } from "@/components/url-intake";
 import { CatalogFilters } from "@/components/catalog-filters";
+import { filterDiscovery } from "@/lib/discovery/presentation";
+import type { ProjectCard as Project } from "@/lib/github-live";
+import type { DiscoveryCard } from "@/lib/discovery/types";
 import { getProjects } from "@/lib/api";
-import {
-  LANGUAGES,
-  getCategory,
-  parseCatalogSearch,
-  parseCategoryId,
-} from "@/lib/catalog";
+import { LANGUAGES, getCategory, parseCatalogSearch, parseCategoryId } from "@/lib/catalog";
 
 export const Route = createFileRoute("/list")({
   validateSearch: parseCatalogSearch,
@@ -25,16 +23,17 @@ export const Route = createFileRoute("/list")({
   pendingComponent: function ListPending() {
     return (
       <NightShell>
-        <p className="font-mono text-xs uppercase tracking-caps text-muted">
-          Загрузка эфира
-        </p>
+        <p className="font-mono text-xs uppercase tracking-caps text-muted">Загрузка эфира</p>
       </NightShell>
     );
   },
   component: ListPage,
 });
 
-function matches(project: { repo: string; owner: string; description: string; blurb: string }, query: string) {
+function matches(
+  project: { repo: string; owner: string; description: string; blurb: string },
+  query: string,
+) {
   return (
     project.repo.toLowerCase().includes(query) ||
     project.owner.toLowerCase().includes(query) ||
@@ -61,15 +60,14 @@ function ListPage() {
       ecosystem: apply(shelf.ecosystem),
       direction: apply(shelf.direction),
       libraries: apply(shelf.libraries),
+      discovery: apply(filterDiscovery(shelf.discovery?.cards, search)),
     };
-  }, [shelf, q]);
+  }, [shelf, q, search]);
 
   return (
     <NightShell>
       <div className="stagger-in">
-        <p className="font-mono text-xs uppercase tracking-caps text-accent">
-          The list
-        </p>
+        <p className="font-mono text-xs uppercase tracking-caps text-accent">The list</p>
         <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">
           {language ? language.label : category.label}
         </h1>
@@ -79,9 +77,13 @@ function ListPage() {
             : `Проекты направления ${category.label}. Язык добавит его экосистему и библиотеки. Ишью открываются внутри.`}
         </p>
         <p className="mt-2 font-mono text-xs text-faint">
-          {shelf.live
-            ? "Эфир GitHub открыт."
-            : "Описания с полки. Логотипы подтянутся, когда эфир ответит."}
+          {cat === "games"
+            ? shelf.live
+              ? "Проекты с полки: данные загружены с GitHub."
+              : "Проекты с полки: сохранённые описания."
+            : shelf.live
+              ? "Эфир GitHub открыт."
+              : "Описания с полки. Логотипы подтянутся, когда эфир ответит."}
         </p>
       </div>
 
@@ -89,7 +91,7 @@ function ListPage() {
         <UrlIntake />
       </div>
 
-      <CatalogFilters to="/list" cat={cat} lang={lang} />
+      <CatalogFilters to="/list" cat={cat} lang={lang} tag={search.tag} view={search.view} />
 
       <label className="sr-only" htmlFor="project-search">
         Поиск
@@ -103,13 +105,48 @@ function ListPage() {
         className="mt-4 h-12 w-full max-w-md rounded-md bg-surface px-4 text-sm text-fg placeholder:text-faint shadow-border focus:outline-none focus:ring-2 focus:ring-accent/70"
       />
 
+      {cat === "games" ? (
+        <section className="mt-10" aria-label="Ежедневные находки GameDev">
+          <h2 className="font-mono text-xs uppercase tracking-caps text-muted">
+            Ежедневные находки GameDev
+          </h2>
+          <DiscoveryStatus discovery={shelf.discovery} />
+          <p className="mt-2 text-xs leading-relaxed text-faint">
+            «Создан» — возраст репозитория. «Найден» — первое обнаружение каталогом. Область и тип
+            находки фильтруют эту секцию.
+          </p>
+          {filtered.discovery.length ? (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {filtered.discovery.map((project) => (
+                <ProjectCard key={`${project.owner}/${project.repo}`} project={project} />
+              ))}
+            </div>
+          ) : shelf.discovery?.status !== "unavailable" && shelf.discovery?.updatedAt != null ? (
+            <p className="mt-4 text-sm text-muted">
+              {shelf.discovery.cards.length
+                ? "По выбранным фильтрам находок пока нет."
+                : "В опубликованной подборке пока нет находок."}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <ProjectSection title="Экосистема" projects={filtered.ecosystem} />
       <ProjectSection
-        title={language ? `В направлении ${category.label}` : category.label}
+        title={
+          cat === "games"
+            ? "GameDev · с полки"
+            : language
+              ? `В направлении ${category.label}`
+              : category.label
+        }
         projects={filtered.direction}
       />
       <ProjectSection title="Библиотеки" projects={filtered.libraries} />
-      {filtered.ecosystem.length + filtered.direction.length + filtered.libraries.length ===
+      {filtered.discovery.length +
+        filtered.ecosystem.length +
+        filtered.direction.length +
+        filtered.libraries.length ===
       0 ? (
         <p className="mt-12 text-sm text-muted">В этой полосе ночь пустая.</p>
       ) : null}
@@ -122,17 +159,7 @@ function ProjectSection({
   projects,
 }: {
   title: string;
-  projects: {
-    owner: string;
-    repo: string;
-    blurb: string;
-    description: string;
-    logoUrl: string;
-    stars: number | null;
-    language: string | null;
-    url: string;
-    live: boolean;
-  }[];
+  projects: (Project | DiscoveryCard)[];
 }) {
   if (projects.length === 0) return null;
   return (

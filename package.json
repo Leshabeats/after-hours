@@ -14,11 +14,12 @@
     "test:production": "node --experimental-strip-types scripts/production-smoke.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/lib/db/*.test.ts src/lib/journal/*.test.ts src/lib/auth/*.test.ts src/lib/usage/*.test.ts src/lib/research/*.test.ts scripts/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/lib/db/*.test.ts src/lib/discovery/*.test.ts src/lib/journal/*.test.ts src/lib/auth/*.test.ts src/lib/usage/*.test.ts src/lib/research/*.test.ts scripts/*.test.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
     "build:vercel": "NITRO_PRESET=vercel vite build",
-    "db:migrate": "node --env-file-if-exists=.env.local --experimental-strip-types scripts/db-migrate.mjs"
+    "db:migrate": "node --env-file-if-exists=.env.local --experimental-strip-types scripts/db-migrate.mjs",
+    "catalog:sync": "node --experimental-strip-types scripts/catalog-sync.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

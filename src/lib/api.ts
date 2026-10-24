@@ -11,10 +11,15 @@ export const getProjects = createServerFn({ method: "GET" })
   )
   .handler(async ({ data }) => {
     const { loadProjects } = await import("./github-live");
-    return loadProjects({
-      category: parseCategoryId(data.category),
+    const category = parseCategoryId(data.category);
+    const shelf = loadProjects({
+      category,
       language: parseLanguageId(data.language),
     });
+    if (category !== "games") return shelf;
+    const { readDiscovery } = await import("./discovery/read");
+    const [projects, discovery] = await Promise.all([shelf, readDiscovery()]);
+    return { ...projects, discovery };
   });
 
 export const getRepoMissions = createServerFn({ method: "GET" })
@@ -41,4 +46,3 @@ export const getMission = createServerFn({ method: "POST" })
     const { loadMission } = await import("./github-live");
     return loadMission(data.owner, data.repo, data.number);
   });
-
