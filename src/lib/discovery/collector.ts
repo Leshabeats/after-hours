@@ -16,6 +16,8 @@ const TOPICS = [
 ];
 const LEASE_MS = 120_000;
 const MAX_CANDIDATES = 300;
+// Reserve equal space for each topic and each created/pushed query window.
+const MAX_QUERY_CANDIDATES = MAX_CANDIDATES / (TOPICS.length * 2);
 const MAX_ENRICH = 40;
 const slug = z
   .string()
@@ -94,12 +96,13 @@ const taskSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
   phase: z.enum(["metadata", "activity"]),
   tasks: z.array(taskSchema).max(400),
   ids: z.array(z.string()).max(MAX_CANDIDATES),
+  admissions: z.record(z.string(), z.number().int().min(0).max(MAX_QUERY_CANDIDATES)),
 });
 type Checkpoint = z.infer<typeof checkpointSchema>;
 
@@ -154,7 +157,15 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     const [owner, repo] = full.split("/");
     tasks.push({ kind: "repo", owner, repo });
   }
-  return { version: 1, startedAt: now, index: 0, phase: "metadata", tasks, ids: [] };
+  return {
+    version: 2,
+    startedAt: now,
+    index: 0,
+    phase: "metadata",
+    tasks,
+    ids: [],
+    admissions: {},
+  };
 }
 
 function unavailable(repo: StoredRepository, now: number): Observation {
@@ -270,7 +281,10 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
   try {
     const existing = await store.repositories();
     let cp =
-      lease.checkpoint === null
+      lease.checkpoint === null ||
+      (typeof lease.checkpoint === "object" &&
+        "version" in lease.checkpoint &&
+        lease.checkpoint.version === 1)
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -303,8 +317,14 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               if (!repo) continue;
               // Preserve exclusion updates for existing IDs, but do not ingest unrelated repositories.
               if (!eligible(repo) && !repos.has(repo.id)) continue;
-              if (!cp.ids.includes(repo.id) && cp.ids.length >= MAX_CANDIDATES) continue;
-              if (!cp.ids.includes(repo.id)) cp.ids.push(repo.id);
+              // Existing IDs (including overlap from earlier queries) need no new slot.
+              // Persist admissions with the cursor so a retry cannot reset a topic's budget.
+              if (!repos.has(repo.id) && !cp.ids.includes(repo.id)) {
+                const admitted = cp.admissions[task.q] ?? 0;
+                if (admitted >= MAX_QUERY_CANDIDATES || cp.ids.length >= MAX_CANDIDATES) continue;
+                cp.ids.push(repo.id);
+                cp.admissions[task.q] = admitted + 1;
+              }
               observations.push(repo);
             }
             if (
@@ -340,9 +360,9 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           } else {
             const repo = repos.get(task.id);
             if (repo && eligible(repo)) {
-              const release = await request(`/repos/${repo.owner}/${repo.repo}/releases/latest`);
+              const release = await request(`/repositories/${repo.id}/releases/latest`);
               const pulls = await request(
-                `/repos/${repo.owner}/${repo.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=30`,
+                `/repositories/${repo.id}/pulls?state=closed&sort=updated&direction=desc&per_page=30`,
               );
               const releaseData =
                 release === null

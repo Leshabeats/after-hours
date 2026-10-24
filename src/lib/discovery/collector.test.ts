@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collectDiscovery, parseRepository } from "./collector.ts";
 import { buildSnapshot, classifyRepository, DAY, eligible } from "./ranking.ts";
-import { createMemoryDiscovery } from "./store.ts";
+import { createMemoryDiscovery, createPostgresDiscovery } from "./store.ts";
+import { postgresTest } from "../db/testing.ts";
 import type { DiscoverySnapshot, StoredRepository } from "./types.ts";
 
 const NOW = Date.UTC(2026, 9, 24, 12);
@@ -336,4 +337,131 @@ test("unavailable counts never become an artificial weekly baseline on recovery"
     assert.equal(published.badges.includes("growing"), false);
     assert.equal((await store.metrics(0)).length, 2);
   }
+});
+
+async function fairSearch(store: import("./types.ts").DiscoveryStore) {
+  const lease = await store.acquire(NOW - DAY, 1000);
+  assert.ok(lease);
+  await store.save(lease, NOW - DAY, 1000, [repo({ id: "900000", observedAt: NOW - DAY })], null);
+  await store.publish(lease, NOW - DAY, { version: 1, generatedAt: NOW - DAY, cards: [] });
+  const queries = new Map<string, number>();
+  const h = harness((url) => {
+    const u = new URL(url);
+    if (u.pathname === "/repositories/900000") return json(raw({ id: 900000 }));
+    if (u.pathname !== "/search/repositories") return;
+    const q = u.searchParams.get("q")!;
+    if (!queries.has(q)) queries.set(q, queries.size);
+    const group = queries.get(q)!;
+    const page = Number(u.searchParams.get("page"));
+    return json({
+      items: [
+        raw({ id: 900000 }),
+        ...Array.from({ length: 29 }, (_, i) =>
+          raw({
+            id: 10000 + group * 100 + page * 30 + i,
+            name: `candidate-${group}-${page}-${i}`,
+          }),
+        ),
+      ],
+      total_count: 60,
+      incomplete_results: false,
+    });
+  });
+  assert.equal((await collectDiscovery({ store, ...h, maxRequests: 3 })).status, "partial");
+  const resumed = await collectDiscovery({ store, ...h });
+  assert.equal(resumed.status, "published");
+  const repos = await store.repositories();
+  assert.equal(queries.size, 20);
+  // Each topic's creation and activity window keeps its own 15 new-ID slots.
+  for (const q of queries.keys())
+    assert.equal(repos.filter((r) => r.id !== "900000" && r.source === q).length, 15, q);
+  assert.equal(repos.length, 301);
+  assert.equal(h.urls.filter((url) => url.includes("/search/")).length, 40);
+  assert.ok(resumed.requests <= 500);
+}
+test("search admission is fair across all topics/windows after checkpoint resume", async () => {
+  await fairSearch(createMemoryDiscovery());
+});
+postgresTest("postgres: fair search admission and checkpoint budgets", async (pool) => {
+  await fairSearch(createPostgresDiscovery(pool));
+});
+
+async function activityIdentity(store: import("./types.ts").DiscoveryStore) {
+  const lease = await store.acquire(NOW - 7 * DAY, 8 * DAY);
+  assert.ok(lease);
+  const target = repo({ id: "999999", observedAt: NOW - 7 * DAY, stars: 10 });
+  await store.save(lease, NOW - 7 * DAY, 8 * DAY, [target], null);
+  await store.save(
+    lease,
+    NOW - 1000,
+    8 * DAY,
+    [
+      ...Array.from({ length: 180 }, (_, i) =>
+        repo({ id: String(1000 + i), repo: `old-${i}`, observedAt: NOW - DAY }),
+      ),
+      { ...target, stars: 200, observedAt: NOW - 1000, countsObservedAt: NOW - 1000 },
+    ],
+    null,
+  );
+  await store.publish(lease, NOW - 1000, { version: 1, generatedAt: NOW - 1000, cards: [] });
+  const h = harness((url) => {
+    if (url.includes("/search/"))
+      return json({ items: [], total_count: 0, incomplete_results: false });
+    if (url.includes("/repos/games/moon/")) {
+      if (url.endsWith("/releases/latest"))
+        return json({
+          draft: false,
+          prerelease: false,
+          published_at: new Date(NOW - DAY).toISOString(),
+        });
+      return json([
+        {
+          merged_at: new Date(NOW - DAY).toISOString(),
+          user: { login: "replacement", type: "User" },
+        },
+      ]);
+    }
+    if (url === "https://api.github.com/repositories/999999/releases/latest") return json({}, 404);
+    if (url.includes("/repositories/999999/pulls?")) return json([]);
+  });
+  assert.equal((await collectDiscovery({ store, ...h })).status, "published");
+  const saved = (await store.repositories()).find((r) => r.id === target.id)!;
+  assert.equal(saved.releaseAt, null);
+  assert.equal(saved.mergedPrs, 0);
+  assert.ok(saved.activityCheckedAt);
+  assert.equal(
+    (await store.snapshot())!.cards.find((r) => r.id === target.id)!.badges.includes("growing"),
+    false,
+  );
+  assert.equal(
+    h.urls.some((url) => url.includes("/repos/games/moon/")),
+    false,
+  );
+  assert.ok(h.urls.some((url) => url.includes("/repositories/999999/pulls?")));
+}
+test("activity outside the metadata refresh budget cannot use a replacement slug", async () => {
+  await activityIdentity(createMemoryDiscovery());
+});
+postgresTest("postgres: stable activity identity beyond metadata refresh budget", async (pool) => {
+  await activityIdentity(createPostgresDiscovery(pool));
+});
+
+test("legacy admission checkpoints restart safely while retaining saved observations", async () => {
+  const store = createMemoryDiscovery();
+  const lease = await store.acquire(NOW, 1000);
+  assert.ok(lease);
+  await store.save(lease, NOW, 1000, [repo()], {
+    version: 1,
+    startedAt: NOW,
+    index: 0,
+    phase: "metadata",
+    tasks: [],
+    ids: ["10"],
+  });
+  await store.release(lease, NOW, "interrupted legacy scan");
+  const h = harness();
+  assert.equal((await collectDiscovery({ store, ...h })).status, "published");
+  assert.equal(h.urls.filter((url) => url.includes("/search/")).length, 20);
+  assert.equal((await store.repositories()).length, 1);
+  assert.equal((await store.repositories())[0].firstSeenAt, NOW);
 });

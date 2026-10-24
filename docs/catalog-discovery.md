@@ -8,9 +8,9 @@ rules are deterministic. Manual taxonomy/fork exceptions live in
 The daily feed is separate from the curated shelf and language libraries. No
 minimum star count is applied to discovery. `createdAt` is GitHub's creation time;
 `firstSeenAt` is when this catalog first observed the stable GitHub repository ID.
-Known repositories refresh through their stable API IDs, so reused old slugs do
-not replace the original identity. Unavailable repository checks update exclusion
-state but preserve `countsObservedAt`; they insert no daily count metric. Renames
+Known repositories and their release/PR samples are fetched through stable API
+IDs, so reused old slugs cannot replace identity or supply unrelated activity.
+Unavailable repository checks update exclusion state but preserve `countsObservedAt`; they insert no daily count metric. Renames
 do not create a new repository. The growing badge requires 6–9 days of
 actual observations (the displayed interval is exact to 0.1 days), at least ten
 additional stars and 2% relative growth with a small-base floor, plus a recent
@@ -21,9 +21,14 @@ heuristic, not a trust certification. PR counts are a sample, not repository tot
 The collector queries ten topics for recently created and recently pushed
 repositories, at most two pages per query. Overlapping 30-day windows handle late
 indexing; incomplete API responses retain the checkpoint and prior publication.
-Search results are capped and are not exhaustive GitHub indexing. Up to 300 IDs
-from search and 180 existing repositories (oldest check first) are observed per
-scan; at most 40 eligible repositories receive release/PR enrichment. Explicit
+Search results are capped and are not exhaustive GitHub indexing. Each of the
+20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
+stored IDs consume no additional admission slots. These counters persist across
+retries. Legacy version-1 checkpoints restart with the fair admission policy,
+retaining stored observations and the last published snapshot. Search can update
+already stored IDs within its existing page/request bounds. Up to 180 existing
+repositories (oldest check first) are additionally refreshed per scan; at most 40
+eligible repositories receive release/PR enrichment. Explicit
 fork exceptions also receive a metadata refresh. Archived, disabled, empty,
 mirrored and ordinary fork repositories are omitted from published discovery.
 Known independent forks may be allowlisted. Undeclared mirrors cannot reliably
@@ -36,7 +41,10 @@ retry time rather than sleeping through runner limits. Each successful task save
 its cursor and observations atomically, renewing a fenced lease. Expired writers
 cannot save or publish. Run retries resume; scans interrupted for over 48 hours
 restart their query windows. Partial scans never replace the last complete JSON
-snapshot. A completed snapshot contains at most 100 cards. Daily metrics retain
+snapshot. A completed snapshot contains at most 100 cards: reserve the top 14
+per populated tag, sharing slots for multi-tag repositories, then fill spare slots
+by global relevance. Selected cards keep their relevance order; new engines cannot
+crowd SteamOS/Proton out before filters run. Daily metrics retain
 90 days; old completed runs are bounded. Repository identities remain for
 first-discovery history and rotation. The UI marks published data older than 48
 hours as delayed and falls back to the curated shelf if storage is unavailable.

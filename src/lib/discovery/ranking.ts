@@ -1,10 +1,11 @@
-import type {
-  DailyMetric,
-  DiscoveryCard,
-  DiscoverySnapshot,
-  GameTag,
-  Observation,
-  StoredRepository,
+import {
+  GAME_TAGS,
+  type DailyMetric,
+  type DiscoveryCard,
+  type DiscoverySnapshot,
+  type GameTag,
+  type Observation,
+  type StoredRepository,
 } from "./types.ts";
 
 export const DAY = 86_400_000;
@@ -156,6 +157,33 @@ export function buildSnapshot(
       b.card.createdAt - a.card.createdAt ||
       a.card.id.localeCompare(b.card.id),
   );
-  // Keep room for every subcategory; UI paginates/filters a bounded snapshot.
-  return { version: 1, generatedAt: now, cards: scored.slice(0, 100).map(({ card }) => card) };
+  const ids = new Set<string>();
+  const slugs = new Set<string>();
+  const ranked = scored.filter(({ card }) => {
+    const slug = `${card.owner}/${card.repo}`.toLowerCase();
+    if (ids.has(card.id) || slugs.has(slug)) return false;
+    ids.add(card.id);
+    slugs.add(slug);
+    return true;
+  });
+  const limit = 100;
+  const perTag = Math.floor(limit / GAME_TAGS.length);
+  const selected = new Set<string>();
+  // Reserve the highest-ranked candidates in each tag before filling spare slots.
+  // Overlapping tags share slots; the union of reservations cannot exceed the cap.
+  for (const { id: tag } of GAME_TAGS) {
+    for (const { card } of ranked.filter(({ card }) => card.tags.includes(tag)).slice(0, perTag)) {
+      selected.add(card.id);
+    }
+  }
+  for (const { card } of ranked) {
+    if (selected.size >= limit) break;
+    selected.add(card.id);
+  }
+  // Selection is tag-aware; presentation retains the global relevance ordering.
+  return {
+    version: 1,
+    generatedAt: now,
+    cards: ranked.filter(({ card }) => selected.has(card.id)).map(({ card }) => card),
+  };
 }
