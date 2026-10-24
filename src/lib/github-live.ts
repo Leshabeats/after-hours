@@ -1,3 +1,4 @@
+import type { DiscoveryLoad } from "./discovery/types.ts";
 import { SEED_MISSIONS, findSeed } from "./seed.ts";
 import {
   ecosystemProjects,
@@ -53,6 +54,7 @@ export type ProjectCard = CatalogRepo & {
 };
 
 export type ProjectShelf = {
+  discovery?: DiscoveryLoad;
   ecosystem: ProjectCard[];
   direction: ProjectCard[];
   libraries: ProjectCard[];
