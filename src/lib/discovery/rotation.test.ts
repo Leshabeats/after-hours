@@ -167,6 +167,7 @@ async function quietCatalog(store: DiscoveryStore) {
       assert.ok(h.now() - card.observedAt <= 2 * DAY);
       assert.equal(card.observedAt, stored.get(card.id)!.countsObservedAt);
       assert.ok(stored.get(card.id)!.observedAt >= START + day * DAY);
+      assert.ok(h.requests.includes(`/repositories/${card.id}`));
     }
     const metadata = h.requests.flatMap((p) => {
       const m = p.match(/^\/repositories\/(\d+)$/);

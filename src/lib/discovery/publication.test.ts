@@ -36,14 +36,14 @@ async function publication(store: DiscoveryStore) {
     releaseAt: NOW - 4 * DAY,
   });
   const checkpoints = {
-    version: 5,
+    version: 6,
     startedAt: NOW,
     index: 0,
     phase: "activity",
     tasks: [],
     ids: [],
     admissions: {},
-    metadataIds: fresh.map(String),
+    identityIds: fresh.map(String),
   };
   await store.save(
     lease,

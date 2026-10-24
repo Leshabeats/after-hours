@@ -115,13 +115,13 @@ const taskSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(5),
+  version: z.literal(6),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
   phase: z.enum(["metadata", "activity", "identity"]),
   tasks: z.array(taskSchema).max(400),
   ids: z.array(z.string()).max(MAX_CANDIDATES),
-  metadataIds: z.array(z.string().regex(/^\d+$/)).max(1500),
+  identityIds: z.array(z.string().regex(/^\d+$/)).max(1500),
   admissions: z.record(z.string(), z.number().int().min(0).max(MAX_QUERY_CANDIDATES)),
 });
 type Checkpoint = z.infer<typeof checkpointSchema>;
@@ -197,14 +197,14 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks.push({ kind: "repo", owner, repo });
   }
   return {
-    version: 5,
+    version: 6,
     startedAt: now,
     index: 0,
     phase: "metadata",
     tasks,
     ids: [],
     admissions: {},
-    metadataIds: [],
+    identityIds: [],
   };
 }
 
@@ -325,7 +325,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        [1, 2, 3, 4].includes(Number(lease.checkpoint.version)))
+        [1, 2, 3, 4, 5].includes(Number(lease.checkpoint.version)))
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -491,9 +491,17 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                   );
           if (previous) observations.push(unavailable(previous, now()));
         }
-        if (task.kind !== "activity") {
+        // A later search page may overwrite metadata obtained by an earlier ID
+        // request. Its old confirmation must not authorize the replacement body.
+        if (task.kind === "search" || (task.kind === "repo" && !task.id)) {
+          const changed = new Set(observations.map((r) => r.id));
+          cp = { ...cp, identityIds: cp.identityIds.filter((id) => !changed.has(id)) };
+        }
+        // Search/slug responses discover candidates; only stable-ID metadata requests
+        // confirm identity for publication, including replacement winners.
+        if (task.kind === "repo" && task.id) {
           const confirmed = observations.filter((r) => r.isPublic === true).map((r) => r.id);
-          cp = { ...cp, metadataIds: [...new Set([...cp.metadataIds, ...confirmed])] };
+          cp = { ...cp, identityIds: [...new Set([...cp.identityIds, ...confirmed])] };
         }
         cp = { ...cp, index: cp.index + 1 };
         await store.save(lease, now(), LEASE_MS, observations, cp);
@@ -554,7 +562,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         await store.save(lease, now(), LEASE_MS, [], cp);
         continue;
       }
-      const verified = new Set(cp.metadataIds);
+      const verified = new Set(cp.identityIds);
       const evaluatedAt = now();
       const desired = selectPublicationCandidates(current, metrics, evaluatedAt);
       const desiredIds = new Set(desired.map((card) => card.id));
@@ -570,7 +578,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         cp = {
           ...cp,
           index: 0,
-          metadataIds: cp.metadataIds.filter((id) => desiredIds.has(id)),
+          identityIds: cp.identityIds.filter((id) => desiredIds.has(id)),
           tasks: unverified.map((r) => ({
             kind: "repo",
             id: r.id,
@@ -589,7 +597,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         cp = {
           ...cp,
           index: 0,
-          metadataIds: cp.metadataIds.filter((id) => desiredIds.has(id)),
+          identityIds: cp.identityIds.filter((id) => desiredIds.has(id)),
           tasks: snapshot.cards.map((r) => ({
             kind: "repo",
             id: r.id,

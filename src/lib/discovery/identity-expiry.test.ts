@@ -31,14 +31,14 @@ async function expiry(store: DiscoveryStore) {
   const lease = await store.acquire(NOW, DAY);
   assert.ok(lease);
   const checkpoint = {
-    version: 5,
+    version: 6,
     startedAt: NOW,
     phase: "activity",
     index: 0,
     tasks: [],
     ids: [],
     admissions: {},
-    metadataIds: [],
+    identityIds: [],
   };
   const observed = (id: number, at: number, stars: number) => ({
     ...parseRepository(raw(id), at, "fixture")!,

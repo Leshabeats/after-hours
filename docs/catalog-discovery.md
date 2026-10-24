@@ -32,7 +32,7 @@ indexing; incomplete API responses retain the checkpoint and prior publication.
 Search results are capped and are not exhaustive GitHub indexing. Each of the
 20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1/2/3/4 checkpoints restart with the current admission and identity policy,
+retries. Legacy version-1/2/3/4/5 checkpoints restart with the current admission and identity policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
@@ -70,7 +70,10 @@ Search and the rotating metadata queue sample new counts. Expired identity tasks
 remeasure, including after a pause. Multi-tag fallbacks share slots,
 and fresh tag coverage is preserved within the same 100-candidate limit.
 
-The version-5 checkpoint records successful public metadata/identity validations.
+The version-6 checkpoint records successful public metadata validations obtained
+through stable-ID requests. Search and slug-only responses never grant these
+identity receipts, including for a later replacement winner. If a later search or
+slug response overwrites metadata, any earlier identity receipt is invalidated.
 Final ranking considers all eligible measurements within two days, using eleven
 days of history to retain their 6–9-day baselines. Every selected card must have a
 validation receipt before publication. Expiry, exclusion or changed tags can expose
