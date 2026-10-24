@@ -8,6 +8,35 @@ import type { ResearchDelivery, ResearchReport, ResearchTurn } from "../research
 import type { ObservedSubject, WatchRun } from "../research/github-watch.ts";
 import { migrate } from "./migrate.ts";
 import { postgresTest } from "./testing.ts";
+import { transaction } from "./postgres.ts";
+
+postgresTest(
+  "postgres: statement timeout is transaction-local on commit and rollback",
+  async (pool) => {
+    const baseline = (await pool.query("SHOW statement_timeout")).rows[0].statement_timeout;
+    const checkTimeout = async () => {
+      await transaction(pool, "timeout-fixture", async (client) => {
+        assert.equal(
+          (await client.query("SHOW statement_timeout")).rows[0].statement_timeout,
+          "15s",
+        );
+      });
+    };
+    await checkTimeout();
+    assert.equal((await pool.query("SHOW statement_timeout")).rows[0].statement_timeout, baseline);
+    await assert.rejects(
+      transaction(pool, "timeout-fixture", async (client) => {
+        assert.equal(
+          (await client.query("SHOW statement_timeout")).rows[0].statement_timeout,
+          "15s",
+        );
+        throw new Error("rollback fixture");
+      }),
+      /rollback fixture/,
+    );
+    assert.equal((await pool.query("SHOW statement_timeout")).rows[0].statement_timeout, baseline);
+  },
+);
 
 const report: ResearchReport = {
   schemaVersion: 1,

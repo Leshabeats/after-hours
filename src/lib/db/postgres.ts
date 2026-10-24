@@ -17,7 +17,6 @@ export function createPool(connectionString: string, max = 5): Pool {
     max,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
-    statement_timeout: 15_000,
   });
   // Pool errors occur on idle clients; active query failures still reject their caller.
   pool.on("error", (error) => console.error("PostgreSQL idle connection error", error.message));
@@ -45,6 +44,9 @@ export async function transaction<T>(
   let discard: Error | undefined;
   try {
     await client.query("BEGIN");
+    // Neon transaction pooling rejects statement_timeout in the startup packet.
+    // SET LOCAL stays with this transaction and resets on commit or rollback.
+    await client.query("SET LOCAL statement_timeout = 15000");
     // Transaction-scoped locks cover absent rows too, including concurrent first writes.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lock]);
     const result = await work(client);
