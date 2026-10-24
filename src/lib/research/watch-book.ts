@@ -1,6 +1,10 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Pool } from "pg";
+import { transaction, type Database } from "../db/postgres.ts";
 import {
   coordKey,
+  mergeObservation,
+  type FetchResult,
+  type GithubCoord,
   emptyHistory,
   emptySubject,
   planBindings,
@@ -15,15 +19,25 @@ import {
 } from "./github-watch.ts";
 
 export type WatchBook = {
-  bind(run: WatchRun): void;
-  due(runIds: readonly string[], now: number, pausedUntil: number): SubjectRow[];
-  read(id: string): SubjectRow | null;
-  apply(id: string, row: SubjectRow, facts: readonly FactDraft[]): void;
-  saveClosing(id: string, prs: readonly { number: number; merged: boolean }[]): void;
-  history(runs: readonly { id: string; researcherLogin: string }[]): Map<string, GithubHistory>;
-  closingSources(
+  bind(run: WatchRun): Promise<void>;
+  due(runIds: readonly string[], now: number, pausedUntil: number): Promise<SubjectRow[]>;
+  read(id: string): Promise<SubjectRow | null>;
+  apply(id: string, result: FetchResult, at: number): Promise<void>;
+  saveClosing(id: string, prs: readonly { number: number; merged: boolean }[]): Promise<void>;
+  history(
     runs: readonly { id: string; researcherLogin: string }[],
-  ): { id: string; owner: string; repo: string; number: number; closingKnown: boolean }[];
+  ): Promise<Map<string, GithubHistory>>;
+  closingSources(runs: readonly { id: string; researcherLogin: string }[]): Promise<
+    {
+      id: string;
+      owner: string;
+      repo: string;
+      number: number;
+      closingKnown: boolean;
+    }[]
+  >;
+  pausedUntil(): Promise<number>;
+  pause(until: number): Promise<void>;
 };
 
 type LinkRecord = {
@@ -111,10 +125,28 @@ function retarget(links: LinkRecord[], from: string, to: string) {
   }
 }
 
+// Resolve identity and freshness before changing links, facts, or subjects.
+function canonicalObservation(
+  current: SubjectRow | null | undefined,
+  node: SubjectRow | null | undefined,
+  coord: SubjectRow | null | undefined,
+  nodeId: string,
+  at: number,
+): SubjectRow | null {
+  for (const candidate of [current, node, coord]) {
+    if (!candidate) continue;
+    if (candidate.checkedAt != null && at < candidate.checkedAt) return null;
+    // Coordinates can be reused after a transfer; a known GitHub node is a distinct object.
+    if (candidate.nodeId && candidate.nodeId !== nodeId) return null;
+  }
+  return node ?? coord ?? current ?? null;
+}
+
 export function createMemoryWatch(newId: () => string): WatchBook {
   const subjects: SubjectRow[] = [];
   const links: LinkRecord[] = [];
   const facts: FactRecord[] = [];
+  let paused = 0;
 
   function findCoord(coord: PlannedLink) {
     const key = coordKey(coord);
@@ -130,7 +162,13 @@ export function createMemoryWatch(newId: () => string): WatchBook {
   }
 
   return {
-    bind(run) {
+    async pausedUntil() {
+      return paused;
+    },
+    async pause(until) {
+      paused = Math.max(paused, until);
+    },
+    async bind(run) {
       for (const planned of planBindings(run)) {
         const subject = ensure(planned);
         rememberLink(links, {
@@ -141,7 +179,7 @@ export function createMemoryWatch(newId: () => string): WatchBook {
         });
       }
     },
-    due(runIds, now, pausedUntil) {
+    async due(runIds, now, pausedUntil) {
       const wanted = new Set(runIds);
       const ids = new Set(
         links.filter((link) => wanted.has(link.runId)).map((link) => link.subjectId),
@@ -151,30 +189,41 @@ export function createMemoryWatch(newId: () => string): WatchBook {
         .sort((a, b) => (a.checkedAt ?? -1) - (b.checkedAt ?? -1) || (a.id < b.id ? -1 : 1))
         .map(cloneSubject);
     },
-    read(id) {
+    async read(id) {
       const row = subjects.find((subject) => subject.id === id);
       return row ? cloneSubject(row) : null;
     },
-    apply(id, row, nextFacts) {
-      let target = id;
-      if (row.nodeId) {
-        const other = subjects.find((subject) => subject.nodeId === row.nodeId && subject.id !== target);
-        if (other) {
-          retarget(links, target, other.id);
-          const index = subjects.findIndex((subject) => subject.id === target);
+    async apply(id, result, at) {
+      let current = subjects.find((subject) => subject.id === id);
+      if (current?.checkedAt != null && at < current.checkedAt) return;
+      if (result.type === "ok") {
+        const observed = result.observed;
+        const node = subjects.find((subject) => subject.nodeId === observed.nodeId);
+        const coord = subjects.find((subject) => coordKey(subject) === coordKey(observed));
+        const canonical = canonicalObservation(current, node, coord, observed.nodeId, at);
+        if (!canonical) return;
+        for (const from of new Set([current?.id, coord?.id])) {
+          if (!from || from === canonical.id) continue;
+          retarget(links, from, canonical.id);
+          for (const fact of [...facts]) {
+            if (fact.subjectId !== from) continue;
+            const duplicate = facts.some(
+              (item) =>
+                item.subjectId === canonical.id &&
+                item.kind === fact.kind &&
+                item.detail === fact.detail,
+            );
+            if (duplicate) facts.splice(facts.indexOf(fact), 1);
+            else fact.subjectId = canonical.id;
+          }
+          const index = subjects.findIndex((subject) => subject.id === from);
           if (index >= 0) subjects.splice(index, 1);
-          target = other.id;
         }
+        current = canonical;
       }
-      const coord = subjects.find(
-        (subject) => subject.id !== target && coordKey(subject) === coordKey(row),
-      );
-      if (coord) {
-        retarget(links, target, coord.id);
-        const index = subjects.findIndex((subject) => subject.id === target);
-        if (index >= 0) subjects.splice(index, 1);
-        target = coord.id;
-      }
+      if (!current) return;
+      const target = current.id;
+      const { row, facts: nextFacts } = mergeObservation(current, result, at);
       const index = subjects.findIndex((subject) => subject.id === target);
       const stored = cloneSubject({ ...row, id: target });
       if (index === -1) subjects.push(stored);
@@ -187,13 +236,13 @@ export function createMemoryWatch(newId: () => string): WatchBook {
         if (!seen) facts.push({ ...fact, subjectId: target });
       }
     },
-    saveClosing(id, prs) {
+    async saveClosing(id, prs) {
       const row = subjects.find((subject) => subject.id === id);
       if (!row) return;
       row.closingKnown = true;
       row.closingPrs = prs.map((pr) => ({ ...pr }));
     },
-    history(runs) {
+    async history(runs) {
       const ids = new Set(runs.map((run) => run.id));
       const mine = links.filter((link) => ids.has(link.runId));
       const subjectIds = new Set(mine.map((link) => link.subjectId));
@@ -204,8 +253,8 @@ export function createMemoryWatch(newId: () => string): WatchBook {
         facts.filter((fact) => subjectIds.has(fact.subjectId)),
       );
     },
-    closingSources(runs) {
-      const histories = this.history(runs);
+    async closingSources(runs) {
+      const histories = await this.history(runs);
       const out: {
         id: string;
         owner: string;
@@ -235,350 +284,214 @@ export function createMemoryWatch(newId: () => string): WatchBook {
   };
 }
 
-type SubjectSql = {
-  id: string;
-  node_id: string | null;
-  kind: string;
-  owner: string;
-  repo: string;
-  number: number;
-  author_login: string | null;
-  title: string | null;
-  html_url: string | null;
-  is_public: number | null;
-  state: string;
-  draft: number;
-  review: string | null;
-  comment_count: number | null;
-  checked_at: number | null;
-  error: string | null;
-  closing_known: number;
-  closing_json: string | null;
-};
+const subjectSelect = `SELECT id, node_id AS "nodeId", kind, owner, repo, number,
+ author_login AS "authorLogin", title, html_url AS "htmlUrl", is_public AS "isPublic",
+ state, draft, review, comment_count AS "commentCount", checked_at AS "checkedAt",
+ error, closing_known AS "closingKnown", COALESCE(closing_json,'[]'::jsonb) AS "closingPrs"
+ FROM github_subjects`;
+const linkSelect = `SELECT run_id AS "runId", subject_id AS "subjectId", relation, url FROM research_links`;
 
-function fromSql(row: SubjectSql): SubjectRow | null {
-  if (row.kind !== "issue" && row.kind !== "pull") return null;
-  if (
-    row.state !== "unknown" &&
-    row.state !== "open" &&
-    row.state !== "closed" &&
-    row.state !== "merged"
-  ) {
-    return null;
+export function createPostgresWatch(pool: Pool, newId: () => string): WatchBook {
+  const locked = <T>(work: (db: Database) => Promise<T>) => transaction(pool, "github:watch", work);
+  async function one(db: Database, id: string) {
+    return (await db.query<SubjectRow>(`${subjectSelect} WHERE id = $1`, [id])).rows[0] ?? null;
   }
-  const review =
-    row.review === "changes_requested" || row.review === "approved" || row.review === "unknown"
-      ? row.review
-      : null;
-  const error =
-    row.error === "unavailable" || row.error === "rate" || row.error === "private" ? row.error : null;
-  let closingPrs: SubjectRow["closingPrs"] = [];
-  if (row.closing_json) {
-    try {
-      const parsed = JSON.parse(row.closing_json) as { number?: number; merged?: boolean }[];
-      closingPrs = parsed.flatMap((pr) =>
-        typeof pr.number === "number" ? [{ number: pr.number, merged: Boolean(pr.merged) }] : [],
-      );
-    } catch {
-      closingPrs = [];
-    }
+  async function byCoord(db: Database, coord: GithubCoord) {
+    return (
+      (
+        await db.query<SubjectRow>(
+          `${subjectSelect} WHERE kind = $1 AND lower(owner) = lower($2)
+      AND lower(repo) = lower($3) AND number = $4`,
+          [coord.kind, coord.owner, coord.repo, coord.number],
+        )
+      ).rows[0] ?? null
+    );
+  }
+  async function write(db: Database, row: SubjectRow) {
+    await db.query(
+      `INSERT INTO github_subjects
+      (id,node_id,kind,owner,repo,number,author_login,title,html_url,is_public,state,draft,
+       review,comment_count,checked_at,error,closing_known,closing_json)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      ON CONFLICT (id) DO UPDATE SET node_id = excluded.node_id, kind = excluded.kind,
+      owner = excluded.owner, repo = excluded.repo, number = excluded.number,
+      author_login = excluded.author_login, title = excluded.title, html_url = excluded.html_url,
+      is_public = excluded.is_public, state = excluded.state, draft = excluded.draft,
+      review = excluded.review, comment_count = excluded.comment_count, checked_at = excluded.checked_at,
+      error = excluded.error, closing_known = excluded.closing_known, closing_json = excluded.closing_json`,
+      [
+        row.id,
+        row.nodeId,
+        row.kind,
+        row.owner,
+        row.repo,
+        row.number,
+        row.authorLogin,
+        row.title,
+        row.htmlUrl,
+        row.isPublic,
+        row.state,
+        row.draft,
+        row.review,
+        row.commentCount,
+        row.checkedAt,
+        row.error,
+        row.closingKnown,
+        JSON.stringify(row.closingPrs),
+      ],
+    );
+  }
+  async function move(db: Database, from: string, to: string) {
+    // Retain original link identities so report-link display order survives deduplication.
+    await db.query(
+      `DELETE FROM research_links old USING research_links existing
+      WHERE old.subject_id = $1 AND existing.subject_id = $2
+      AND old.run_id = existing.run_id AND old.relation = existing.relation`,
+      [from, to],
+    );
+    await db.query("UPDATE research_links SET subject_id = $2 WHERE subject_id = $1", [from, to]);
+    await db.query(
+      `INSERT INTO github_facts (subject_id,kind,detail,at)
+      SELECT $2,kind,detail,at FROM github_facts WHERE subject_id = $1 ON CONFLICT DO NOTHING`,
+      [from, to],
+    );
+    await db.query("DELETE FROM github_facts WHERE subject_id = $1", [from]);
+    await db.query("DELETE FROM github_subjects WHERE id = $1", [from]);
+  }
+  async function snapshots(runs: readonly { id: string; researcherLogin: string }[]) {
+    return locked(async (db) => {
+      const links = (
+        await db.query<LinkRecord>(`${linkSelect} WHERE run_id = ANY($1::text[]) ORDER BY id`, [
+          runs.map((run) => run.id),
+        ])
+      ).rows;
+      const ids = [...new Set(links.map((link) => link.subjectId))];
+      const subjects = (
+        await db.query<SubjectRow>(`${subjectSelect} WHERE id = ANY($1::text[])`, [ids])
+      ).rows;
+      const facts = (
+        await db.query<FactRecord>(
+          `SELECT subject_id AS "subjectId",kind,detail,at
+      FROM github_facts WHERE subject_id = ANY($1::text[])`,
+          [ids],
+        )
+      ).rows;
+      return { links, subjects, facts };
+    });
   }
   return {
-    id: row.id,
-    nodeId: row.node_id,
-    kind: row.kind,
-    owner: row.owner,
-    repo: row.repo,
-    number: row.number,
-    authorLogin: row.author_login,
-    title: row.title,
-    htmlUrl: row.html_url,
-    isPublic: row.is_public == null ? null : Boolean(row.is_public),
-    state: row.state,
-    draft: Boolean(row.draft),
-    review,
-    commentCount: row.comment_count,
-    checkedAt: row.checked_at,
-    error,
-    closingKnown: Boolean(row.closing_known),
-    closingPrs,
-  };
-}
-
-export function createSqliteWatch(db: DatabaseSync, newId: () => string): WatchBook {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS github_subjects (
-      id TEXT PRIMARY KEY,
-      node_id TEXT,
-      kind TEXT NOT NULL,
-      owner TEXT NOT NULL,
-      repo TEXT NOT NULL,
-      number INTEGER NOT NULL,
-      author_login TEXT,
-      title TEXT,
-      html_url TEXT,
-      is_public INTEGER,
-      state TEXT NOT NULL,
-      draft INTEGER NOT NULL DEFAULT 0,
-      review TEXT,
-      comment_count INTEGER,
-      checked_at INTEGER,
-      error TEXT,
-      closing_known INTEGER NOT NULL DEFAULT 0,
-      closing_json TEXT
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS github_subjects_node
-      ON github_subjects(node_id) WHERE node_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS github_subjects_coord
-      ON github_subjects(kind, owner COLLATE NOCASE, repo COLLATE NOCASE, number);
-    CREATE TABLE IF NOT EXISTS research_links (
-      run_id TEXT NOT NULL,
-      subject_id TEXT NOT NULL,
-      relation TEXT NOT NULL,
-      url TEXT NOT NULL,
-      PRIMARY KEY (run_id, subject_id, relation)
-    );
-    CREATE TABLE IF NOT EXISTS github_facts (
-      subject_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      detail TEXT NOT NULL,
-      at INTEGER NOT NULL,
-      PRIMARY KEY (subject_id, kind, detail)
-    );
-  `);
-  const byCoord = db.prepare(
-    `SELECT * FROM github_subjects
-     WHERE kind = ? AND owner = ? COLLATE NOCASE AND repo = ? COLLATE NOCASE AND number = ?`,
-  );
-  const byNode = db.prepare(`SELECT * FROM github_subjects WHERE node_id = ?`);
-  const byId = db.prepare(`SELECT * FROM github_subjects WHERE id = ?`);
-  const insert = db.prepare(
-    `INSERT INTO github_subjects (
-      id, node_id, kind, owner, repo, number, author_login, title, html_url, is_public,
-      state, draft, review, comment_count, checked_at, error, closing_known, closing_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const update = db.prepare(
-    `UPDATE github_subjects SET
-      node_id = ?, kind = ?, owner = ?, repo = ?, number = ?, author_login = ?, title = ?,
-      html_url = ?, is_public = ?, state = ?, draft = ?, review = ?, comment_count = ?,
-      checked_at = ?, error = ?, closing_known = ?, closing_json = ?
-     WHERE id = ?`,
-  );
-  const remove = db.prepare(`DELETE FROM github_subjects WHERE id = ?`);
-  const insertLink = db.prepare(
-    `INSERT INTO research_links (run_id, subject_id, relation, url)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(run_id, subject_id, relation) DO NOTHING`,
-  );
-  const linksForRun = db.prepare(
-    `SELECT run_id, subject_id, relation, url FROM research_links WHERE run_id = ? ORDER BY rowid`,
-  );
-  const linksFrom = db.prepare(
-    `SELECT run_id, subject_id, relation, url FROM research_links WHERE subject_id = ?`,
-  );
-  const deleteLink = db.prepare(
-    `DELETE FROM research_links WHERE run_id = ? AND subject_id = ? AND relation = ?`,
-  );
-  const insertFact = db.prepare(
-    `INSERT INTO github_facts (subject_id, kind, detail, at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(subject_id, kind, detail) DO NOTHING`,
-  );
-  const factsFor = db.prepare(
-    `SELECT subject_id, kind, detail, at FROM github_facts WHERE subject_id = ?`,
-  );
-
-  function readRow(row: SubjectSql | undefined) {
-    return row ? fromSql(row) : null;
-  }
-
-  function values(row: SubjectRow) {
-    return [
-      row.nodeId,
-      row.kind,
-      row.owner,
-      row.repo,
-      row.number,
-      row.authorLogin,
-      row.title,
-      row.htmlUrl,
-      row.isPublic == null ? null : row.isPublic ? 1 : 0,
-      row.state,
-      row.draft ? 1 : 0,
-      row.review,
-      row.commentCount,
-      row.checkedAt,
-      row.error,
-      row.closingKnown ? 1 : 0,
-      JSON.stringify(row.closingPrs),
-    ];
-  }
-
-  function one(id: string) {
-    return readRow(byId.get(id) as SubjectSql | undefined);
-  }
-
-  function ensure(planned: PlannedLink) {
-    const found = readRow(
-      byCoord.get(planned.kind, planned.owner, planned.repo, planned.number) as
-        | SubjectSql
-        | undefined,
-    );
-    if (found) return found;
-    const created = emptySubject(newId(), planned);
-    insert.run(
-      created.id,
-      ...values(created),
-    );
-    return created;
-  }
-
-  function moveLinks(from: string, to: string) {
-    const rows = linksFrom.all(from) as {
-      run_id: string;
-      subject_id: string;
-      relation: string;
-      url: string;
-    }[];
-    for (const row of rows) {
-      deleteLink.run(row.run_id, from, row.relation);
-      insertLink.run(row.run_id, to, row.relation, row.url);
-    }
-  }
-
-  return {
-    bind(run) {
-      for (const planned of planBindings(run)) {
-        const subject = ensure(planned);
-        insertLink.run(run.id, subject.id, planned.relation, planned.url);
-      }
-    },
-    due(runIds, now, pausedUntil) {
-      const rows: SubjectRow[] = [];
-      const seen = new Set<string>();
-      for (const runId of runIds) {
-        const links = linksForRun.all(runId) as { subject_id: string }[];
-        for (const link of links) {
-          if (seen.has(link.subject_id)) continue;
-          seen.add(link.subject_id);
-          const subject = one(link.subject_id);
-          if (subject && shouldRefresh(subject, now, pausedUntil)) rows.push(subject);
-        }
-      }
-      return rows.sort((a, b) => (a.checkedAt ?? -1) - (b.checkedAt ?? -1) || (a.id < b.id ? -1 : 1));
-    },
-    read: one,
-    apply(id, row, nextFacts) {
-      const write = () => {
-        let target = id;
-        if (row.nodeId) {
-          const other = readRow(byNode.get(row.nodeId) as SubjectSql | undefined);
-          if (other && other.id !== target) {
-            moveLinks(target, other.id);
-            remove.run(target);
-            target = other.id;
+    bind: (run) =>
+      locked(async (db) => {
+        for (const planned of planBindings(run)) {
+          let subject = await byCoord(db, planned);
+          if (!subject) {
+            subject = emptySubject(newId(), planned);
+            await write(db, subject);
           }
+          await db.query(
+            `INSERT INTO research_links (run_id,subject_id,relation,url)
+          VALUES ($1,$2,$3,$4) ON CONFLICT (run_id,subject_id,relation) DO NOTHING`,
+            [run.id, subject.id, planned.relation, planned.url],
+          );
         }
-        const coord = readRow(
-          byCoord.get(row.kind, row.owner, row.repo, row.number) as SubjectSql | undefined,
+      }),
+    async due(runIds, now, pausedUntil) {
+      const rows = (
+        await pool.query<SubjectRow>(
+          `${subjectSelect} WHERE id IN
+        (SELECT subject_id FROM research_links WHERE run_id = ANY($1::text[]))
+        ORDER BY checked_at ASC NULLS FIRST, id COLLATE "C" ASC`,
+          [runIds],
+        )
+      ).rows;
+      return rows.filter((row) => shouldRefresh(row, now, pausedUntil));
+    },
+    read: (id) => one(pool, id),
+    apply: (id, result, at) =>
+      locked(async (db) => {
+        let current = await one(db, id);
+        if (current?.checkedAt != null && at < current.checkedAt) return;
+        if (result.type === "ok") {
+          const observed = result.observed;
+          const node = (
+            await db.query<SubjectRow>(`${subjectSelect} WHERE node_id = $1`, [observed.nodeId])
+          ).rows[0];
+          const coord = await byCoord(db, observed);
+          const canonical = canonicalObservation(current, node, coord, observed.nodeId, at);
+          if (!canonical) return;
+          for (const duplicate of new Set(
+            [current?.id, coord?.id].filter((value): value is string => Boolean(value)),
+          )) {
+            if (duplicate !== canonical.id) await move(db, duplicate, canonical.id);
+          }
+          current = canonical;
+        }
+        if (!current) return;
+        const target = current.id;
+        const merged = mergeObservation(current, result, at);
+        await write(db, { ...merged.row, id: target });
+        for (const fact of merged.facts) {
+          await db.query(
+            `INSERT INTO github_facts (subject_id,kind,detail,at)
+          VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+            [target, fact.kind, fact.detail, fact.at],
+          );
+        }
+      }),
+    saveClosing: (id, prs) =>
+      locked(async (db) => {
+        await db.query(
+          "UPDATE github_subjects SET closing_known = TRUE, closing_json = $2 WHERE id = $1",
+          [id, JSON.stringify(prs)],
         );
-        if (coord && coord.id !== target) {
-          moveLinks(target, coord.id);
-          remove.run(target);
-          target = coord.id;
-        }
-        const existing = one(target);
-        const stored = { ...row, id: target };
-        if (!existing) insert.run(stored.id, ...values(stored));
-        else update.run(...values(stored), stored.id);
-        for (const fact of nextFacts) insertFact.run(target, fact.kind, fact.detail, fact.at);
-      };
-      db.exec("BEGIN");
-      try {
-        write();
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      }),
+    async history(runs) {
+      const { links, subjects, facts } = await snapshots(runs);
+      return historiesFrom(runs, links, subjects, facts);
     },
-    saveClosing(id, prs) {
-      db.prepare(
-        `UPDATE github_subjects SET closing_known = 1, closing_json = ? WHERE id = ?`,
-      ).run(JSON.stringify(prs), id);
-    },
-    history(runs) {
-      const links: LinkRecord[] = [];
-      const subjectIds = new Set<string>();
-      for (const run of runs) {
-        const rows = linksForRun.all(run.id) as {
-          run_id: string;
-          subject_id: string;
-          relation: string;
-          url: string;
-        }[];
-        for (const row of rows) {
-          if (row.relation !== "source" && row.relation !== "linked") continue;
-          links.push({
-            runId: row.run_id,
-            subjectId: row.subject_id,
-            relation: row.relation,
-            url: row.url,
-          });
-          subjectIds.add(row.subject_id);
-        }
-      }
-      const subjects = [...subjectIds].flatMap((id) => {
-        const subject = one(id);
-        return subject ? [subject] : [];
+    async closingSources(runs) {
+      const { links, subjects, facts } = await snapshots(runs);
+      const histories = historiesFrom(runs, links, subjects, facts);
+      return runs.flatMap((run) => {
+        const history = histories.get(run.id) ?? emptyHistory();
+        if (
+          history.source?.kind !== "issue" ||
+          !history.links.some(
+            (link) => link.kind === "pull" && link.state === "merged" && link.byResearcher,
+          )
+        )
+          return [];
+        const sourceId = links.find(
+          (link) => link.runId === run.id && link.relation === "source",
+        )?.subjectId;
+        const source = subjects.find((subject) => subject.id === sourceId);
+        return source && source.isPublic !== false
+          ? [
+              {
+                id: source.id,
+                owner: source.owner,
+                repo: source.repo,
+                number: source.number,
+                closingKnown: source.closingKnown,
+              },
+            ]
+          : [];
       });
-      const factRows: FactRecord[] = [];
-      for (const id of subjectIds) {
-        const rows = factsFor.all(id) as {
-          subject_id: string;
-          kind: FactKind;
-          detail: string;
-          at: number;
-        }[];
-        for (const row of rows) {
-          factRows.push({
-            subjectId: row.subject_id,
-            kind: row.kind,
-            detail: row.detail,
-            at: row.at,
-          });
-        }
-      }
-      return historiesFrom(runs, links, subjects, factRows);
     },
-    closingSources(runs) {
-      const built = this.history(runs);
-      const out: {
-        id: string;
-        owner: string;
-        repo: string;
-        number: number;
-        closingKnown: boolean;
-      }[] = [];
-      for (const run of runs) {
-        const history = built.get(run.id) ?? emptyHistory();
-        const candidate = history.links.some(
-          (link) => link.kind === "pull" && link.state === "merged" && link.byResearcher,
-        );
-        if (!candidate || history.source?.kind !== "issue") continue;
-        const rows = linksForRun.all(run.id) as { subject_id: string; relation: string }[];
-        const sourceId = rows.find((row) => row.relation === "source")?.subject_id;
-        const source = sourceId ? one(sourceId) : null;
-        if (!source || source.isPublic === false) continue;
-        out.push({
-          id: source.id,
-          owner: source.owner,
-          repo: source.repo,
-          number: source.number,
-          closingKnown: source.closingKnown,
-        });
-      }
-      return out;
+    async pausedUntil() {
+      return (
+        (
+          await pool.query<{ paused_until: number }>(
+            "SELECT paused_until FROM github_watch_state WHERE id = 1",
+          )
+        ).rows[0]?.paused_until ?? 0
+      );
+    },
+    async pause(until) {
+      await pool.query(
+        "UPDATE github_watch_state SET paused_until = GREATEST(paused_until,$1) WHERE id = 1",
+        [until],
+      );
     },
   };
 }

@@ -41,7 +41,7 @@ function request(token: string | null, payload: unknown) {
 describe("research delivery http", () => {
   it("ignores a client user id and keeps the limit out of the response", async () => {
     const repo = createMemoryResearch();
-    const { token } = repo.createGrant("owner", NOW);
+    const { token } = await repo.createGrant("owner", NOW);
     const parsed = researchDeliverySchema.parse({
       ...body(),
       userId: "attacker",
@@ -78,31 +78,31 @@ describe("research delivery http", () => {
     assert.equal(text.includes("usedPercent"), false);
     assert.equal(text.includes("attacker"), false);
     assert.equal(text.includes(token), false);
-    assert.equal(repo.readRun("owner", "thread_abc12345")?.userId, "owner");
-    assert.equal(repo.readRun("attacker", "thread_abc12345"), null);
-    assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 12);
-    assert.equal(repo.readLimit("owner")?.spendControlReached, null);
+    assert.equal((await repo.readRun("owner", "thread_abc12345"))?.userId, "owner");
+    assert.equal(await repo.readRun("attacker", "thread_abc12345"), null);
+    assert.equal((await repo.readLimit("owner"))?.primary?.usedPercent, 12);
+    assert.equal((await repo.readLimit("owner"))?.spendControlReached, null);
   });
 
   it("rejects a missing grant, a revoked grant, a bad report, and a duplicate turn", async () => {
     const repo = createMemoryResearch();
-    const { token, grant } = repo.createGrant("owner", NOW);
+    const { token, grant } = await repo.createGrant("owner", NOW);
     const missing = await handleResearchPost(request(null, body()), repo, NOW);
     assert.equal(missing.status, 401);
 
-    repo.revokeGrant("owner", grant.id, NOW);
+    await repo.revokeGrant("owner", grant.id, NOW);
     const revoked = await handleResearchPost(request(token, body()), repo, NOW);
     assert.equal(revoked.status, 401);
-    assert.equal(repo.readRun("owner", "thread_abc12345"), null);
+    assert.equal(await repo.readRun("owner", "thread_abc12345"), null);
 
-    const fresh = repo.createGrant("owner", NOW + 1).token;
+    const fresh = (await repo.createGrant("owner", NOW + 1)).token;
     const broken = await handleResearchPost(
       request(fresh, body({ status: "completed", report: { ...report, findings: " " } })),
       repo,
       NOW,
     );
     assert.equal(broken.status, 400);
-    assert.equal(repo.readRun("owner", "thread_abc12345"), null);
+    assert.equal(await repo.readRun("owner", "thread_abc12345"), null);
 
     const duplicated = await handleResearchPost(
       request(
@@ -118,27 +118,34 @@ describe("research delivery http", () => {
       NOW,
     );
     assert.equal(duplicated.status, 400);
-    assert.equal(repo.readRun("owner", "thread_abc12345"), null);
+    assert.equal(await repo.readRun("owner", "thread_abc12345"), null);
   });
 
   it("replays the same completion and refuses another user's thread", async () => {
     const repo = createMemoryResearch();
-    const owner = repo.createGrant("owner", NOW).token;
-    const other = repo.createGrant("other", NOW).token;
+    const owner = (await repo.createGrant("owner", NOW)).token;
+    const other = (await repo.createGrant("other", NOW)).token;
     const first = await handleResearchPost(
-      request(owner, body({ status: "completed", report, turns: [
-        {
-          turnId: "turn_done0001",
+      request(
+        owner,
+        body({
           status: "completed",
-          usage: {
-            inputTokens: 100,
-            cachedInputTokens: 40,
-            outputTokens: 10,
-            reasoningOutputTokens: 0,
-            totalTokens: 110,
-          },
-        },
-      ] })),
+          report,
+          turns: [
+            {
+              turnId: "turn_done0001",
+              status: "completed",
+              usage: {
+                inputTokens: 100,
+                cachedInputTokens: 40,
+                outputTokens: 10,
+                reasoningOutputTokens: 0,
+                totalTokens: 110,
+              },
+            },
+          ],
+        }),
+      ),
       repo,
       NOW,
     );
@@ -146,19 +153,26 @@ describe("research delivery http", () => {
     const firstBody = (await first.json()) as { run: { publishedAt: number | null } };
     assert.equal(firstBody.run.publishedAt, NOW);
     const replay = await handleResearchPost(
-      request(owner, body({ status: "completed", report, turns: [
-        {
-          turnId: "turn_done0001",
+      request(
+        owner,
+        body({
           status: "completed",
-          usage: {
-            inputTokens: 100,
-            cachedInputTokens: 40,
-            outputTokens: 10,
-            reasoningOutputTokens: 0,
-            totalTokens: 110,
-          },
-        },
-      ] })),
+          report,
+          turns: [
+            {
+              turnId: "turn_done0001",
+              status: "completed",
+              usage: {
+                inputTokens: 100,
+                cachedInputTokens: 40,
+                outputTokens: 10,
+                reasoningOutputTokens: 0,
+                totalTokens: 110,
+              },
+            },
+          ],
+        }),
+      ),
       repo,
       NOW + 5,
     );
@@ -177,7 +191,7 @@ describe("research delivery http", () => {
       NOW + 6,
     );
     assert.equal(stolen.status, 403);
-    assert.equal(repo.readRun("owner", "thread_abc12345")?.status, "completed");
-    assert.equal(repo.readRun("other", "thread_abc12345"), null);
+    assert.equal((await repo.readRun("owner", "thread_abc12345"))?.status, "completed");
+    assert.equal(await repo.readRun("other", "thread_abc12345"), null);
   });
 });

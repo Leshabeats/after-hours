@@ -1,9 +1,10 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { Pool } from "pg";
+import { transaction, type Database } from "../db/postgres.ts";
 import type { UsageEvent } from "./types.ts";
 
 export type UsageRepo = {
-  list: (userId: string) => UsageEvent[];
-  record: (userId: string, event: UsageEvent) => UsageEvent[];
+  list: (userId: string) => Promise<UsageEvent[]>;
+  record: (userId: string, event: UsageEvent) => Promise<UsageEvent[]>;
 };
 
 function clone(event: UsageEvent): UsageEvent {
@@ -21,15 +22,16 @@ export function createMemoryUsage(): UsageRepo {
   }
 
   return {
-    list,
-    record(userId, event) {
+    async list(userId) {
+      return list(userId);
+    },
+    async record(userId, event) {
       const current = byUser.get(userId) ?? [];
       byUser.set(userId, [clone(event), ...current]);
       return list(userId);
     },
   };
 }
-
 type UsageRow = {
   at: number;
   harness: string;
@@ -39,61 +41,40 @@ type UsageRow = {
   mission_id: string | null;
 };
 
-function rowToEvent(row: UsageRow): UsageEvent {
-  const event: UsageEvent = {
-    at: row.at,
-    harness: row.harness,
-    model: row.model,
-    inputTokens: row.input_tokens,
-    outputTokens: row.output_tokens,
-  };
-  if (row.mission_id) event.missionId = row.mission_id;
-  return event;
-}
-
-export function createSqliteUsage(db: DatabaseSync): UsageRepo {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS usage_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      at INTEGER NOT NULL,
-      harness TEXT NOT NULL,
-      model TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL,
-      output_tokens INTEGER NOT NULL,
-      mission_id TEXT
+export function createPostgresUsage(pool: Pool): UsageRepo {
+  async function list(db: Database, userId: string): Promise<UsageEvent[]> {
+    const result = await db.query<UsageRow>(
+      "SELECT * FROM usage_events WHERE user_id = $1 ORDER BY at DESC, id DESC",
+      [userId],
     );
-    CREATE INDEX IF NOT EXISTS usage_events_user_at
-      ON usage_events (user_id, at);
-  `);
-
-  const listStmt = db.prepare(
-    `SELECT at, harness, model, input_tokens, output_tokens, mission_id
-     FROM usage_events WHERE user_id = ? ORDER BY at DESC, id DESC`,
-  );
-  const insertStmt = db.prepare(
-    `INSERT INTO usage_events
-      (user_id, at, harness, model, input_tokens, output_tokens, mission_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  function list(userId: string) {
-    return (listStmt.all(userId) as UsageRow[]).map(rowToEvent);
+    return result.rows.map((row) => ({
+      at: row.at,
+      harness: row.harness,
+      model: row.model,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      ...(row.mission_id ? { missionId: row.mission_id } : {}),
+    }));
   }
-
   return {
-    list,
-    record(userId, event) {
-      insertStmt.run(
-        userId,
-        event.at,
-        event.harness,
-        event.model,
-        event.inputTokens,
-        event.outputTokens,
-        event.missionId ?? null,
-      );
-      return list(userId);
-    },
+    list: (userId) => list(pool, userId),
+    record: (userId, event) =>
+      transaction(pool, `usage:${userId}`, async (db) => {
+        await db.query(
+          `INSERT INTO usage_events
+        (user_id, at, harness, model, input_tokens, output_tokens, mission_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            userId,
+            event.at,
+            event.harness,
+            event.model,
+            event.inputTokens,
+            event.outputTokens,
+            event.missionId ?? null,
+          ],
+        );
+        return list(db, userId);
+      }),
   };
 }

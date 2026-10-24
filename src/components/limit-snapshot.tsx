@@ -1,12 +1,6 @@
 import type { LimitLoad } from "@/lib/research/api";
 import type { LimitWindow } from "@/lib/research/types";
-
-function formatWhen(at: number) {
-  return new Date(at).toLocaleString("ru-RU", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
+import { LocalTime } from "@/components/local-time";
 
 function percent(value: number | null) {
   return value == null ? "нет данных" : `${value.toLocaleString("ru-RU")}%`;
@@ -23,7 +17,7 @@ function WindowLine({ title, window }: { title: string; window: LimitWindow | nu
   return (
     <p className="mt-3 text-sm text-muted">
       {title}: {percent(window.usedPercent)}
-      {window.resetsAt == null ? "" : `, сброс ${formatWhen(window.resetsAt * 1000)}`}
+      {window.resetsAt == null ? null : <>, сброс <LocalTime at={window.resetsAt * 1000} /></>}
     </p>
   );
 }
@@ -45,7 +39,7 @@ export function LimitSnapshotPanel({
         <p className="mt-3 text-sm text-muted">Снимка лимита ещё нет.</p>
       ) : (
         <div>
-          <p className="mt-3 text-sm text-muted">Снимок от {formatWhen(load.limit.readAt)}</p>
+          <p className="mt-3 text-sm text-muted">Снимок от <LocalTime at={load.limit.readAt} /></p>
           <WindowLine title="Основное окно" window={load.limit.primary} />
           <WindowLine title="Второе окно" window={load.limit.secondary} />
           <p className="mt-3 text-sm text-muted">

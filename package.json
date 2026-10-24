@@ -5,25 +5,31 @@
   "sideEffects": false,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "scripts": {
-    "dev": "vite dev --host 127.0.0.1 --port 5173",
+    "dev": "node --env-file-if-exists=.env.local node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 5173",
     "build": "vite build",
+    "start": "node --env-file-if-exists=.env.local .output/server/index.mjs",
+    "test:production": "node --experimental-strip-types scripts/production-smoke.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/lib/journal/*.test.ts src/lib/auth/*.test.ts src/lib/usage/*.test.ts src/lib/research/*.test.ts scripts/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts src/lib/db/*.test.ts src/lib/journal/*.test.ts src/lib/auth/*.test.ts src/lib/usage/*.test.ts src/lib/research/*.test.ts scripts/*.test.mjs",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "build:vercel": "NITRO_PRESET=vercel vite build",
+    "db:migrate": "node --env-file-if-exists=.env.local --experimental-strip-types scripts/db-migrate.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/vite": "^4.3.0",
-    "@tanstack/react-router": "^1.170.0",
-    "@tanstack/react-start": "^1.168.0",
+    "@tanstack/react-router": "1.170.41",
+    "@tanstack/react-start": "1.168.60",
+    "@vercel/functions": "^3.10.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.510.0",
+    "pg": "^8.23.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "sonner": "^2.0.7",
@@ -35,6 +41,7 @@
   "devDependencies": {
     "@eslint/js": "^9.20.0",
     "@types/node": "^22.16.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
@@ -49,5 +56,6 @@
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.2.0"
-  }
+  },
+  "packageManager": "npm@11.9.0"
 }

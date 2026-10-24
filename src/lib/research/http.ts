@@ -56,7 +56,7 @@ function runBody(run: ResearchRun) {
   };
 }
 
-function acceptBody(
+async function acceptBody(
   body: unknown,
   grant: { userId: string; grantId: string },
   repo: ResearchRepo,
@@ -72,8 +72,8 @@ function acceptBody(
   if (!turns) return invalid();
   if (parsed.data.status === "completed" && !parsed.data.report) return invalid();
 
-  repo.markUsed(grant.grantId, now);
-  const result = repo.ingest(grant.userId, {
+  await repo.markUsed(grant.grantId, now);
+  const result = await repo.ingest(grant.userId, {
     threadId: parsed.data.threadId,
     missionId: missionId(ref.owner, ref.repo, ref.number),
     owner: ref.owner,
@@ -100,13 +100,9 @@ function acceptBody(
   });
 }
 
-export async function handleResearchPost(
-  request: Request,
-  repo: ResearchRepo,
-  now = Date.now(),
-) {
+export async function handleResearchPost(request: Request, repo: ResearchRepo, now = Date.now()) {
   const token = bearerToken(request);
-  const grant = token ? repo.authenticate(token) : null;
+  const grant = token ? await repo.authenticate(token) : null;
   if (!grant) {
     return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }

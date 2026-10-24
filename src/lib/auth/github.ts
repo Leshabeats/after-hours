@@ -9,6 +9,7 @@ export function oauthRedirectUri() {
 }
 
 export function githubAuthorizeUrl(state: string) {
+  if (!githubOAuthConfigured()) throw new Error("GitHub OAuth is not configured.");
   const clientId = process.env.GITHUB_CLIENT_ID?.trim();
   if (!clientId) throw new Error("GITHUB_CLIENT_ID is missing.");
   const url = new URL("https://github.com/login/oauth/authorize");
@@ -24,6 +25,7 @@ export function newOAuthState() {
 }
 
 export async function exchangeGithubCode(code: string) {
+  if (!githubOAuthConfigured()) throw new Error("GitHub OAuth is not configured.");
   const clientId = process.env.GITHUB_CLIENT_ID?.trim();
   const clientSecret = process.env.GITHUB_CLIENT_SECRET?.trim();
   if (!clientId || !clientSecret) {

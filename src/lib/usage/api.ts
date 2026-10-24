@@ -4,9 +4,7 @@ import { clampUsageAt, summarizeUsage } from "./stats";
 import type { UsageSummary } from "./types";
 
 export type UsageLoad =
-  | { status: "anonymous" }
-  | { status: "ready"; usage: UsageSummary }
-  | { status: "error" };
+  { status: "anonymous" } | { status: "ready"; usage: UsageSummary } | { status: "error" };
 
 async function loadSession() {
   const { readSession } = await import("@/lib/auth/session");
@@ -25,7 +23,7 @@ export const getUsageSummary = createServerFn({ method: "GET" }).handler(
       if (!user) return { status: "anonymous" };
       return {
         status: "ready",
-        usage: summarizeUsage((await loadUsage()).list(user.id)),
+        usage: summarizeUsage(await (await loadUsage()).list(user.id)),
       };
     } catch {
       return { status: "error" };
@@ -36,15 +34,11 @@ export const getUsageSummary = createServerFn({ method: "GET" }).handler(
 export const reportUsage = createServerFn({ method: "POST" })
   .validator(usageInputSchema)
   .handler(
-    async ({
-      data,
-    }): Promise<
-      { ok: "anonymous" } | { ok: "account"; usage: UsageSummary }
-    > => {
+    async ({ data }): Promise<{ ok: "anonymous" } | { ok: "account"; usage: UsageSummary }> => {
       const user = await loadSession();
       if (!user) return { ok: "anonymous" };
       const repo = await loadUsage();
-      repo.record(user.id, {
+      const events = await repo.record(user.id, {
         at: clampUsageAt(data.at),
         harness: data.harness,
         model: data.model,
@@ -52,6 +46,6 @@ export const reportUsage = createServerFn({ method: "POST" })
         outputTokens: data.outputTokens,
         missionId: data.missionId,
       });
-      return { ok: "account", usage: summarizeUsage(repo.list(user.id)) };
+      return { ok: "account", usage: summarizeUsage(events) };
     },
   );

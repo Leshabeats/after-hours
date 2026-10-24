@@ -1,6 +1,5 @@
 import {
   foldReviews,
-  mergeObservation,
   parseGithubLink,
   WATCH_CALL_BUDGET,
   WATCH_FETCH_MS,
@@ -16,7 +15,7 @@ import type { WatchBook } from "./watch-book.ts";
 
 export type WatchReader = {
   book: WatchBook;
-  runs(runIds: readonly string[]): { run: WatchRun; researcherLogin: string }[];
+  runs(runIds: readonly string[]): Promise<{ run: WatchRun; researcherLogin: string }[]>;
 };
 
 let pausedUntil = 0;
@@ -118,10 +117,11 @@ export async function refreshWatch(
   now = Date.now(),
   fetchImpl: typeof fetch = fetch,
 ) {
-  const runs = reader.runs(runIds);
-  for (const item of runs) reader.book.bind(item.run);
+  const runs = await reader.runs(runIds);
+  pausedUntil = Math.max(pausedUntil, await reader.book.pausedUntil());
+  for (const item of runs) await reader.book.bind(item.run);
   let calls = 0;
-  const due = reader.book.due(runIds, now, pausedUntil);
+  const due = await reader.book.due(runIds, now, pausedUntil);
   const refreshed = new Set<string>();
   const take = () => {
     if (calls >= WATCH_CALL_BUDGET) return false;
@@ -129,6 +129,7 @@ export async function refreshWatch(
     return true;
   };
   for (const subject of due) {
+    pausedUntil = Math.max(pausedUntil, await reader.book.pausedUntil());
     if (calls >= WATCH_CALL_BUDGET || pausedUntil > now) break;
     let outcome: ReadOutcome;
     try {
@@ -137,26 +138,31 @@ export async function refreshWatch(
       outcome = { result: { type: "unavailable" } };
     }
     if ("skipped" in outcome) continue;
-    if (outcome.until) pause(outcome.until);
-    const prev = reader.book.read(subject.id);
-    if (!prev) continue;
-    const merged = mergeObservation(prev, outcome.result, now);
-    reader.book.apply(subject.id, merged.row, merged.facts);
-    if (outcome.result.type === "ok") refreshed.add(merged.row.id);
+    if (pausedUntil > now) await reader.book.pause(pausedUntil);
+    if (outcome.until) {
+      pause(outcome.until);
+      await reader.book.pause(outcome.until);
+    }
+    await reader.book.apply(subject.id, outcome.result, now);
+    if (outcome.result.type === "ok") refreshed.add(subject.id);
     if (outcome.result.type === "rate") break;
   }
   if (!process.env.GITHUB_TOKEN?.trim() || calls >= WATCH_CALL_BUDGET || pausedUntil > now) return;
   const logins = runs.map((item) => ({ id: item.run.id, researcherLogin: item.researcherLogin }));
   const seenSources = new Set<string>();
-  for (const source of reader.book.closingSources(logins)) {
+  for (const source of await reader.book.closingSources(logins)) {
     if (seenSources.has(source.id)) continue;
     seenSources.add(source.id);
+    pausedUntil = Math.max(pausedUntil, await reader.book.pausedUntil());
     if (calls >= WATCH_CALL_BUDGET || pausedUntil > now) break;
     if (source.closingKnown && !refreshed.has(source.id)) continue;
     if (!take()) break;
     const closing = await readClosing(source, fetchImpl, now);
-    if (closing.until) pause(closing.until);
-    if (closing.prs) reader.book.saveClosing(source.id, closing.prs);
+    if (closing.until) {
+      pause(closing.until);
+      await reader.book.pause(closing.until);
+    }
+    if (closing.prs) await reader.book.saveClosing(source.id, closing.prs);
   }
 }
 
@@ -235,7 +241,11 @@ function observedIssue(
   if (!nodeId) return { type: "unavailable" };
   const user = json.user as { login?: string } | null;
   const pull = json.pull_request as { merged_at?: string | null } | undefined;
-  const coord = coordFrom(finalUrl, json.html_url, asPull ? { ...fallback, kind: "pull" } : fallback);
+  const coord = coordFrom(
+    finalUrl,
+    json.html_url,
+    asPull ? { ...fallback, kind: "pull" } : fallback,
+  );
   const merged = Boolean(pull?.merged_at);
   return {
     type: "ok",
@@ -334,7 +344,9 @@ async function readClosing(
     const nodes = json.data.repository.issue.closedByPullRequestsReferences?.nodes ?? [];
     return {
       prs: nodes.flatMap((node) =>
-        typeof node?.number === "number" ? [{ number: node.number, merged: Boolean(node.merged) }] : [],
+        typeof node?.number === "number"
+          ? [{ number: node.number, merged: Boolean(node.merged) }]
+          : [],
       ),
     };
   } catch {
