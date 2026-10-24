@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { buildSnapshot, classifyRepository, DAY, eligible, FORK_EXCEPTIONS } from "./ranking.ts";
+import {
+  buildSnapshot,
+  selectPublicationCandidates,
+  growthBaseline,
+  classifyRepository,
+  DAY,
+  eligible,
+  FORK_EXCEPTIONS,
+} from "./ranking.ts";
 import type { DiscoveryStore, Observation, StoredRepository } from "./types.ts";
 
 const TOPICS = [
@@ -146,9 +154,19 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
       page: 1,
     },
   ]);
-  // Oldest observations first ensures the bounded refresh pool rotates.
+  // Eligible rows due before the next daily run take precedence over excluded rows.
+  // Age still rotates the due queue when the catalog exceeds one invocation's budget.
+  const due = (r: StoredRepository) =>
+    eligible(r) && now - (r.countsObservedAt ?? r.observedAt) >= DAY;
   const refresh = [...repos]
-    .sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id))
+    .sort(
+      (a, b) =>
+        Number(due(b)) - Number(due(a)) ||
+        (due(a)
+          ? (a.countsObservedAt ?? a.observedAt) - (b.countsObservedAt ?? b.observedAt)
+          : a.observedAt - b.observedAt) ||
+        a.id.localeCompare(b.id),
+    )
     .slice(0, 180);
   tasks.push(
     ...refresh.map((r) => ({ kind: "repo" as const, id: r.id, owner: r.owner, repo: r.repo })),
@@ -441,12 +459,17 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       }
       if (cp.phase === "metadata") {
         repos = new Map((await store.repositories()).map((repo) => [repo.id, repo]));
+        const history = await store.metrics(now() - 11 * DAY);
+        const ready = new Set(
+          [...repos.values()].filter((r) => growthBaseline(r, history)).map((r) => r.id),
+        );
         const candidates = [...repos.values()]
-          .filter((r) => eligible(r) && now() - r.observedAt <= 2 * DAY)
+          .filter((r) => eligible(r) && now() - (r.countsObservedAt ?? r.observedAt) <= 2 * DAY)
           .sort(
             (a, b) =>
-              (a.activityCheckedAt ?? 0) - (b.activityCheckedAt ?? 0) ||
-              b.firstSeenAt - a.firstSeenAt ||
+              Number(ready.has(b.id)) - Number(ready.has(a.id)) ||
+              (a.activityCheckedAt ?? a.firstSeenAt) - (b.activityCheckedAt ?? b.firstSeenAt) ||
+              a.firstSeenAt - b.firstSeenAt ||
               a.id.localeCompare(b.id),
           )
           .slice(0, MAX_ENRICH);
@@ -464,7 +487,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       if (cp.phase === "activity") {
         // Validate only the bounded publication candidates, including fresh rows outside
         // the rotating refresh budget. Cached slugs must never decide repository identity.
-        const candidates = buildSnapshot(current, metrics, now()).cards;
+        const candidates = selectPublicationCandidates(current, metrics, now());
         cp = {
           ...cp,
           phase: "identity",

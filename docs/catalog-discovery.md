@@ -27,8 +27,13 @@ stored IDs consume no additional admission slots. These counters persist across
 retries. Legacy version-1/2 checkpoints restart with the fair admission policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
-repositories (oldest check first) are additionally refreshed per scan; at most 40
-eligible repositories receive release/PR enrichment. Explicit
+repositories are additionally refreshed per scan. Eligible rows whose measurement
+would exceed two days before the next daily run take priority over excluded rows;
+oldest measurements rotate first. Up to 40 repositories receive release/PR
+samples. Rows with a real 6–9-day baseline take priority; within each group,
+service age (last activity check, or first discovery for unchecked rows) rotates
+oldest first. A constant influx of new rows cannot displace baseline-ready rows
+or repeatedly reset their place in the activity queue. Explicit
 fork exceptions also receive a metadata refresh. Archived, disabled, empty,
 mirrored and ordinary fork repositories are omitted from published discovery.
 Known independent forks may be allowlisted. Undeclared mirrors cannot reliably
@@ -45,7 +50,11 @@ snapshot. A completed snapshot contains at most 100 cards: reserve the top 14
 per populated tag, sharing slots for multi-tag repositories, then fill spare slots
 by global relevance. Identity is deduplicated only by GitHub ID. Before publication,
 the selected (at most 100) candidates receive a checkpointed metadata refresh via
-stable IDs, including recent rows outside the rotating refresh pool. Only these
+stable IDs, including old eligible rows outside the rotating refresh pool. Old
+measurements may nominate a candidate for verification; they cannot enter the
+published snapshot unchanged. Publication still requires real count measurements
+within two days and keeps their actual timestamp. This lets quiet subcategories
+reach verification even when the 180-row rotation takes longer than two days. Only these
 verified candidates can be published; candidates that become unavailable are
 omitted without unverified backfill. Conflicting current URLs retain the prior
 snapshot and retry verification. This phase uses the same request/time budget.
