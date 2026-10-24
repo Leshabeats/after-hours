@@ -96,10 +96,10 @@ const taskSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(2),
+  version: z.literal(3),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
-  phase: z.enum(["metadata", "activity"]),
+  phase: z.enum(["metadata", "activity", "identity"]),
   tasks: z.array(taskSchema).max(400),
   ids: z.array(z.string()).max(MAX_CANDIDATES),
   admissions: z.record(z.string(), z.number().int().min(0).max(MAX_QUERY_CANDIDATES)),
@@ -158,7 +158,7 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks.push({ kind: "repo", owner, repo });
   }
   return {
-    version: 2,
+    version: 3,
     startedAt: now,
     index: 0,
     phase: "metadata",
@@ -284,7 +284,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        lease.checkpoint.version === 1)
+        (lease.checkpoint.version === 1 || lease.checkpoint.version === 2))
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -459,11 +459,36 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         await store.save(lease, now(), LEASE_MS, [], cp);
         continue;
       }
+      const current = await store.repositories();
+      const metrics = await store.metrics(now() - 10 * DAY);
+      if (cp.phase === "activity") {
+        // Validate only the bounded publication candidates, including fresh rows outside
+        // the rotating refresh budget. Cached slugs must never decide repository identity.
+        const candidates = buildSnapshot(current, metrics, now()).cards;
+        cp = {
+          ...cp,
+          phase: "identity",
+          index: 0,
+          tasks: candidates.map((r) => ({ kind: "repo", id: r.id, owner: r.owner, repo: r.repo })),
+        };
+        await store.save(lease, now(), LEASE_MS, [], cp);
+        continue;
+      }
+      const verified = new Set(
+        cp.tasks.map((task) => (task.kind === "repo" ? task.id : undefined)),
+      );
       const snapshot = buildSnapshot(
-        await store.repositories(),
-        await store.metrics(now() - 10 * DAY),
+        current.filter((repo) => verified.has(repo.id)),
+        metrics,
         now(),
       );
+      const urls = new Set(snapshot.cards.map((card) => card.url.toLowerCase()));
+      if (urls.size !== snapshot.cards.length) {
+        // Conflicting upstream metadata must be retried, never settled by score or slug dedupe.
+        cp = { ...cp, index: 0 };
+        await store.save(lease, now(), LEASE_MS, [], cp);
+        throw new Pause("Conflicting GitHub repository identities", now() + 60_000);
+      }
       await store.publish(lease, now(), snapshot);
       return { status: "published", requests, searchRequests, cards: snapshot.cards.length };
     }

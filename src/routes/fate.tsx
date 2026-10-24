@@ -119,7 +119,7 @@ function FatePage() {
               <ul className="spin-strip py-8">
                 {strip.map((item, i) => (
                   <li
-                    key={`${item.owner}/${item.repo}-${i}`}
+                    key={`${"id" in item ? `github:${item.id}` : `${item.owner}/${item.repo}`}-${i}`}
                     className="px-6 py-3 font-display text-2xl italic text-fg/80 sm:text-3xl"
                   >
                     {item.repo}

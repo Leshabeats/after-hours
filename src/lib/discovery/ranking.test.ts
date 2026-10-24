@@ -103,7 +103,7 @@ it("a full snapshot gives each populated tag room, deduplicates overlaps and kee
     ),
   );
   const shared = repository("shared", { tags: GAME_TAGS.map((tag) => tag.id), stars: 5000 });
-  candidates.push(shared, { ...shared }, { ...shared, id: "shared-alias", owner: "FIXTURE" });
+  candidates.push(shared, { ...shared });
   const snapshot = buildSnapshot(candidates, [], NOW);
   assert.equal(snapshot.cards.length, 100);
   assert.equal(new Set(snapshot.cards.map((card) => card.id)).size, 100);

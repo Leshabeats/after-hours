@@ -158,12 +158,9 @@ export function buildSnapshot(
       a.card.id.localeCompare(b.card.id),
   );
   const ids = new Set<string>();
-  const slugs = new Set<string>();
   const ranked = scored.filter(({ card }) => {
-    const slug = `${card.owner}/${card.repo}`.toLowerCase();
-    if (ids.has(card.id) || slugs.has(slug)) return false;
+    if (ids.has(card.id)) return false;
     ids.add(card.id);
-    slugs.add(slug);
     return true;
   });
   const limit = 100;

@@ -24,7 +24,7 @@ indexing; incomplete API responses retain the checkpoint and prior publication.
 Search results are capped and are not exhaustive GitHub indexing. Each of the
 20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1 checkpoints restart with the fair admission policy,
+retries. Legacy version-1/2 checkpoints restart with the fair admission policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories (oldest check first) are additionally refreshed per scan; at most 40
@@ -43,7 +43,13 @@ cannot save or publish. Run retries resume; scans interrupted for over 48 hours
 restart their query windows. Partial scans never replace the last complete JSON
 snapshot. A completed snapshot contains at most 100 cards: reserve the top 14
 per populated tag, sharing slots for multi-tag repositories, then fill spare slots
-by global relevance. Selected cards keep their relevance order; new engines cannot
+by global relevance. Identity is deduplicated only by GitHub ID. Before publication,
+the selected (at most 100) candidates receive a checkpointed metadata refresh via
+stable IDs, including recent rows outside the rotating refresh pool. Only these
+verified candidates can be published; candidates that become unavailable are
+omitted without unverified backfill. Conflicting current URLs retain the prior
+snapshot and retry verification. This phase uses the same request/time budget.
+Selected cards keep their relevance order; new engines cannot
 crowd SteamOS/Proton out before filters run. Daily metrics retain
 90 days; old completed runs are bounded. Repository identities remain for
 first-discovery history and rotation. The UI marks published data older than 48

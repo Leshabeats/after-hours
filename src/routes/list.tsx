@@ -118,7 +118,7 @@ function ListPage() {
           {filtered.discovery.length ? (
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               {filtered.discovery.map((project) => (
-                <ProjectCard key={`${project.owner}/${project.repo}`} project={project} />
+                <ProjectCard key={`github:${project.id}`} project={project} />
               ))}
             </div>
           ) : shelf.discovery?.status !== "unavailable" && shelf.discovery?.updatedAt != null ? (
@@ -167,7 +167,10 @@ function ProjectSection({
       <h2 className="font-mono text-xs uppercase tracking-caps text-muted">{title}</h2>
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         {projects.map((project) => (
-          <ProjectCard key={`${project.owner}/${project.repo}`} project={project} />
+          <ProjectCard
+            key={"id" in project ? `github:${project.id}` : `${project.owner}/${project.repo}`}
+            project={project}
+          />
         ))}
       </div>
     </section>

@@ -25,19 +25,22 @@ export function fateProjects(
   shelf: ProjectShelf,
   search: CatalogSearch,
 ): (ProjectCard | DiscoveryCard)[] {
-  const projects = [
-    ...filterDiscovery(shelf.discovery?.cards, search),
-    ...shelf.ecosystem,
-    ...shelf.direction,
-    ...shelf.libraries,
-  ];
-  const seen = new Set<string>();
-  return projects.filter((project) => {
-    const key = `${project.owner}/${project.repo}`.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
+  const ids = new Set<string>();
+  const discovery = filterDiscovery(shelf.discovery?.cards, search).filter((card) => {
+    if (ids.has(card.id)) return false;
+    ids.add(card.id);
     return true;
   });
+  // Curated shelves lack stable IDs. Suppress their URL duplicates without merging
+  // distinct discovery identities, even if an older snapshot retained a reused slug.
+  const slugs = new Set(discovery.map((card) => `${card.owner}/${card.repo}`.toLowerCase()));
+  const curated = [...shelf.ecosystem, ...shelf.direction, ...shelf.libraries].filter((project) => {
+    const slug = `${project.owner}/${project.repo}`.toLowerCase();
+    if (slugs.has(slug)) return false;
+    slugs.add(slug);
+    return true;
+  });
+  return [...discovery, ...curated];
 }
 
 export function discoveryDate(timestamp: number): string {

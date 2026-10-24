@@ -48,6 +48,7 @@ function harness(override?: (url: string) => Response | undefined) {
     if (custom) return custom;
     if (url.includes("/search/repositories"))
       return json({ items: [raw()], total_count: 1, incomplete_results: false });
+    if (url.endsWith("/repositories/10")) return json(raw());
     if (url.endsWith("/releases/latest")) return json({ message: "Not Found" }, 404);
     if (url.includes("/pulls?"))
       return json([
@@ -259,7 +260,7 @@ test("known repository refresh uses stable identity when its old slug is reused"
   assert.equal((await store.repositories()).length, 1);
   assert.equal((await store.repositories())[0].repo, "renamed");
   assert.equal((await store.repositories())[0].firstSeenAt, NOW - DAY);
-  assert.equal(h.urls.filter((url) => url.endsWith("/repositories/10")).length, 1);
+  assert.equal(h.urls.filter((url) => url.endsWith("/repositories/10")).length, 2);
   assert.equal(
     h.urls.some((url) => url.endsWith("/repos/games/moon")),
     false,
@@ -345,14 +346,23 @@ async function fairSearch(store: import("./types.ts").DiscoveryStore) {
   await store.save(lease, NOW - DAY, 1000, [repo({ id: "900000", observedAt: NOW - DAY })], null);
   await store.publish(lease, NOW - DAY, { version: 1, generatedAt: NOW - DAY, cards: [] });
   const queries = new Map<string, number>();
+  const candidates = new Map<number, ReturnType<typeof raw>>();
   const h = harness((url) => {
     const u = new URL(url);
     if (u.pathname === "/repositories/900000") return json(raw({ id: 900000 }));
-    if (u.pathname !== "/search/repositories") return;
+    if (u.pathname !== "/search/repositories") {
+      const id = Number(u.pathname.match(/^\/repositories\/(\d+)$/)?.[1]);
+      if (candidates.has(id)) return json(candidates.get(id));
+      return;
+    }
     const q = u.searchParams.get("q")!;
     if (!queries.has(q)) queries.set(q, queries.size);
     const group = queries.get(q)!;
     const page = Number(u.searchParams.get("page"));
+    for (let i = 0; i < 29; i++) {
+      const id = 10000 + group * 100 + page * 30 + i;
+      candidates.set(id, raw({ id, name: `candidate-${group}-${page}-${i}` }));
+    }
     return json({
       items: [
         raw({ id: 900000 }),
@@ -373,8 +383,12 @@ async function fairSearch(store: import("./types.ts").DiscoveryStore) {
   const repos = await store.repositories();
   assert.equal(queries.size, 20);
   // Each topic's creation and activity window keeps its own 15 new-ID slots.
-  for (const q of queries.keys())
-    assert.equal(repos.filter((r) => r.id !== "900000" && r.source === q).length, 15, q);
+  for (const [q, group] of queries)
+    assert.equal(
+      repos.filter((r) => Math.floor((Number(r.id) - 10000) / 100) === group).length,
+      15,
+      q,
+    );
   assert.equal(repos.length, 301);
   assert.equal(h.urls.filter((url) => url.includes("/search/")).length, 40);
   assert.ok(resumed.requests <= 500);
@@ -421,6 +435,8 @@ async function activityIdentity(store: import("./types.ts").DiscoveryStore) {
         },
       ]);
     }
+    if (url === "https://api.github.com/repositories/999999")
+      return json(raw({ id: 999999, stargazers_count: 200 }));
     if (url === "https://api.github.com/repositories/999999/releases/latest") return json({}, 404);
     if (url.includes("/repositories/999999/pulls?")) return json([]);
   });
