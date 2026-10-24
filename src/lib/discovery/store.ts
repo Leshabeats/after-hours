@@ -45,6 +45,14 @@ function day(value: number) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+function countsTime(observation: Observation) {
+  const at = observation.countsObservedAt ?? observation.observedAt;
+  timestamp(at);
+  if (at > observation.observedAt)
+    throw new RangeError("Counts measurement is newer than observation.");
+  return at;
+}
+
 function cutoff(now: number) {
   return Math.max(0, Math.floor(now / DAY) * DAY - (RETAIN_DAYS - 1) * DAY);
 }
@@ -139,6 +147,7 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
         const savedCheckpoint = JSON.stringify(checkpoint ?? null);
         for (const observation of observations) {
           timestamp(observation.observedAt);
+          const measuredAt = countsTime(observation);
           const old = (
             await db.query<{ observation: StoredRepository; first_seen_at: number }>(
               "SELECT observation,first_seen_at FROM discovery_repositories WHERE id = $1",
@@ -154,7 +163,7 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           WHERE excluded.observed_at >= discovery_repositories.observed_at`,
             [observation.id, next.firstSeenAt, next.observedAt, JSON.stringify(next)],
           );
-          if (observation.observedAt >= cutoff(now)) {
+          if (measuredAt === observation.observedAt && measuredAt >= cutoff(now)) {
             await db.query(
               `INSERT INTO discovery_daily_metrics (repo_id,day,observed_at,stars,forks)
             VALUES ($1,$2::date,$3,$4,$5) ON CONFLICT (repo_id,day) DO UPDATE SET
@@ -288,8 +297,9 @@ export function createMemoryDiscovery(): DiscoveryStore {
       const nextMetrics = new Map(metrics);
       for (const observation of observations) {
         timestamp(observation.observedAt);
+        const measuredAt = countsTime(observation);
         nextRepos.set(observation.id, merge(nextRepos.get(observation.id), observation));
-        if (observation.observedAt < cutoff(now)) continue;
+        if (measuredAt !== observation.observedAt || measuredAt < cutoff(now)) continue;
         const key = `${observation.id}:${day(observation.observedAt)}`;
         const previous = nextMetrics.get(key);
         if (!previous || previous.observedAt <= observation.observedAt)

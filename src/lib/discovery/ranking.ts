@@ -72,19 +72,20 @@ export function buildSnapshot(
   now: number,
 ): DiscoverySnapshot {
   const scored = repos
-    .filter((repo) => eligible(repo) && now - repo.observedAt <= 2 * DAY)
+    .filter((repo) => eligible(repo) && now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY)
     .map((repo) => {
+      const measuredAt = repo.countsObservedAt ?? repo.observedAt;
       const history = metrics
         .filter(
           (row) =>
             row.repoId === repo.id &&
-            repo.observedAt - row.observedAt >= 6 * DAY &&
-            repo.observedAt - row.observedAt <= 9 * DAY,
+            measuredAt - row.observedAt >= 6 * DAY &&
+            measuredAt - row.observedAt <= 9 * DAY,
         )
         .sort(
           (a, b) =>
-            Math.abs(repo.observedAt - a.observedAt - 7 * DAY) -
-            Math.abs(repo.observedAt - b.observedAt - 7 * DAY),
+            Math.abs(measuredAt - a.observedAt - 7 * DAY) -
+            Math.abs(measuredAt - b.observedAt - 7 * DAY),
         );
       const baseline = history[0];
       const delta = baseline ? repo.stars - baseline.stars : null;
@@ -112,7 +113,7 @@ export function buildSnapshot(
         baseline && delta !== null
           ? {
               stars: delta,
-              days: Math.round(((repo.observedAt - baseline.observedAt) / DAY) * 10) / 10,
+              days: Math.round(((measuredAt - baseline.observedAt) / DAY) * 10) / 10,
             }
           : null;
       if (growing) {
@@ -136,7 +137,7 @@ export function buildSnapshot(
         tags: repo.tags,
         createdAt: repo.createdAt,
         firstSeenAt: repo.firstSeenAt,
-        observedAt: repo.observedAt,
+        observedAt: measuredAt,
         badges,
         reasons,
         growth,

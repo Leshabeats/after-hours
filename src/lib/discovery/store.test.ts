@@ -414,3 +414,43 @@ postgresTest(
     assert.deepEqual(await store.snapshot(), snapshot(NOW + 4));
   },
 );
+
+parity(
+  "availability-only updates preserve measurement time without inserting daily metrics",
+  async (store) => {
+    const lease = await store.acquire(NOW, DURATION);
+    assert.ok(lease);
+    await store.save(lease, NOW, DURATION, [observation({ countsObservedAt: NOW })], { page: 1 });
+    for (let day = 1; day <= 7; day++) {
+      await store.save(
+        lease,
+        NOW + day * DAY,
+        DURATION,
+        [
+          observation({
+            observedAt: NOW + day * DAY,
+            countsObservedAt: NOW,
+            disabled: true,
+          }),
+        ],
+        { page: day + 1 },
+      );
+    }
+    assert.deepEqual(await store.metrics(0), [
+      { repoId: "github-1", observedAt: NOW, stars: 100, forks: 10 },
+    ]);
+    const current = (await store.repositories())[0];
+    assert.equal(current.observedAt, NOW + 7 * DAY);
+    assert.equal(current.countsObservedAt, NOW);
+    assert.equal(current.disabled, true);
+    await store.save(
+      lease,
+      NOW + 8 * DAY,
+      DURATION,
+      [observation({ observedAt: NOW + 8 * DAY, countsObservedAt: NOW + 8 * DAY, stars: 150 })],
+      { done: true },
+    );
+    assert.equal((await store.metrics(0)).length, 2);
+    assert.equal((await store.repositories())[0].disabled, false);
+  },
+);

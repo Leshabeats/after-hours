@@ -8,7 +8,10 @@ rules are deterministic. Manual taxonomy/fork exceptions live in
 The daily feed is separate from the curated shelf and language libraries. No
 minimum star count is applied to discovery. `createdAt` is GitHub's creation time;
 `firstSeenAt` is when this catalog first observed the stable GitHub repository ID.
-Renames do not create a new repository. The growing badge requires 6–9 days of
+Known repositories refresh through their stable API IDs, so reused old slugs do
+not replace the original identity. Unavailable repository checks update exclusion
+state but preserve `countsObservedAt`; they insert no daily count metric. Renames
+do not create a new repository. The growing badge requires 6–9 days of
 actual observations (the displayed interval is exact to 0.1 days), at least ten
 additional stars and 2% relative growth with a small-base floor, plus a recent
 release or human merged PR from a bounded sample. No weekly history is fabricated

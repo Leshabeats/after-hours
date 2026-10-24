@@ -26,7 +26,12 @@ function raw(patch: Record<string, unknown> = {}) {
   };
 }
 function repo(patch: Partial<StoredRepository> = {}): StoredRepository {
-  return { ...parseRepository(raw(), NOW, "fixture")!, firstSeenAt: NOW, ...patch };
+  return {
+    ...parseRepository(raw(), NOW, "fixture")!,
+    firstSeenAt: NOW,
+    ...patch,
+    countsObservedAt: patch.countsObservedAt ?? patch.observedAt ?? NOW,
+  };
 }
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(data), { status, headers });
@@ -236,7 +241,7 @@ test("bounded activity counts human merged PRs only and doesn't invent historica
   assert.equal((await store.snapshot())?.cards[0].growth, null);
 });
 
-test("renamed repositories follow bounded API redirects without losing stable identity", async () => {
+test("known repository refresh uses stable identity when its old slug is reused", async () => {
   const store = createMemoryDiscovery();
   const lease = await store.acquire(NOW - DAY, 1000);
   assert.ok(lease);
@@ -246,10 +251,7 @@ test("renamed repositories follow bounded API redirects without losing stable id
     if (url.includes("/search/"))
       return json({ items: [], total_count: 0, incomplete_results: false });
     if (url.endsWith("/repos/games/moon"))
-      return new Response(null, {
-        status: 301,
-        headers: { location: "https://api.github.com/repositories/10" },
-      });
+      return json(raw({ id: 999, description: "Replacement repository at reused slug" }));
     if (url.endsWith("/repositories/10")) return json(raw({ name: "renamed" }));
   });
   assert.equal((await collectDiscovery({ store, ...h })).status, "published");
@@ -257,6 +259,10 @@ test("renamed repositories follow bounded API redirects without losing stable id
   assert.equal((await store.repositories())[0].repo, "renamed");
   assert.equal((await store.repositories())[0].firstSeenAt, NOW - DAY);
   assert.equal(h.urls.filter((url) => url.endsWith("/repositories/10")).length, 1);
+  assert.equal(
+    h.urls.some((url) => url.endsWith("/repos/games/moon")),
+    false,
+  );
 });
 
 test("repository redirects never forward credentials to another origin", async () => {
@@ -288,7 +294,7 @@ test("terminal repository unavailability advances metadata and enrichment checkp
       const h = harness((url) => {
         if (url.includes("/search/"))
           return json({ items: [], total_count: 0, incomplete_results: false });
-        if (url.endsWith("/repos/games/moon"))
+        if (url.endsWith("/repositories/10"))
           return duringActivity ? json(raw()) : json({}, status);
         if (url.endsWith("/releases/latest") && duringActivity) return json({}, status);
       });
@@ -296,5 +302,38 @@ test("terminal repository unavailability advances metadata and enrichment checkp
       assert.equal((await store.repositories())[0].disabled, true);
       assert.equal((await store.snapshot())?.cards.length, 0);
     }
+  }
+});
+
+test("unavailable counts never become an artificial weekly baseline on recovery", async () => {
+  for (const status of [404, 410, 451]) {
+    const store = createMemoryDiscovery();
+    const initialAt = NOW - 14 * DAY;
+    const lease = await store.acquire(initialAt, 1000);
+    assert.ok(lease);
+    await store.save(lease, initialAt, 1000, [repo({ observedAt: initialAt, stars: 10 })], null);
+    await store.publish(lease, initialAt, { version: 1, generatedAt: initialAt, cards: [] });
+    const absent = harness((url) => {
+      if (url.includes("/search/"))
+        return json({ items: [], total_count: 0, incomplete_results: false });
+      if (url.endsWith("/repositories/10") || url.endsWith("/repos/games/moon"))
+        return json({}, status);
+    });
+    absent.advance(-7 * DAY);
+    assert.equal((await collectDiscovery({ store, ...absent })).status, "published");
+    assert.equal((await store.metrics(0)).length, 1);
+    const hidden = (await store.repositories())[0];
+    assert.equal(hidden.disabled, true);
+    assert.equal(hidden.countsObservedAt, initialAt);
+    const back = harness((url) => {
+      if (url.includes("/search/"))
+        return json({ items: [], total_count: 0, incomplete_results: false });
+      if (url.endsWith("/repositories/10")) return json(raw({ stargazers_count: 200 }));
+    });
+    assert.equal((await collectDiscovery({ store, ...back })).status, "published");
+    const published = (await store.snapshot())!.cards[0];
+    assert.equal(published.growth, null);
+    assert.equal(published.badges.includes("growing"), false);
+    assert.equal((await store.metrics(0)).length, 2);
   }
 });

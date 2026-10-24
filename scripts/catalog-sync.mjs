@@ -36,7 +36,11 @@ try {
           incomplete_results: false,
         });
       if (url.pathname.endsWith("/pulls")) return Response.json([]);
-      const row = rows.find((r) => url.pathname === `/repos/${r.owner?.login}/${r.name}`);
+      const row = rows.find(
+        (r) =>
+          url.pathname === `/repositories/${r.id}` ||
+          url.pathname === `/repos/${r.owner?.login}/${r.name}`,
+      );
       return row ? Response.json(row) : Response.json({ message: "Not Found" }, { status: 404 });
     };
   }

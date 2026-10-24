@@ -66,6 +66,7 @@ export function parseRepository(raw: unknown, now: number, source: string): Obse
     createdAt,
     pushedAt,
     observedAt: now,
+    countsObservedAt: now,
     archived: r.archived,
     fork: r.fork,
     mirror: Boolean(r.mirror_url),
@@ -84,7 +85,12 @@ const taskSchema = z.discriminatedUnion("kind", [
     q: z.string().max(500),
     page: z.number().int().min(1).max(2),
   }),
-  z.object({ kind: z.literal("repo"), owner: slug, repo: slug }),
+  z.object({
+    kind: z.literal("repo"),
+    id: z.string().regex(/^\d+$/).optional(),
+    owner: slug,
+    repo: slug,
+  }),
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
@@ -141,12 +147,23 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
   const refresh = [...repos]
     .sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id))
     .slice(0, 180);
-  tasks.push(...refresh.map((r) => ({ kind: "repo" as const, owner: r.owner, repo: r.repo })));
+  tasks.push(
+    ...refresh.map((r) => ({ kind: "repo" as const, id: r.id, owner: r.owner, repo: r.repo })),
+  );
   for (const full of FORK_EXCEPTIONS) {
     const [owner, repo] = full.split("/");
     tasks.push({ kind: "repo", owner, repo });
   }
   return { version: 1, startedAt: now, index: 0, phase: "metadata", tasks, ids: [] };
+}
+
+function unavailable(repo: StoredRepository, now: number): Observation {
+  return {
+    ...repo,
+    disabled: true,
+    observedAt: now,
+    countsObservedAt: repo.countsObservedAt ?? repo.observedAt,
+  };
 }
 
 export async function collectDiscovery(options: CollectorOptions): Promise<CollectorResult> {
@@ -298,18 +315,27 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               cp.tasks.push({ ...task, page: 2 });
             }
           } else if (task.kind === "repo") {
-            const raw = await request(`/repos/${task.owner}/${task.repo}`);
-            const old = [...repos.values()].find(
-              (r) =>
-                `${r.owner}/${r.repo}`.toLowerCase() === `${task.owner}/${task.repo}`.toLowerCase(),
+            const old = task.id
+              ? repos.get(task.id)
+              : [...repos.values()].find(
+                  (r) =>
+                    `${r.owner}/${r.repo}`.toLowerCase() ===
+                    `${task.owner}/${task.repo}`.toLowerCase(),
+                );
+            // Stable IDs remain authoritative even when an old slug is reused.
+            const id = task.id ?? old?.id;
+            const raw = await request(
+              id ? `/repositories/${id}` : `/repos/${task.owner}/${task.repo}`,
             );
             const repo =
               raw === null
                 ? old
-                  ? { ...old, disabled: true, observedAt: now() }
+                  ? unavailable(old, now())
                   : null
                 : parseRepository(raw, now(), "refresh");
             if (raw !== null && !repo) throw new Error("Invalid GitHub repository metadata");
+            if (repo && id && repo.id !== id)
+              throw new Error("GitHub repository identity mismatch");
             if (repo) observations.push(repo);
           } else {
             const repo = repos.get(task.id);
@@ -371,12 +397,14 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           const previous =
             task.kind === "activity"
               ? repos.get(task.id)
-              : [...repos.values()].find(
-                  (repo) =>
-                    `${repo.owner}/${repo.repo}`.toLowerCase() ===
-                    `${task.owner}/${task.repo}`.toLowerCase(),
-                );
-          if (previous) observations.push({ ...previous, disabled: true, observedAt: now() });
+              : task.id
+                ? repos.get(task.id)
+                : [...repos.values()].find(
+                    (repo) =>
+                      `${repo.owner}/${repo.repo}`.toLowerCase() ===
+                      `${task.owner}/${task.repo}`.toLowerCase(),
+                  );
+          if (previous) observations.push(unavailable(previous, now()));
         }
         cp = { ...cp, index: cp.index + 1 };
         await store.save(lease, now(), LEASE_MS, observations, cp);

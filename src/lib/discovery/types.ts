@@ -21,6 +21,8 @@ export type Observation = {
   createdAt: number;
   pushedAt: number | null;
   observedAt: number;
+  /** Last actual star/fork measurement; absent only in older persisted observations. */
+  countsObservedAt?: number;
   archived: boolean;
   fork: boolean;
   mirror: boolean;
