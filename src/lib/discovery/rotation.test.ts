@@ -162,7 +162,12 @@ async function quietCatalog(store: DiscoveryStore) {
       snapshot.cards.some((r) => r.id === "6200"),
       day < 4,
     );
-    for (const card of snapshot.cards) assert.ok(card.observedAt >= START + day * DAY);
+    const stored = new Map((await store.repositories()).map((r) => [r.id, r]));
+    for (const card of snapshot.cards) {
+      assert.ok(h.now() - card.observedAt <= 2 * DAY);
+      assert.equal(card.observedAt, stored.get(card.id)!.countsObservedAt);
+      assert.ok(stored.get(card.id)!.observedAt >= START + day * DAY);
+    }
     const metadata = h.requests.flatMap((p) => {
       const m = p.match(/^\/repositories\/(\d+)$/);
       return m ? [Number(m[1])] : [];

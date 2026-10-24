@@ -143,7 +143,7 @@ it("fallback slots trim redundant fresh tags, retain sole fresh representatives 
   assert.deepEqual(selectPublicationCandidates([...repos].reverse(), [], NOW), selected);
 });
 
-it("verification priority does not use growth that expires or changes baseline before remeasurement", () => {
+it("identity validation ranks recorded growth; only actual remeasurement changes its baseline", () => {
   const expiring = Array.from({ length: 100 }, (_, i) =>
     repository(`expiring-${i}`, {
       observedAt: NOW - DAY,
@@ -171,15 +171,12 @@ it("verification priority does not use growth that expires or changes baseline b
     historical.cards.every((r) => r.id.startsWith("expiring-") && r.badges.includes("growing")),
   );
   const selected = selectPublicationCandidates(repos, metrics, NOW);
-  assert.equal(selected.filter((r) => r.id.startsWith("fresh-")).length, 30);
+  assert.deepEqual(selected, historical.cards);
   const oldCard = selected.find((r) => r.id.startsWith("expiring-"))!;
   assert.equal(oldCard.observedAt, NOW - DAY);
   assert.equal(oldCard.growth?.days, 8.5);
   assert.ok(oldCard.badges.includes("growing"));
-  const ids = new Set(selected.map((r) => r.id));
-  const remeasured = repos
-    .filter((r) => ids.has(r.id))
-    .map((r) => ({ ...r, observedAt: NOW, countsObservedAt: NOW }));
+  const remeasured = repos.map((r) => ({ ...r, observedAt: NOW, countsObservedAt: NOW }));
   assert.equal(
     buildSnapshot(remeasured, metrics, NOW).cards.filter((r) => r.badges.includes("growing"))
       .length,

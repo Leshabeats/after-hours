@@ -104,8 +104,8 @@ export function buildSnapshot(
   };
 }
 
-// Candidate selection may use old measurements only to schedule stable-ID verification.
-// These cards are not publishable until the collector remeasures their metadata.
+// Fresh candidates retain their actual measurement while their identity is validated.
+// Old measurements can only nominate a missing-tag retry, which must remeasure counts.
 export function selectPublicationCandidates(
   repos: StoredRepository[],
   metrics: DailyMetric[],
@@ -115,7 +115,6 @@ export function selectPublicationCandidates(
     repos.filter((repo) => now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY),
     metrics,
     now,
-    true,
   );
   const ids = new Set(fresh.map((card) => card.id));
   const covered = new Set(fresh.flatMap((card) => card.tags));
@@ -172,7 +171,6 @@ function rankCards(
   repos: StoredRepository[],
   metrics: DailyMetric[],
   now: number,
-  forVerification = false,
 ): DiscoveryCard[] {
   const scored = repos.filter(eligible).map((repo) => {
     const measuredAt = repo.countsObservedAt ?? repo.observedAt;
@@ -184,16 +182,6 @@ function rankCards(
       activityFresh && repo.releaseAt !== null && now - repo.releaseAt <= 30 * DAY;
     const merged = activityFresh && (repo.mergedPrs ?? 0) > 0;
     const growing = qualifiesGrowth(repo.stars, baseline, releaseFresh || merged);
-    // Planning only: an old growth bonus cannot reserve a verification slot after
-    // its baseline expires or another valid baseline takes over. Card timestamps
-    // and historical badges below still use the actual recorded measurement.
-    const scoreGrowing = forVerification
-      ? qualifiesGrowth(
-          repo.stars,
-          growthBaseline({ ...repo, countsObservedAt: now }, metrics),
-          releaseFresh || merged,
-        )
-      : growing;
     const badges: DiscoveryCard["badges"] = [];
     const reasons: string[] = [];
     if (now - repo.createdAt <= 30 * DAY) {
@@ -239,7 +227,7 @@ function rankCards(
       growth,
     };
     const score =
-      (scoreGrowing ? 6 : 0) +
+      (growing ? 6 : 0) +
       (badges.includes("new") ? 3 : 0) +
       (releaseFresh ? 2 : 0) +
       (merged ? 2 : 0) +

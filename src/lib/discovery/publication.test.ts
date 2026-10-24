@@ -36,7 +36,7 @@ async function publication(store: DiscoveryStore) {
     releaseAt: NOW - 4 * DAY,
   });
   const checkpoints = {
-    version: 4,
+    version: 5,
     startedAt: NOW,
     index: 0,
     phase: "activity",

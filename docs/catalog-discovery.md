@@ -32,7 +32,7 @@ indexing; incomplete API responses retain the checkpoint and prior publication.
 Search results are capped and are not exhaustive GitHub indexing. Each of the
 20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1/2/3 checkpoints restart with the fair admission policy,
+retries. Legacy version-1/2/3/4 checkpoints restart with the current admission and identity policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
@@ -62,17 +62,22 @@ per populated tag, sharing slots for multi-tag repositories, then fill spare slo
 by global relevance. Identity is deduplicated only by GitHub ID. Identity refresh
 starts with the fresh ranked set. An old eligible record can be added only as a
 fallback for a tag with no fresh representative, oldest measurement first; stale
-growth scores never compete with fresh scores. Verification priority also checks
-that a baseline remains valid at verification time, using only the already
-measured star count. This affects scheduling only; displayed timestamps and
-historical growth badges still use the actual measurement until remeasurement. Multi-tag fallbacks share slots,
+growth scores never compete with fresh scores. Fresh candidates rank by their
+actual measured growth. Identity validation updates public metadata and canonical
+links while retaining stars, forks and their original measurement time for up to
+two days; it does not insert a synthetic daily metric or move the growth baseline.
+Search and the rotating metadata queue sample new counts. Expired identity tasks
+remeasure, including after a pause. Multi-tag fallbacks share slots,
 and fresh tag coverage is preserved within the same 100-candidate limit.
 
-The checkpoint records every ID whose public metadata was actually obtained by
-search or metadata requests in this run. Final ranking uses all those IDs with
-real measurements within two days, not just the preliminary identity task list.
-This lets fresh measured growth survive changes in scores after refresh. A
-conflicting current URL retries the selected identities without publishing;
+The version-5 checkpoint records successful public metadata/identity validations.
+Final ranking considers all eligible measurements within two days, using eleven
+days of history to retain their 6–9-day baselines. Every selected card must have a
+validation receipt before publication. Expiry, exclusion or changed tags can expose
+new winners; those receive another bounded identity batch, keeping receipts only
+for the complete current winner set (at most 100 IDs). These batches share the
+same per-invocation request/time budgets and resume from their saved cursor.
+A conflicting current URL retries the selected identities without publishing;
 private/unknown visibility excludes immediately. Request/time budgets are unchanged.
 Selected cards keep their relevance order; new engines cannot
 crowd SteamOS/Proton out before filters run. Daily metrics retain

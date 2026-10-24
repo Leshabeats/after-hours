@@ -110,11 +110,12 @@ const taskSchema = z.discriminatedUnion("kind", [
     id: z.string().regex(/^\d+$/).optional(),
     owner: slug,
     repo: slug,
+    preserveCounts: z.boolean().optional(),
   }),
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(4),
+  version: z.literal(5),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
   phase: z.enum(["metadata", "activity", "identity"]),
@@ -196,7 +197,7 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks.push({ kind: "repo", owner, repo });
   }
   return {
-    version: 4,
+    version: 5,
     startedAt: now,
     index: 0,
     phase: "metadata",
@@ -324,7 +325,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        [1, 2, 3].includes(Number(lease.checkpoint.version)))
+        [1, 2, 3, 4].includes(Number(lease.checkpoint.version)))
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -394,7 +395,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               id ? `/repositories/${id}` : `/repos/${task.owner}/${task.repo}`,
             );
             const confirmedPublic = publicVisibility.safeParse(raw).success;
-            const repo = !confirmedPublic
+            let repo = !confirmedPublic
               ? old
                 ? unavailable(old, now())
                 : null
@@ -402,6 +403,24 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
             if (confirmedPublic && !repo) throw new Error("Invalid GitHub repository metadata");
             if (repo && id && repo.id !== id)
               throw new Error("GitHub repository identity mismatch");
+            // Identity validation must not move a still-valid measurement to a
+            // different baseline window. Search and the rotating metadata queue
+            // sample new counts; identity-only tasks update public metadata/slug.
+            // Recheck the strict age bound after the response, including resumes.
+            if (
+              task.preserveCounts &&
+              old &&
+              eligible(old) &&
+              repo?.isPublic === true &&
+              now() - (old.countsObservedAt ?? old.observedAt) <= 2 * DAY
+            ) {
+              repo = {
+                ...repo,
+                stars: old.stars,
+                forks: old.forks,
+                countsObservedAt: old.countsObservedAt ?? old.observedAt,
+              };
+            }
             if (repo) observations.push(repo);
           } else {
             const repo = repos.get(task.id);
@@ -473,10 +492,8 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           if (previous) observations.push(unavailable(previous, now()));
         }
         if (task.kind !== "activity") {
-          const measured = observations
-            .filter((r) => r.isPublic === true && r.countsObservedAt === r.observedAt)
-            .map((r) => r.id);
-          cp = { ...cp, metadataIds: [...new Set([...cp.metadataIds, ...measured])] };
+          const confirmed = observations.filter((r) => r.isPublic === true).map((r) => r.id);
+          cp = { ...cp, metadataIds: [...new Set([...cp.metadataIds, ...confirmed])] };
         }
         cp = { ...cp, index: cp.index + 1 };
         await store.save(lease, now(), LEASE_MS, observations, cp);
@@ -517,7 +534,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         continue;
       }
       const current = await store.repositories();
-      const metrics = await store.metrics(now() - 10 * DAY);
+      const metrics = await store.metrics(now() - 11 * DAY);
       if (cp.phase === "activity") {
         // Validate only the bounded publication candidates, including fresh rows outside
         // the rotating refresh budget. Cached slugs must never decide repository identity.
@@ -526,28 +543,59 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           ...cp,
           phase: "identity",
           index: 0,
-          tasks: candidates.map((r) => ({ kind: "repo", id: r.id, owner: r.owner, repo: r.repo })),
+          tasks: candidates.map((r) => ({
+            kind: "repo",
+            id: r.id,
+            owner: r.owner,
+            repo: r.repo,
+            preserveCounts: now() - r.observedAt <= 2 * DAY,
+          })),
         };
         await store.save(lease, now(), LEASE_MS, [], cp);
         continue;
       }
       const verified = new Set(cp.metadataIds);
-      const snapshot = buildSnapshot(
-        current.filter((repo) => verified.has(repo.id)),
-        metrics,
-        now(),
+      const evaluatedAt = now();
+      const desired = selectPublicationCandidates(current, metrics, evaluatedAt);
+      const desiredIds = new Set(desired.map((card) => card.id));
+      const unverified = desired.filter(
+        (card) => !verified.has(card.id) || evaluatedAt - card.observedAt > 2 * DAY,
       );
+      if (unverified.length) {
+        // Expiry, revocation or changed tags can expose other ranked cards. Plan
+        // validation from actual measurements, including missing-tag retries that
+        // expired during the previous batch, not a future baseline. Keep the
+        // desired winners' receipts; evicted IDs must be validated if chosen later.
+        // Each batch has at most 100 tasks and shares the same request/time budget.
+        cp = {
+          ...cp,
+          index: 0,
+          metadataIds: cp.metadataIds.filter((id) => desiredIds.has(id)),
+          tasks: unverified.map((r) => ({
+            kind: "repo",
+            id: r.id,
+            owner: r.owner,
+            repo: r.repo,
+            preserveCounts: evaluatedAt - r.observedAt <= 2 * DAY,
+          })),
+        };
+        await store.save(lease, now(), LEASE_MS, [], cp);
+        continue;
+      }
+      const snapshot = buildSnapshot(current, metrics, evaluatedAt);
       const urls = new Set(snapshot.cards.map((card) => card.url.toLowerCase()));
       if (urls.size !== snapshot.cards.length) {
         // Conflicting upstream metadata must be retried, never settled by score or slug dedupe.
         cp = {
           ...cp,
           index: 0,
+          metadataIds: cp.metadataIds.filter((id) => desiredIds.has(id)),
           tasks: snapshot.cards.map((r) => ({
             kind: "repo",
             id: r.id,
             owner: r.owner,
             repo: r.repo,
+            preserveCounts: now() - r.observedAt <= 2 * DAY,
           })),
         };
         await store.save(lease, now(), LEASE_MS, [], cp);

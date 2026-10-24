@@ -464,21 +464,23 @@ postgresTest("postgres: stable activity identity beyond metadata refresh budget"
 });
 
 test("legacy admission checkpoints restart safely while retaining saved observations", async () => {
-  const store = createMemoryDiscovery();
-  const lease = await store.acquire(NOW, 1000);
-  assert.ok(lease);
-  await store.save(lease, NOW, 1000, [repo()], {
-    version: 1,
-    startedAt: NOW,
-    index: 0,
-    phase: "metadata",
-    tasks: [],
-    ids: ["10"],
-  });
-  await store.release(lease, NOW, "interrupted legacy scan");
-  const h = harness();
-  assert.equal((await collectDiscovery({ store, ...h })).status, "published");
-  assert.equal(h.urls.filter((url) => url.includes("/search/")).length, 20);
-  assert.equal((await store.repositories()).length, 1);
-  assert.equal((await store.repositories())[0].firstSeenAt, NOW);
+  for (const version of [1, 2, 3, 4]) {
+    const store = createMemoryDiscovery();
+    const lease = await store.acquire(NOW, 1000);
+    assert.ok(lease);
+    await store.save(lease, NOW, 1000, [repo()], {
+      version,
+      startedAt: NOW,
+      index: 0,
+      phase: "metadata",
+      tasks: [],
+      ids: ["10"],
+    });
+    await store.release(lease, NOW, "interrupted legacy scan");
+    const h = harness();
+    assert.equal((await collectDiscovery({ store, ...h })).status, "published");
+    assert.equal(h.urls.filter((url) => url.includes("/search/")).length, 20);
+    assert.equal((await store.repositories()).length, 1);
+    assert.equal((await store.repositories())[0].firstSeenAt, NOW);
+  }
 });
