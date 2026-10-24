@@ -27,6 +27,8 @@ const MAX_CANDIDATES = 300;
 // Reserve equal space for each topic and each created/pushed query window.
 const MAX_QUERY_CANDIDATES = MAX_CANDIDATES / (TOPICS.length * 2);
 const MAX_ENRICH = 40;
+const MAX_REFRESH = 180;
+const MAX_EXCLUDED_RETRIES = 18;
 const slug = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+$/)
@@ -158,16 +160,25 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
   // Age still rotates the due queue when the catalog exceeds one invocation's budget.
   const due = (r: StoredRepository) =>
     eligible(r) && now - (r.countsObservedAt ?? r.observedAt) >= DAY;
-  const refresh = [...repos]
-    .sort(
-      (a, b) =>
-        Number(due(b)) - Number(due(a)) ||
-        (due(a)
-          ? (a.countsObservedAt ?? a.observedAt) - (b.countsObservedAt ?? b.observedAt)
-          : a.observedAt - b.observedAt) ||
-        a.id.localeCompare(b.id),
-    )
-    .slice(0, 180);
+  const ordered = [...repos].sort(
+    (a, b) =>
+      Number(due(b)) - Number(due(a)) ||
+      (due(a)
+        ? (a.countsObservedAt ?? a.observedAt) - (b.countsObservedAt ?? b.observedAt)
+        : a.observedAt - b.observedAt) ||
+      a.id.localeCompare(b.id),
+  );
+  // A permanently full eligible queue must not make temporary exclusions permanent.
+  // Reserve 10% of the same budget, oldest check first; unused slots remain available.
+  const retries = [...repos]
+    .filter((r) => !eligible(r))
+    .sort((a, b) => a.observedAt - b.observedAt || a.id.localeCompare(b.id))
+    .slice(0, MAX_EXCLUDED_RETRIES);
+  const retryIds = new Set(retries.map((r) => r.id));
+  const refresh = [
+    ...ordered.filter((r) => !retryIds.has(r.id)).slice(0, MAX_REFRESH - retries.length),
+    ...retries,
+  ];
   tasks.push(
     ...refresh.map((r) => ({ kind: "repo" as const, id: r.id, owner: r.owner, repo: r.repo })),
   );

@@ -29,7 +29,10 @@ retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
 would exceed two days before the next daily run take priority over excluded rows;
-oldest measurements rotate first. Up to 40 repositories receive release/PR
+oldest measurements rotate first. Eighteen of the same 180 slots are reserved
+for excluded-row retries, oldest check first, so temporary 404/410/451 exclusions
+can recover even while the eligible queue stays full. Unused retry slots return
+to the main queue. Up to 40 repositories receive release/PR
 samples. Rows with a real 6–9-day baseline take priority; within each group,
 service age (last activity check, or first discovery for unchecked rows) rotates
 oldest first. A constant influx of new rows cannot displace baseline-ready rows

@@ -166,7 +166,7 @@ async function quietCatalog(store: DiscoveryStore) {
       const m = p.match(/^\/repositories\/(\d+)$/);
       return m ? [Number(m[1])] : [];
     });
-    if (day === 0) assert.ok(metadata.slice(0, 180).every((id) => id < 7000));
+    if (day === 0) assert.ok(metadata.slice(0, 162).every((id) => id < 7000));
     for (const id of metadata) if (id <= 600) visited.add(id);
     if (day === 3) assert.equal(visited.size, 600);
   }
@@ -176,4 +176,55 @@ test("growing quiet catalog preserves tags through real verification and fair re
 postgresTest(
   "postgres: growing quiet catalog preserves tags without fabricated freshness",
   async (pool) => quietCatalog(createPostgresDiscovery(pool)),
+);
+
+async function retryExcluded(store: DiscoveryStore) {
+  await seed(store, [
+    [
+      ...Array.from({ length: 600 }, (_, i) => observation(i + 1, START - 10 * DAY)),
+      ...Array.from({ length: 40 }, (_, i) => observation(7000 + i, START - 20 * DAY)),
+    ],
+  ]);
+  let recovered = false;
+  for (let day = 0; day < 6; day++) {
+    const h = dailyApi(day, (path) =>
+      path === "/repositories/7000"
+        ? day < 3
+          ? new Response("{}", { status: 404 })
+          : Response.json({
+              ...raw(7000, START + day * DAY),
+              disabled: false,
+              topics: ["steamos"],
+              description: "SteamOS tools",
+            })
+        : undefined,
+    );
+    const result = await collectDiscovery({ store, ...h });
+    assert.equal(result.status, "published");
+    const metadata = h.requests.filter((path) => /^\/repositories\/\d+$/.test(path));
+    if (day === 0) {
+      const firstQueue = metadata.slice(0, 180);
+      assert.equal(firstQueue.filter((path) => Number(path.split("/").at(-1)) >= 7000).length, 18);
+      assert.equal(firstQueue.length, 180);
+    }
+    const target = (await store.repositories()).find((r) => r.id === "7000")!;
+    if (day < 3) {
+      assert.equal(target.disabled, true);
+      assert.equal(target.countsObservedAt, START - 20 * DAY);
+    }
+    if (!target.disabled) {
+      recovered = true;
+      assert.ok(target.countsObservedAt! >= START + 3 * DAY);
+      assert.ok(
+        (await store.snapshot())!.cards.some((r) => r.id === "7000" && r.tags.includes("steamos")),
+      );
+    }
+  }
+  assert.equal(recovered, true);
+}
+test("excluded retries recover a temporary 404 despite an always-full eligible queue", async () =>
+  retryExcluded(createMemoryDiscovery()));
+postgresTest(
+  "postgres: bounded excluded retries recover 404 without synthetic history",
+  async (pool) => retryExcluded(createPostgresDiscovery(pool)),
 );
