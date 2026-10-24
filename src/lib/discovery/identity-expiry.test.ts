@@ -31,7 +31,8 @@ async function expiry(store: DiscoveryStore) {
   const lease = await store.acquire(NOW, DAY);
   assert.ok(lease);
   const checkpoint = {
-    version: 6,
+    version: 7,
+    scanId: "11111111-1111-4111-8111-111111111111",
     startedAt: NOW,
     phase: "activity",
     index: 0,

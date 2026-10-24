@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { transaction, type Database } from "../db/postgres.ts";
+import { protectCounts } from "./measurements.ts";
 import type {
   DailyMetric,
   DiscoverySnapshot,
@@ -94,6 +95,9 @@ function merge(previous: StoredRepository | undefined, observed: Observation): S
       mergedPrs: null,
       activityCheckedAt: null,
       countsObservedAt: previous ? countsTime(previous) : countsTime(observed),
+      countsSource: undefined,
+      countsScanId: undefined,
+      countsMeasured: false,
     };
   }
   if (previous && previous.observedAt > observed.observedAt) return previous;
@@ -186,9 +190,9 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
         const current = await state(db);
         requireLease(current, lease, now);
         const savedCheckpoint = JSON.stringify(checkpoint ?? null);
-        for (const observation of observations) {
+        for (let observation of observations) {
           timestamp(observation.observedAt);
-          const measuredAt = countsTime(observation);
+          countsTime(observation);
           const old = (
             await db.query<{ observation: StoredRepository; first_seen_at: number }>(
               "SELECT observation,first_seen_at FROM discovery_repositories WHERE id = $1",
@@ -196,6 +200,8 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
             )
           ).rows[0];
           const previous = old ? { ...old.observation, firstSeenAt: old.first_seen_at } : undefined;
+          observation = protectCounts(previous, observation);
+          const measuredAt = countsTime(observation);
           const next = merge(previous, observation);
           await db.query(
             `INSERT INTO discovery_repositories (id,first_seen_at,observed_at,observation)
@@ -206,6 +212,7 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           );
           if (
             observation.isPublic === true &&
+            observation.countsMeasured === true &&
             measuredAt === observation.observedAt &&
             measuredAt >= cutoff(now)
           ) {
@@ -346,12 +353,15 @@ export function createMemoryDiscovery(): DiscoveryStore {
       // Plan the full batch before writing, matching PostgreSQL transaction rollback.
       const nextRepos = new Map(repositories);
       const nextMetrics = new Map(metrics);
-      for (const observation of observations) {
+      for (let observation of observations) {
         timestamp(observation.observedAt);
+        countsTime(observation);
+        observation = protectCounts(nextRepos.get(observation.id), observation);
         const measuredAt = countsTime(observation);
         nextRepos.set(observation.id, merge(nextRepos.get(observation.id), observation));
         if (
           observation.isPublic !== true ||
+          observation.countsMeasured !== true ||
           measuredAt !== observation.observedAt ||
           measuredAt < cutoff(now)
         )

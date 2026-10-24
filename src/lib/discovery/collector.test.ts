@@ -464,7 +464,7 @@ postgresTest("postgres: stable activity identity beyond metadata refresh budget"
 });
 
 test("legacy admission checkpoints restart safely while retaining saved observations", async () => {
-  for (const version of [1, 2, 3, 4, 5]) {
+  for (const version of [1, 2, 3, 4, 5, 6]) {
     const store = createMemoryDiscovery();
     const lease = await store.acquire(NOW, 1000);
     assert.ok(lease);

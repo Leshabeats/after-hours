@@ -27,6 +27,7 @@ function repository(id: string, patch: Partial<StoredRepository> = {}): StoredRe
     createdAt: NOW - DAY,
     pushedAt: NOW - DAY,
     observedAt: NOW,
+    countsMeasured: true,
     countsObservedAt: NOW,
     archived: false,
     fork: false,

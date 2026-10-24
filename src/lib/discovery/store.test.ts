@@ -26,6 +26,7 @@ function observation(patch: Partial<Observation> = {}): Observation {
     createdAt: NOW - 10 * DAY,
     pushedAt: NOW - DAY,
     observedAt: NOW,
+    countsMeasured: true,
     archived: false,
     fork: false,
     mirror: false,
@@ -46,6 +47,128 @@ function parity(name: string, exercise: (store: DiscoveryStore) => Promise<void>
   it(`memory: ${name}`, async () => exercise(createMemoryDiscovery()));
   postgresTest(`postgres: ${name}`, async (pool) => exercise(createPostgresDiscovery(pool)));
 }
+
+parity(
+  "sample provenance survives late search, equal timestamps, replay and revocation",
+  async (store) => {
+    const lease = await store.acquire(NOW, DURATION);
+    assert.ok(lease);
+    const scan = "11111111-1111-4111-8111-111111111111";
+    const authoritative = observation({
+      countsSource: "repository",
+      countsScanId: scan,
+      countsObservedAt: NOW,
+      stars: 180,
+      forks: 18,
+    });
+    await store.save(lease, NOW, DURATION, [authoritative], null);
+    for (const at of [NOW, NOW + 1, NOW + 1, NOW - 1, NOW - DAY]) {
+      await store.save(
+        lease,
+        NOW + 2,
+        DURATION,
+        [
+          observation({
+            countsSource: "search",
+            countsScanId: scan,
+            observedAt: at,
+            countsObservedAt: at,
+            stars: 50,
+            forks: 5,
+            owner: "search-owner",
+          }),
+        ],
+        null,
+      );
+      const current = (await store.repositories())[0];
+      assert.equal(current.owner, "search-owner");
+      assert.equal(current.stars, 180);
+      assert.equal(current.forks, 18);
+      assert.equal(current.countsObservedAt, NOW);
+      assert.equal(current.countsSource, "repository");
+      assert.deepEqual(await store.metrics(0), [
+        { repoId: "github-1", observedAt: NOW, stars: 180, forks: 18 },
+      ]);
+    }
+    await store.save(
+      lease,
+      NOW + 2,
+      DURATION,
+      [
+        observation({
+          id: "unmeasured",
+          countsMeasured: false,
+          countsObservedAt: NOW + 2,
+          observedAt: NOW + 2,
+        }),
+      ],
+      null,
+    );
+    assert.ok(!(await store.metrics(0)).some((m) => m.repoId === "unmeasured"));
+    // A new scan can measure a genuine decrease; precedence is not a max-counter rule.
+    const next = "22222222-2222-4222-8222-222222222222";
+    await store.save(
+      lease,
+      NOW + 3,
+      DURATION,
+      [
+        observation({
+          countsSource: "search",
+          countsScanId: next,
+          observedAt: NOW + 3,
+          stars: 100,
+          forks: 10,
+        }),
+      ],
+      null,
+    );
+    assert.equal((await store.repositories()).find((r) => r.id === "github-1")!.stars, 100);
+    await store.save(
+      lease,
+      NOW + 3,
+      DURATION,
+      [
+        observation({
+          countsSource: "repository",
+          countsScanId: next,
+          observedAt: NOW + 3,
+          stars: 80,
+          forks: 8,
+        }),
+      ],
+      null,
+    );
+    assert.equal((await store.metrics(0))[0].stars, 80);
+    for (const at of [NOW + 4, NOW + 5])
+      await store.save(
+        lease,
+        at,
+        DURATION,
+        [observation({ ...authoritative, observedAt: at, isPublic: false, countsMeasured: false })],
+        null,
+      );
+    const revoked = (await store.repositories()).find((r) => r.id === "github-1")!;
+    assert.equal(revoked.countsSource, undefined);
+    assert.equal(revoked.countsScanId, undefined);
+    await store.save(
+      lease,
+      NOW + 6,
+      DURATION,
+      [
+        observation({
+          countsSource: "repository",
+          countsScanId: next,
+          observedAt: NOW + 6,
+          stars: 0,
+          forks: 0,
+        }),
+      ],
+      null,
+    );
+    assert.equal((await store.repositories()).find((r) => r.id === "github-1")!.stars, 0);
+    assert.equal((await store.metrics(0))[0].stars, 0);
+  },
+);
 
 parity(
   "stable ids survive duplicate/rename; metadata null preserves activity and measured null clears it",

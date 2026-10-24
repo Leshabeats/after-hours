@@ -32,7 +32,7 @@ indexing; incomplete API responses retain the checkpoint and prior publication.
 Search results are capped and are not exhaustive GitHub indexing. Each of the
 20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1/2/3/4/5 checkpoints restart with the current admission and identity policy,
+retries. Legacy version-1/2/3/4/5/6 checkpoints restart with the current admission and identity policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
@@ -64,13 +64,19 @@ starts with the fresh ranked set. An old eligible record can be added only as a
 fallback for a tag with no fresh representative, oldest measurement first; stale
 growth scores never compete with fresh scores. Fresh candidates rank by their
 actual measured growth. Identity validation updates public metadata and canonical
-links while retaining stars, forks and their original measurement time for up to
-two days; it does not insert a synthetic daily metric or move the growth baseline.
+links while retaining prior-scan stars, forks and their original measurement time
+for up to two days; it does not insert a synthetic metric or move that baseline.
+Current-scan search samples instead yield to the stable-ID sample. Count source
+and scan UUID are stored with the sample, so later search/slug documents cannot
+replace a stable-ID sample from the same scan. The UUID survives checkpoints and
+changes on a new/restarted scan; equal timestamps do not determine provenance.
+Daily metrics require an explicit actual-measurement marker in both stores.
+Activity, identity-only validation and revocations never manufacture samples.
 Search and the rotating metadata queue sample new counts. Expired identity tasks
 remeasure, including after a pause. Multi-tag fallbacks share slots,
 and fresh tag coverage is preserved within the same 100-candidate limit.
 
-The version-6 checkpoint records successful public metadata validations obtained
+The version-7 checkpoint records successful public metadata validations obtained
 through stable-ID requests. Search and slug-only responses never grant these
 identity receipts, including for a later replacement winner. If a later search or
 slug response overwrites metadata, any earlier identity receipt is invalidated.

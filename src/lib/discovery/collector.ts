@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { protectCounts, retainCounts } from "./measurements.ts";
 import {
   buildSnapshot,
   selectPublicationCandidates,
@@ -87,6 +89,7 @@ export function parseRepository(raw: unknown, now: number, source: string): Obse
     pushedAt,
     observedAt: now,
     countsObservedAt: now,
+    countsMeasured: true,
     archived: r.archived,
     fork: r.fork,
     mirror: Boolean(r.mirror_url),
@@ -115,7 +118,8 @@ const taskSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(6),
+  version: z.literal(7),
+  scanId: z.string().uuid(),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
   phase: z.enum(["metadata", "activity", "identity"]),
@@ -197,7 +201,8 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks.push({ kind: "repo", owner, repo });
   }
   return {
-    version: 6,
+    version: 7,
+    scanId: randomUUID(),
     startedAt: now,
     index: 0,
     phase: "metadata",
@@ -215,6 +220,9 @@ function unavailable(repo: StoredRepository, now: number): Observation {
     isPublic: false,
     observedAt: now,
     countsObservedAt: repo.countsObservedAt ?? repo.observedAt,
+    countsMeasured: false,
+    countsSource: undefined,
+    countsScanId: undefined,
   };
 }
 
@@ -325,7 +333,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        [1, 2, 3, 4, 5].includes(Number(lease.checkpoint.version)))
+        [1, 2, 3, 4, 5, 6].includes(Number(lease.checkpoint.version)))
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -362,6 +370,8 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               }
               const repo = parseRepository(item, now(), task.q);
               if (!repo) continue;
+              repo.countsSource = "search";
+              repo.countsScanId = cp.scanId;
               // Preserve exclusion updates for existing IDs, but do not ingest unrelated repositories.
               if (!eligible(repo) && !repos.has(repo.id)) continue;
               // Existing IDs (including overlap from earlier queries) need no new slot.
@@ -403,23 +413,23 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
             if (confirmedPublic && !repo) throw new Error("Invalid GitHub repository metadata");
             if (repo && id && repo.id !== id)
               throw new Error("GitHub repository identity mismatch");
-            // Identity validation must not move a still-valid measurement to a
-            // different baseline window. Search and the rotating metadata queue
-            // sample new counts; identity-only tasks update public metadata/slug.
+            if (repo?.isPublic === true) {
+              repo.countsSource = id ? "repository" : "search";
+              repo.countsScanId = cp.scanId;
+            }
+            // Retain a fresh prior-scan sample or this scan's authoritative sample.
+            // A current search sample instead yields to these stable-ID counts.
+            // Identity-only updates must not move a retained baseline window.
             // Recheck the strict age bound after the response, including resumes.
             if (
               task.preserveCounts &&
               old &&
               eligible(old) &&
               repo?.isPublic === true &&
+              (old.countsScanId !== cp.scanId || old.countsSource === "repository") &&
               now() - (old.countsObservedAt ?? old.observedAt) <= 2 * DAY
             ) {
-              repo = {
-                ...repo,
-                stars: old.stars,
-                forks: old.forks,
-                countsObservedAt: old.countsObservedAt ?? old.observedAt,
-              };
+              repo = retainCounts(repo, old);
             }
             if (repo) observations.push(repo);
           } else {
@@ -474,6 +484,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                 releaseAt: releaseAt !== null && Number.isFinite(releaseAt) ? releaseAt : null,
                 mergedPrs,
                 activityCheckedAt: now(),
+                countsMeasured: false,
               });
             }
           }
@@ -490,6 +501,9 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                       `${task.owner}/${task.repo}`.toLowerCase(),
                   );
           if (previous) observations.push(unavailable(previous, now()));
+        }
+        for (let i = 0; i < observations.length; i++) {
+          observations[i] = protectCounts(repos.get(observations[i].id), observations[i]);
         }
         // A later search page may overwrite metadata obtained by an earlier ID
         // request. Its old confirmation must not authorize the replacement body.

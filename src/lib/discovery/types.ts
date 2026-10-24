@@ -25,6 +25,11 @@ export type Observation = {
   observedAt: number;
   /** Last actual star/fork measurement; absent only in older persisted observations. */
   countsObservedAt?: number;
+  /** Provenance belongs to the count sample, independently of current metadata. */
+  countsSource?: "search" | "repository";
+  countsScanId?: string;
+  /** Only true for an actual new sample in this observation, never copied counts. */
+  countsMeasured?: boolean;
   archived: boolean;
   fork: boolean;
   mirror: boolean;
