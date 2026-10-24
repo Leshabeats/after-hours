@@ -34,6 +34,7 @@ function observation(patch: Partial<Observation> = {}): Observation {
     source: "search",
     releaseAt: NOW - DAY,
     mergedPrs: 4,
+    isPublic: true,
     activityCheckedAt: NOW,
     ...patch,
   };

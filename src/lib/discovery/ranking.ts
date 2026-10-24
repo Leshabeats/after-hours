@@ -59,6 +59,7 @@ export function classifyRepository(
 
 export function eligible(repo: Observation): boolean {
   return (
+    repo.isPublic === true &&
     !repo.archived &&
     !repo.disabled &&
     !repo.mirror &&
@@ -95,7 +96,7 @@ export function buildSnapshot(
   return {
     version: 1,
     generatedAt: now,
-    cards: selectPublicationCandidates(
+    cards: rankCards(
       repos.filter((repo) => now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY),
       metrics,
       now,
@@ -110,6 +111,69 @@ export function selectPublicationCandidates(
   metrics: DailyMetric[],
   now: number,
 ): DiscoveryCard[] {
+  const fresh = rankCards(
+    repos.filter((repo) => now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY),
+    metrics,
+    now,
+    true,
+  );
+  const ids = new Set(fresh.map((card) => card.id));
+  const covered = new Set(fresh.flatMap((card) => card.tags));
+  const tagCounts = new Map<GameTag, number>();
+  for (const card of fresh) {
+    for (const tag of new Set(card.tags)) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+  }
+  const stale = repos
+    .filter((repo) => eligible(repo) && now - (repo.countsObservedAt ?? repo.observedAt) > 2 * DAY)
+    .sort(
+      (a, b) =>
+        (a.countsObservedAt ?? a.observedAt) - (b.countsObservedAt ?? b.observedAt) ||
+        a.id.localeCompare(b.id),
+    );
+  const fallbacks: DiscoveryCard[] = [];
+  for (const { id: tag } of GAME_TAGS) {
+    if (covered.has(tag)) continue;
+    const candidate = stale.find((repo) => !ids.has(repo.id) && repo.tags.includes(tag));
+    if (!candidate) continue;
+    if (fresh.length + fallbacks.length >= 100) {
+      // Make room without removing the last fresh representative of any populated tag.
+      let removable = fresh.length - 1;
+      while (
+        removable >= 0 &&
+        fresh[removable].tags.some((value) => (tagCounts.get(value) ?? 0) <= 1)
+      )
+        removable--;
+      if (removable < 0) continue;
+      const [removed] = fresh.splice(removable, 1);
+      for (const value of new Set(removed.tags)) tagCounts.set(value, tagCounts.get(value)! - 1);
+    }
+    // This is only a retry identity. Old growth must not influence candidate selection.
+    fallbacks.push(rankCards([candidate], [], now)[0]);
+    ids.add(candidate.id);
+    for (const value of candidate.tags) covered.add(value);
+  }
+  return [...fresh, ...fallbacks];
+}
+
+function qualifiesGrowth(
+  stars: number,
+  baseline: DailyMetric | undefined,
+  active: boolean,
+): boolean {
+  return (
+    baseline !== undefined &&
+    stars - baseline.stars >= 10 &&
+    (stars - baseline.stars) / Math.max(baseline.stars, 20) >= 0.02 &&
+    active
+  );
+}
+
+function rankCards(
+  repos: StoredRepository[],
+  metrics: DailyMetric[],
+  now: number,
+  forVerification = false,
+): DiscoveryCard[] {
   const scored = repos.filter(eligible).map((repo) => {
     const measuredAt = repo.countsObservedAt ?? repo.observedAt;
     const baseline = growthBaseline(repo, metrics);
@@ -119,12 +183,17 @@ export function selectPublicationCandidates(
     const releaseFresh =
       activityFresh && repo.releaseAt !== null && now - repo.releaseAt <= 30 * DAY;
     const merged = activityFresh && (repo.mergedPrs ?? 0) > 0;
-    const growing =
-      baseline !== undefined &&
-      delta !== null &&
-      delta >= 10 &&
-      delta / Math.max(baseline.stars, 20) >= 0.02 &&
-      (releaseFresh || merged);
+    const growing = qualifiesGrowth(repo.stars, baseline, releaseFresh || merged);
+    // Planning only: an old growth bonus cannot reserve a verification slot after
+    // its baseline expires or another valid baseline takes over. Card timestamps
+    // and historical badges below still use the actual recorded measurement.
+    const scoreGrowing = forVerification
+      ? qualifiesGrowth(
+          repo.stars,
+          growthBaseline({ ...repo, countsObservedAt: now }, metrics),
+          releaseFresh || merged,
+        )
+      : growing;
     const badges: DiscoveryCard["badges"] = [];
     const reasons: string[] = [];
     if (now - repo.createdAt <= 30 * DAY) {
@@ -150,6 +219,7 @@ export function selectPublicationCandidates(
     if (merged) reasons.push("Есть принятые PR в проверенной выборке за 30 дней");
     if (!reasons.length) reasons.push("Подходит по тематике GameDev");
     const card: DiscoveryCard = {
+      isPublic: true,
       id: repo.id,
       owner: repo.owner,
       repo: repo.repo,
@@ -169,7 +239,7 @@ export function selectPublicationCandidates(
       growth,
     };
     const score =
-      (growing ? 6 : 0) +
+      (scoreGrowing ? 6 : 0) +
       (badges.includes("new") ? 3 : 0) +
       (releaseFresh ? 2 : 0) +
       (merged ? 2 : 0) +

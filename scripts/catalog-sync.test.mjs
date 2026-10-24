@@ -20,6 +20,7 @@ test("collector fixture CLI never opens the supplied database and does not echo 
           description: "Game assets",
           language: null,
           topics: ["game-assets"],
+          private: false,
           stargazers_count: 2,
           forks_count: 0,
           created_at: "2026-01-01T00:00:00Z",

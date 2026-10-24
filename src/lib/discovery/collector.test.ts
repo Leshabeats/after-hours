@@ -15,6 +15,7 @@ function raw(patch: Record<string, unknown> = {}) {
     description: "Game engine for Linux",
     language: "Rust",
     topics: ["game-engine"],
+    private: false,
     stargazers_count: 100,
     forks_count: 3,
     created_at: new Date(NOW - 100 * DAY).toISOString(),

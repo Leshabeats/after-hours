@@ -33,7 +33,14 @@ const slug = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+$/)
   .max(100);
+const publicVisibility = z.object({
+  private: z.literal(false),
+  visibility: z.literal("public").optional(),
+});
+const publicIdentity = z.object({ id: z.number().int().positive().safe() });
 const repoSchema = z.object({
+  private: z.literal(false),
+  visibility: z.literal("public").optional(),
   id: z.number().int().positive().safe(),
   name: slug,
   owner: z.object({ login: slug }),
@@ -71,6 +78,7 @@ export function parseRepository(raw: unknown, now: number, source: string): Obse
   };
   return {
     ...identity,
+    isPublic: true,
     id: String(r.id),
     language: r.language,
     stars: r.stargazers_count,
@@ -106,12 +114,13 @@ const taskSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(3),
+  version: z.literal(4),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
   phase: z.enum(["metadata", "activity", "identity"]),
   tasks: z.array(taskSchema).max(400),
   ids: z.array(z.string()).max(MAX_CANDIDATES),
+  metadataIds: z.array(z.string().regex(/^\d+$/)).max(1500),
   admissions: z.record(z.string(), z.number().int().min(0).max(MAX_QUERY_CANDIDATES)),
 });
 type Checkpoint = z.infer<typeof checkpointSchema>;
@@ -147,12 +156,12 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
   const tasks: Checkpoint["tasks"] = TOPICS.flatMap((topic) => [
     {
       kind: "search" as const,
-      q: `topic:${topic} created:>=${date} fork:false archived:false`,
+      q: `topic:${topic} created:>=${date} fork:false archived:false is:public`,
       page: 1,
     },
     {
       kind: "search" as const,
-      q: `topic:${topic} pushed:>=${date} fork:false archived:false`,
+      q: `topic:${topic} pushed:>=${date} fork:false archived:false is:public`,
       page: 1,
     },
   ]);
@@ -187,13 +196,14 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks.push({ kind: "repo", owner, repo });
   }
   return {
-    version: 3,
+    version: 4,
     startedAt: now,
     index: 0,
     phase: "metadata",
     tasks,
     ids: [],
     admissions: {},
+    metadataIds: [],
   };
 }
 
@@ -201,6 +211,7 @@ function unavailable(repo: StoredRepository, now: number): Observation {
   return {
     ...repo,
     disabled: true,
+    isPublic: false,
     observedAt: now,
     countsObservedAt: repo.countsObservedAt ?? repo.observedAt,
   };
@@ -313,7 +324,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        (lease.checkpoint.version === 1 || lease.checkpoint.version === 2))
+        [1, 2, 3].includes(Number(lease.checkpoint.version)))
         ? initialCheckpoint(existing, started)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
@@ -334,7 +345,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
             );
             const result = z
               .object({
-                items: z.array(z.unknown()).max(100),
+                items: z.array(z.unknown()).max(30),
                 incomplete_results: z.boolean(),
                 total_count: z.number().nonnegative(),
               })
@@ -342,6 +353,12 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
             if (result.incomplete_results)
               throw new Pause("GitHub search incomplete; checkpoint retained", now() + 15 * 60_000);
             for (const item of result.items) {
+              if (!publicVisibility.safeParse(item).success) {
+                const identity = publicIdentity.safeParse(item);
+                const old = identity.success ? repos.get(String(identity.data.id)) : undefined;
+                if (old) observations.push(unavailable(old, now()));
+                continue;
+              }
               const repo = parseRepository(item, now(), task.q);
               if (!repo) continue;
               // Preserve exclusion updates for existing IDs, but do not ingest unrelated repositories.
@@ -376,13 +393,13 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
             const raw = await request(
               id ? `/repositories/${id}` : `/repos/${task.owner}/${task.repo}`,
             );
-            const repo =
-              raw === null
-                ? old
-                  ? unavailable(old, now())
-                  : null
-                : parseRepository(raw, now(), "refresh");
-            if (raw !== null && !repo) throw new Error("Invalid GitHub repository metadata");
+            const confirmedPublic = publicVisibility.safeParse(raw).success;
+            const repo = !confirmedPublic
+              ? old
+                ? unavailable(old, now())
+                : null
+              : parseRepository(raw, now(), "refresh");
+            if (confirmedPublic && !repo) throw new Error("Invalid GitHub repository metadata");
             if (repo && id && repo.id !== id)
               throw new Error("GitHub repository identity mismatch");
             if (repo) observations.push(repo);
@@ -455,6 +472,12 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                   );
           if (previous) observations.push(unavailable(previous, now()));
         }
+        if (task.kind !== "activity") {
+          const measured = observations
+            .filter((r) => r.isPublic === true && r.countsObservedAt === r.observedAt)
+            .map((r) => r.id);
+          cp = { ...cp, metadataIds: [...new Set([...cp.metadataIds, ...measured])] };
+        }
         cp = { ...cp, index: cp.index + 1 };
         await store.save(lease, now(), LEASE_MS, observations, cp);
         // Track known IDs locally; reload canonical carried activity once per phase.
@@ -508,9 +531,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         await store.save(lease, now(), LEASE_MS, [], cp);
         continue;
       }
-      const verified = new Set(
-        cp.tasks.map((task) => (task.kind === "repo" ? task.id : undefined)),
-      );
+      const verified = new Set(cp.metadataIds);
       const snapshot = buildSnapshot(
         current.filter((repo) => verified.has(repo.id)),
         metrics,
@@ -519,7 +540,16 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       const urls = new Set(snapshot.cards.map((card) => card.url.toLowerCase()));
       if (urls.size !== snapshot.cards.length) {
         // Conflicting upstream metadata must be retried, never settled by score or slug dedupe.
-        cp = { ...cp, index: 0 };
+        cp = {
+          ...cp,
+          index: 0,
+          tasks: snapshot.cards.map((r) => ({
+            kind: "repo",
+            id: r.id,
+            owner: r.owner,
+            repo: r.repo,
+          })),
+        };
         await store.save(lease, now(), LEASE_MS, [], cp);
         throw new Pause("Conflicting GitHub repository identities", now() + 60_000);
       }

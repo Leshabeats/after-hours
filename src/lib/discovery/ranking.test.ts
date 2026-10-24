@@ -36,6 +36,7 @@ function repository(id: string, patch: Partial<StoredRepository> = {}): StoredRe
     source: "fixture",
     releaseAt: null,
     mergedPrs: null,
+    isPublic: true,
     activityCheckedAt: null,
     firstSeenAt: NOW - DAY,
     ...patch,

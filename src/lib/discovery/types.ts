@@ -10,6 +10,8 @@ export const GAME_TAGS = [
 export type GameTag = (typeof GAME_TAGS)[number]["id"];
 export type DiscoveryMode = "all" | "new" | "discovered" | "growing";
 export type Observation = {
+  /** Only an explicit public GitHub response grants publication eligibility. */
+  isPublic?: boolean;
   id: string;
   owner: string;
   repo: string;
@@ -37,6 +39,7 @@ export type Observation = {
 export type StoredRepository = Observation & { firstSeenAt: number };
 export type DailyMetric = { repoId: string; observedAt: number; stars: number; forks: number };
 export type DiscoveryCard = {
+  isPublic?: boolean;
   id: string;
   owner: string;
   repo: string;

@@ -203,6 +203,7 @@ try {
     generatedAt: discoveryAt,
     cards: [
       {
+        isPublic: true,
         id: "smoke-game",
         owner: "smoke",
         repo: "deck-discovery-fixture",

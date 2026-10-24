@@ -5,6 +5,14 @@ tools, assets, emulation, Linux gaming, SteamOS/Deck, and Proton. Topic/descript
 rules are deterministic. Manual taxonomy/fork exceptions live in
 `src/lib/discovery/ranking.ts`; they are reviewable source changes, not a model verdict.
 
+Discovery is public-only. Every search includes `is:public`; parsing requires
+`private: false` and, when present, `visibility: public`. Missing or contradictory
+visibility fails closed. Only explicitly public observations and cards are eligible.
+Private/unknown refreshes revoke eligibility without copying the response metadata
+or adding metrics. Both stores filter publication and reads; a known revocation
+also hides a prior completed card while the next run is incomplete. Legacy unmarked
+records/cards stay hidden until public metadata is fetched again.
+
 The daily feed is separate from the curated shelf and language libraries. No
 minimum star count is applied to discovery. `createdAt` is GitHub's creation time;
 `firstSeenAt` is when this catalog first observed the stable GitHub repository ID.
@@ -24,7 +32,7 @@ indexing; incomplete API responses retain the checkpoint and prior publication.
 Search results are capped and are not exhaustive GitHub indexing. Each of the
 20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1/2 checkpoints restart with the fair admission policy,
+retries. Legacy version-1/2/3 checkpoints restart with the fair admission policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
@@ -51,16 +59,21 @@ cannot save or publish. Run retries resume; scans interrupted for over 48 hours
 restart their query windows. Partial scans never replace the last complete JSON
 snapshot. A completed snapshot contains at most 100 cards: reserve the top 14
 per populated tag, sharing slots for multi-tag repositories, then fill spare slots
-by global relevance. Identity is deduplicated only by GitHub ID. Before publication,
-the selected (at most 100) candidates receive a checkpointed metadata refresh via
-stable IDs, including old eligible rows outside the rotating refresh pool. Old
-measurements may nominate a candidate for verification; they cannot enter the
-published snapshot unchanged. Publication still requires real count measurements
-within two days and keeps their actual timestamp. This lets quiet subcategories
-reach verification even when the 180-row rotation takes longer than two days. Only these
-verified candidates can be published; candidates that become unavailable are
-omitted without unverified backfill. Conflicting current URLs retain the prior
-snapshot and retry verification. This phase uses the same request/time budget.
+by global relevance. Identity is deduplicated only by GitHub ID. Identity refresh
+starts with the fresh ranked set. An old eligible record can be added only as a
+fallback for a tag with no fresh representative, oldest measurement first; stale
+growth scores never compete with fresh scores. Verification priority also checks
+that a baseline remains valid at verification time, using only the already
+measured star count. This affects scheduling only; displayed timestamps and
+historical growth badges still use the actual measurement until remeasurement. Multi-tag fallbacks share slots,
+and fresh tag coverage is preserved within the same 100-candidate limit.
+
+The checkpoint records every ID whose public metadata was actually obtained by
+search or metadata requests in this run. Final ranking uses all those IDs with
+real measurements within two days, not just the preliminary identity task list.
+This lets fresh measured growth survive changes in scores after refresh. A
+conflicting current URL retries the selected identities without publishing;
+private/unknown visibility excludes immediately. Request/time budgets are unchanged.
 Selected cards keep their relevance order; new engines cannot
 crowd SteamOS/Proton out before filters run. Daily metrics retain
 90 days; old completed runs are bounded. Repository identities remain for

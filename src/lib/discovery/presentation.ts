@@ -15,6 +15,7 @@ export function filterDiscovery(
   if (search.cat !== "games") return [];
   return (cards ?? []).filter(
     (card) =>
+      card.isPublic === true &&
       (!search.lang || card.language?.toLowerCase() === search.lang.toLowerCase()) &&
       (!search.tag || card.tags.includes(search.tag)) &&
       (!search.view || search.view === "all" || card.badges.includes(search.view)),

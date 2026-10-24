@@ -16,6 +16,7 @@ function raw(id: number, at: number, stars = 100) {
     description: topic === "proton" ? "Proton Linux compatibility" : "Game engine",
     topics: [topic],
     language: "Rust",
+    private: false,
     stargazers_count: stars,
     forks_count: 1,
     created_at: new Date(

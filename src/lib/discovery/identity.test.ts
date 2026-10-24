@@ -15,6 +15,7 @@ function raw(id: number, owner = "games", name = "shared") {
     description: "Game engine",
     language: "Rust",
     topics: ["game-engine"],
+    private: false,
     stargazers_count: id === 9000 ? 200 : 5,
     forks_count: 1,
     created_at: new Date(NOW - (id === 9000 ? 100 : 1) * DAY).toISOString(),

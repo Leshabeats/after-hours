@@ -57,9 +57,50 @@ function cutoff(now: number) {
   return Math.max(0, Math.floor(now / DAY) * DAY - (RETAIN_DAYS - 1) * DAY);
 }
 
+function publicSnapshot(
+  snapshot: DiscoverySnapshot | null,
+  blockedIds: Iterable<string> = [],
+): DiscoverySnapshot | null {
+  if (!snapshot) return null;
+  const blocked = new Set(blockedIds);
+  return {
+    ...copy(snapshot),
+    cards: snapshot.cards
+      .filter((card) => card.isPublic === true && !blocked.has(card.id))
+      .map(copy),
+  };
+}
+
 function merge(previous: StoredRepository | undefined, observed: Observation): StoredRepository {
+  // Nonpublic input can only revoke eligibility; it cannot introduce metadata or metrics.
+  if (observed.isPublic !== true) {
+    const known = previous?.isPublic === true ? previous : undefined;
+    observed = {
+      ...observed,
+      isPublic: false,
+      disabled: true,
+      owner: known?.owner ?? "unavailable",
+      repo: known?.repo ?? "unavailable",
+      description: known?.description ?? "",
+      topics: [],
+      tags: [],
+      language: null,
+      stars: known?.stars ?? 0,
+      forks: known?.forks ?? 0,
+      pushedAt: null,
+      createdAt: previous?.createdAt ?? observed.observedAt,
+      source: "excluded",
+      releaseAt: null,
+      mergedPrs: null,
+      activityCheckedAt: null,
+      countsObservedAt: previous ? countsTime(previous) : countsTime(observed),
+    };
+  }
   if (previous && previous.observedAt > observed.observedAt) return previous;
-  const keepActivity = previous && observed.activityCheckedAt === null;
+  const keepActivity =
+    previous?.isPublic === true &&
+    observed.isPublic === true &&
+    observed.activityCheckedAt === null;
   return {
     ...copy(observed),
     firstSeenAt: previous?.firstSeenAt ?? observed.observedAt,
@@ -163,7 +204,11 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           WHERE excluded.observed_at >= discovery_repositories.observed_at`,
             [observation.id, next.firstSeenAt, next.observedAt, JSON.stringify(next)],
           );
-          if (measuredAt === observation.observedAt && measuredAt >= cutoff(now)) {
+          if (
+            observation.isPublic === true &&
+            measuredAt === observation.observedAt &&
+            measuredAt >= cutoff(now)
+          ) {
             await db.query(
               `INSERT INTO discovery_daily_metrics (repo_id,day,observed_at,stars,forks)
             VALUES ($1,$2::date,$3,$4,$5) ON CONFLICT (repo_id,day) DO UPDATE SET
@@ -208,10 +253,15 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
       locked(async (db) => {
         const current = await state(db);
         requireLease(current, lease, now);
+        const blocked = (
+          await db.query<{ id: string }>(
+            "SELECT id FROM discovery_repositories WHERE observation->>'isPublic' IS DISTINCT FROM 'true'",
+          )
+        ).rows.map((r) => r.id);
         await db.query(
           `UPDATE discovery_runs SET status = 'completed', snapshot = $2,
         completed_at = $3, updated_at = $3, error = NULL WHERE id = $1 AND status = 'running'`,
-          [lease.runId, JSON.stringify(snapshot), now],
+          [lease.runId, JSON.stringify(publicSnapshot(snapshot, blocked)), now],
         );
         await db.query(
           `UPDATE discovery_sync_state SET published_run_id = $1,
@@ -238,13 +288,14 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
       ).rows;
     },
     async snapshot() {
-      return (
-        (
-          await pool.query<{ snapshot: DiscoverySnapshot }>(`SELECT r.snapshot FROM discovery_runs r
-        JOIN discovery_sync_state s ON s.published_run_id = r.id
+      const row = (
+        await pool.query<{ snapshot: DiscoverySnapshot; blocked_ids: string[] }>(`
+        SELECT r.snapshot, ARRAY(SELECT id FROM discovery_repositories
+          WHERE observation->>'isPublic' IS DISTINCT FROM 'true') AS blocked_ids
+        FROM discovery_runs r JOIN discovery_sync_state s ON s.published_run_id = r.id
         WHERE s.id = 1 AND r.status = 'completed'`)
-        ).rows[0]?.snapshot ?? null
-      );
+      ).rows[0];
+      return publicSnapshot(row?.snapshot ?? null, row?.blocked_ids);
     },
   };
 }
@@ -299,7 +350,12 @@ export function createMemoryDiscovery(): DiscoveryStore {
         timestamp(observation.observedAt);
         const measuredAt = countsTime(observation);
         nextRepos.set(observation.id, merge(nextRepos.get(observation.id), observation));
-        if (measuredAt !== observation.observedAt || measuredAt < cutoff(now)) continue;
+        if (
+          observation.isPublic !== true ||
+          measuredAt !== observation.observedAt ||
+          measuredAt < cutoff(now)
+        )
+          continue;
         const key = `${observation.id}:${day(observation.observedAt)}`;
         const previous = nextMetrics.get(key);
         if (!previous || previous.observedAt <= observation.observedAt)
@@ -327,7 +383,10 @@ export function createMemoryDiscovery(): DiscoveryStore {
     },
     async publish(lease, now, snapshot) {
       requireLease(state, lease, now);
-      const saved = copy(snapshot);
+      const saved = publicSnapshot(
+        snapshot,
+        [...repositories.values()].filter((r) => r.isPublic !== true).map((r) => r.id),
+      );
       runs.get(lease.runId)!.snapshot = saved;
       runs.get(lease.runId)!.completedAt = now;
       state.published_run_id = lease.runId;
@@ -352,8 +411,9 @@ export function createMemoryDiscovery(): DiscoveryStore {
         .map(copy);
     },
     async snapshot() {
-      return copy(
+      return publicSnapshot(
         state.published_run_id ? (runs.get(state.published_run_id)?.snapshot ?? null) : null,
+        [...repositories.values()].filter((r) => r.isPublic !== true).map((r) => r.id),
       );
     },
   };

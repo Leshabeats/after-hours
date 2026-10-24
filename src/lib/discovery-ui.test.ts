@@ -13,6 +13,7 @@ import type { ProjectShelf } from "./github-live.ts";
 const day = 24 * 60 * 60 * 1000;
 const now = Date.UTC(2026, 9, 24);
 const card: DiscoveryCard = {
+  isPublic: true,
   id: "1",
   owner: "Game",
   repo: "Engine",

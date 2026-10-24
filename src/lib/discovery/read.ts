@@ -18,11 +18,12 @@ export async function readDiscovery(
   try {
     const snapshot = await read();
     if (!snapshot) return { status: "empty", updatedAt: null, stale: false, cards: [] };
+    const cards = snapshot.cards.filter((card) => card.isPublic === true);
     return {
-      status: snapshot.cards.length ? "ready" : "empty",
+      status: cards.length ? "ready" : "empty",
       updatedAt: snapshot.generatedAt,
       stale: now - snapshot.generatedAt > STALE_AFTER_MS,
-      cards: snapshot.cards.map((card) => ({ ...card, live: false })),
+      cards: cards.map((card) => ({ ...card, live: false })),
     };
   } catch {
     // The curated shelf remains usable before migration or while storage is unavailable.
