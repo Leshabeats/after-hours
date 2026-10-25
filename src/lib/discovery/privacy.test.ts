@@ -96,6 +96,7 @@ postgresTest("postgres: public-only ingestion", async (pool) =>
 async function transition(store: DiscoveryStore) {
   const old = {
     ...parseRepository(raw(), NOW - 1000, "fixture")!,
+    countsSource: "repository" as const,
     isPublic: true,
     firstSeenAt: NOW - 1000,
   };

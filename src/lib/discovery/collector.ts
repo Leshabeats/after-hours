@@ -417,8 +417,8 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               repo.countsSource = id ? "repository" : "search";
               repo.countsScanId = cp.scanId;
             }
-            // Retain a fresh prior-scan sample or this scan's authoritative sample.
-            // A current search sample instead yields to these stable-ID counts.
+            // Retain only a fresh authoritative sample from any scan.
+            // Search or unmarked samples always yield to these stable-ID counts.
             // Identity-only updates must not move a retained baseline window.
             // Recheck the strict age bound after the response, including resumes.
             if (
@@ -426,7 +426,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               old &&
               eligible(old) &&
               repo?.isPublic === true &&
-              (old.countsScanId !== cp.scanId || old.countsSource === "repository") &&
+              old.countsSource === "repository" &&
               now() - (old.countsObservedAt ?? old.observedAt) <= 2 * DAY
             ) {
               repo = retainCounts(repo, old);

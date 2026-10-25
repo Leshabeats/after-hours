@@ -30,7 +30,7 @@ function raw(id: number, at: number, stars = 100) {
   };
 }
 function observation(id: number, at: number, stars = 100): Observation {
-  return parseRepository(raw(id, at, stars), at, "fixture")!;
+  return { ...parseRepository(raw(id, at, stars), at, "fixture")!, countsSource: "repository" };
 }
 async function seed(store: DiscoveryStore, batches: Observation[][]) {
   const lease = await store.acquire(START, DAY);

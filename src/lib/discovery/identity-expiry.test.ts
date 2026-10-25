@@ -43,6 +43,7 @@ async function expiry(store: DiscoveryStore) {
   };
   const observed = (id: number, at: number, stars: number) => ({
     ...parseRepository(raw(id), at, "fixture")!,
+    countsSource: "repository" as const,
     stars,
     releaseAt: NOW - 4 * DAY,
     activityCheckedAt: NOW - 2 * DAY,

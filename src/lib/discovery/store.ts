@@ -213,6 +213,7 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           if (
             observation.isPublic === true &&
             observation.countsMeasured === true &&
+            observation.countsSource === "repository" &&
             measuredAt === observation.observedAt &&
             measuredAt >= cutoff(now)
           ) {
@@ -362,6 +363,7 @@ export function createMemoryDiscovery(): DiscoveryStore {
         if (
           observation.isPublic !== true ||
           observation.countsMeasured !== true ||
+          observation.countsSource !== "repository" ||
           measuredAt !== observation.observedAt ||
           measuredAt < cutoff(now)
         )

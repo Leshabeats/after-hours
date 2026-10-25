@@ -30,6 +30,7 @@ function raw(patch: Record<string, unknown> = {}) {
 function repo(patch: Partial<StoredRepository> = {}): StoredRepository {
   return {
     ...parseRepository(raw(), NOW, "fixture")!,
+    countsSource: "repository" as const,
     firstSeenAt: NOW,
     ...patch,
     countsObservedAt: patch.countsObservedAt ?? patch.observedAt ?? NOW,

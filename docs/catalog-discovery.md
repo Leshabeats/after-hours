@@ -64,15 +64,18 @@ starts with the fresh ranked set. An old eligible record can be added only as a
 fallback for a tag with no fresh representative, oldest measurement first; stale
 growth scores never compete with fresh scores. Fresh candidates rank by their
 actual measured growth. Identity validation updates public metadata and canonical
-links while retaining prior-scan stars, forks and their original measurement time
+links while retaining authoritative stable-ID stars, forks and their original measurement time
 for up to two days; it does not insert a synthetic metric or move that baseline.
-Current-scan search samples instead yield to the stable-ID sample. Count source
+Search and unmarked samples from any scan instead yield to the stable-ID sample. Count source
 and scan UUID are stored with the sample, so later search/slug documents cannot
 replace a stable-ID sample from the same scan. The UUID survives checkpoints and
 changes on a new/restarted scan; equal timestamps do not determine provenance.
-Daily metrics require an explicit actual-measurement marker in both stores.
-Activity, identity-only validation and revocations never manufacture samples.
-Search and the rotating metadata queue sample new counts. Expired identity tasks
+Daily metrics require an explicit actual-measurement marker and stable-ID repository
+provenance in both stores. Search and slug-only counts are provisional: they never
+insert or replace daily history, including across UTC midnight and resumed scans.
+No time-range deletion is used; genuine stable-ID history from the same or previous
+scans remains intact. Activity, identity-only validation and revocations never
+manufacture samples. The rotating stable-ID metadata queue samples new counts. Expired identity tasks
 remeasure, including after a pause. Multi-tag fallbacks share slots,
 and fresh tag coverage is preserved within the same 100-candidate limit.
 

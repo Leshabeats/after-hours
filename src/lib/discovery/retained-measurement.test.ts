@@ -34,7 +34,7 @@ function raw(id: number, stars = MATURE.has(String(id)) ? 160 : 5) {
 function observation(id: number, at: number, stars: number): Observation {
   const parsed = parseRepository(raw(id, stars), at, "fixture");
   assert.ok(parsed);
-  return parsed;
+  return { ...parsed, countsSource: "repository" };
 }
 
 async function retainedMeasurement(store: DiscoveryStore, hours = 19, mixed = false) {

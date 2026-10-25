@@ -35,7 +35,7 @@ function raw(id: number, stars: number, forks: number) {
 function observation(id: number, at: number, stars: number, forks: number): Observation {
   const parsed = parseRepository(raw(id, stars, forks), at, "fixture");
   assert.ok(parsed);
-  return parsed;
+  return { ...parsed, countsSource: "repository" };
 }
 
 async function seed(store: DiscoveryStore, flow: Flow) {

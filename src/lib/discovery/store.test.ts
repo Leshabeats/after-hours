@@ -27,6 +27,7 @@ function observation(patch: Partial<Observation> = {}): Observation {
     pushedAt: NOW - DAY,
     observedAt: NOW,
     countsMeasured: true,
+    countsSource: "repository",
     archived: false,
     fork: false,
     mirror: false,
@@ -47,6 +48,74 @@ function parity(name: string, exercise: (store: DiscoveryStore) => Promise<void>
   it(`memory: ${name}`, async () => exercise(createMemoryDiscovery()));
   postgresTest(`postgres: ${name}`, async (pool) => exercise(createPostgresDiscovery(pool)));
 }
+
+parity("only stable-ID samples enter history across midnight, resume and replay", async (store) => {
+  const boundary = Date.UTC(2026, 9, 25);
+  const before = boundary - 10 * 60_000;
+  const after = boundary + 10 * 60_000;
+  const scan = "11111111-1111-4111-8111-111111111111";
+  const prior = "22222222-2222-4222-8222-222222222222";
+  const checkpoint = { scanId: scan, startedAt: before };
+  let lease = await store.acquire(before, DURATION);
+  assert.ok(lease);
+  const measured = (at: number, stars: number, source: "repository" | "search", scanId = scan) =>
+    observation({
+      observedAt: at,
+      countsObservedAt: at,
+      stars,
+      countsSource: source,
+      countsScanId: scanId,
+    });
+  // A genuine measurement from another scan on the search date must survive.
+  const history = measured(before - 60_000, 180, "repository", prior);
+  await store.save(lease, before, DURATION, [history], checkpoint);
+  await store.save(lease, before, DURATION, [measured(before, 50, "search")], checkpoint);
+  assert.deepEqual(
+    (await store.metrics(0)).map((m) => [m.observedAt, m.stars]),
+    [[history.observedAt, 180]],
+  );
+  await store.release(lease, before, "pause at midnight");
+  lease = await store.acquire(after, DURATION);
+  assert.ok(lease);
+  assert.deepEqual(lease.checkpoint, checkpoint);
+  // Multiple provisional samples, including a high count and an unmarked input,
+  // cannot write history even if no prior stable-ID sample exists in this scan.
+  await store.save(
+    lease,
+    after,
+    DURATION,
+    [
+      measured(after - 1, 500, "search"),
+      observation({
+        id: "unknown-source",
+        observedAt: after,
+        countsObservedAt: after,
+        countsSource: undefined,
+      }),
+      measured(after, 180, "repository"),
+    ],
+    checkpoint,
+  );
+  for (const at of [before, after, after + DAY])
+    await store.save(lease, after + DAY, DURATION, [measured(at, 50, "search")], checkpoint);
+  // Repeated authoritative writes keep one point per UTC day. Another real
+  // authoritative day in the SAME scan is retained, not broadly deleted.
+  await store.save(
+    lease,
+    after + DAY,
+    DURATION,
+    [measured(after, 180, "repository"), measured(after + DAY, 170, "repository")],
+    checkpoint,
+  );
+  assert.deepEqual(
+    (await store.metrics(0)).map((m) => [m.observedAt, m.stars]),
+    [
+      [history.observedAt, 180],
+      [after, 180],
+      [after + DAY, 170],
+    ],
+  );
+});
 
 parity(
   "sample provenance survives late search, equal timestamps, replay and revocation",

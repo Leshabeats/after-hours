@@ -32,6 +32,7 @@ async function publication(store: DiscoveryStore) {
   assert.ok(lease);
   const current = (id: number): Observation => ({
     ...parseRepository(raw(id), id < 200 ? NOW - 3 * DAY : NOW, "fixture")!,
+    countsSource: "repository" as const,
     activityCheckedAt: id < 200 ? NOW - 3 * DAY : NOW,
     releaseAt: NOW - 4 * DAY,
   });

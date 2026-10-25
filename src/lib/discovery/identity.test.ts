@@ -60,7 +60,10 @@ test("ranking and fate preserve different IDs even when cached slugs collide", (
 });
 
 async function renameReuse(store: DiscoveryStore, conflict = false) {
-  const old = parseRepository(raw(9000), NOW - 7 * DAY, "fixture")!;
+  const old = {
+    ...parseRepository(raw(9000), NOW - 7 * DAY, "fixture")!,
+    countsSource: "repository" as const,
+  };
   const lease = await store.acquire(NOW - 7 * DAY, 8 * DAY);
   assert.ok(lease);
   await store.save(lease, NOW - 7 * DAY, 8 * DAY, [{ ...old, stars: 10 }], null);
