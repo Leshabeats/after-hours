@@ -19,17 +19,13 @@ export function NightShell({ children }: { children: ReactNode }) {
     <div className="relative min-h-dvh bg-bg text-fg">
       <div className="grain" aria-hidden="true" />
       <header className="sticky top-0 z-30 border-b border-border/80 bg-bg/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
-          <Link
-            to="/"
-            className="shrink-0 font-display text-2xl italic tracking-tight text-fg"
-          >
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 sm:flex-nowrap px-4 py-3 sm:px-6">
+          <Link to="/" className="shrink-0 font-display text-2xl italic tracking-tight text-fg">
             After Hours
           </Link>
-          <nav className="ml-auto flex items-center gap-0.5 sm:gap-1">
+          <nav className="order-last flex w-full items-center justify-between gap-0.5 sm:order-none sm:ml-auto sm:w-auto sm:justify-start sm:gap-1">
             {NAV.map((item) => {
-              const active =
-                pathname === item.to || pathname.startsWith(`${item.to}/`);
+              const active = pathname === item.to || pathname.startsWith(`${item.to}/`);
               return (
                 <Link
                   key={item.to}
@@ -51,7 +47,7 @@ export function NightShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
-          <AccountControl />
+          <AccountControl className="ml-auto sm:ml-0" />
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-8 sm:px-6">{children}</main>

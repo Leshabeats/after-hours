@@ -2288,9 +2288,11 @@ describe("codex app-server probe", () => {
       });
       assert.equal(summary.threads.count, 1);
       assert.equal(summary.threads.originators["probe-origin"], 1);
-      assert.equal(
-        summary.rateLimits.error,
-        redactDiagnostic("timeout waiting for account/rateLimits/read"),
+      // The child can append runtime diagnostics (for example Node's proxy warning).
+      assert.ok(
+        summary.rateLimits.error.startsWith(
+          redactDiagnostic("timeout waiting for account/rateLimits/read"),
+        ),
       );
       assert.equal(Date.now() - started < 5000, true);
     } finally {

@@ -27,7 +27,7 @@ export const Route = createFileRoute("/api/usage")({
         const { clampUsageAt, summarizeUsage } = await import("@/lib/usage/stats");
         const repo = getUsageRepo();
         const data = parsed.data;
-        repo.record(user.id, {
+        const events = await repo.record(user.id, {
           at: clampUsageAt(data.at),
           harness: data.harness,
           model: data.model,
@@ -37,7 +37,7 @@ export const Route = createFileRoute("/api/usage")({
         });
         return Response.json({
           ok: true,
-          usage: summarizeUsage(repo.list(user.id)),
+          usage: summarizeUsage(events),
         });
       },
     },

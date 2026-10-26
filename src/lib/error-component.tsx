@@ -9,7 +9,9 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
       </span>
       <h1 className="font-display text-3xl italic">Ночь сломалась</h1>
       <p className="max-w-md text-sm break-words text-muted">
-        {error.message || "Неизвестная ошибка. Перезагрузи страницу."}
+        {error instanceof Error && error.message
+          ? error.message
+          : "Неизвестная ошибка. Перезагрузи страницу."}
       </p>
     </main>
   );

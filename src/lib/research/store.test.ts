@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import { isolatedDatabase } from "../db/testing.ts";
 import { describe, it } from "node:test";
 import { sumTurnSnapshots } from "./accounting.ts";
+import { createMemoryResearch, createPostgresResearch, type ResearchRepo } from "./store.ts";
 import {
-  createMemoryResearch,
-  createSqliteResearch,
-  type ResearchRepo,
-} from "./store.ts";
-import { emptyUsage, type ResearchDelivery, type ResearchReport, type ResearchTurn } from "./types.ts";
-import { createSqliteJournal } from "../journal/store.ts";
+  emptyUsage,
+  type ResearchDelivery,
+  type ResearchReport,
+  type ResearchTurn,
+} from "./types.ts";
+import { createPostgresJournal } from "../journal/store.ts";
 import type { LogEntry } from "../journal/types.ts";
-import { createSqliteUsage } from "../usage/store.ts";
+import { createPostgresUsage } from "../usage/store.ts";
 
 const AT = 1_700_000_000_000;
 
@@ -66,35 +67,32 @@ function limit(usedPercent: number) {
   };
 }
 
-function assertContract(repo: ResearchRepo) {
-  const created = repo.createGrant("owner", AT);
+async function assertContract(repo: ResearchRepo) {
+  const created = await repo.createGrant("owner", AT);
   assert.equal(created.token.startsWith("ahc_"), true);
-  assert.equal(JSON.stringify(repo.listGrants("owner")).includes(created.token), false);
-  assert.equal(repo.listGrants("other").length, 0);
-  assert.deepEqual(repo.authenticate(created.token), {
+  assert.equal(JSON.stringify(await repo.listGrants("owner")).includes(created.token), false);
+  assert.equal((await repo.listGrants("other")).length, 0);
+  assert.deepEqual(await repo.authenticate(created.token), {
     userId: "owner",
     grantId: created.grant.id,
   });
-  assert.equal(repo.authenticate("ahc_not-the-token"), null);
+  assert.equal(await repo.authenticate("ahc_not-the-token"), null);
 
-  const second = repo.createGrant("owner", AT + 10);
+  const second = await repo.createGrant("owner", AT + 10);
   assert.deepEqual(
-    repo.listGrants("owner").map((grant) => grant.id),
+    (await repo.listGrants("owner")).map((grant) => grant.id),
     [second.grant.id, created.grant.id],
   );
-  assert.equal(repo.revokeGrant("other", created.grant.id, AT + 20), null);
-  assert.equal(repo.authenticate(created.token)?.userId, "owner");
-  const revoked = repo.revokeGrant("owner", created.grant.id, AT + 30);
+  assert.equal(await repo.revokeGrant("other", created.grant.id, AT + 20), null);
+  assert.equal((await repo.authenticate(created.token))?.userId, "owner");
+  const revoked = await repo.revokeGrant("owner", created.grant.id, AT + 30);
   assert.equal(revoked?.find((grant) => grant.id === created.grant.id)?.revokedAt, AT + 30);
-  const revokedAgain = repo.revokeGrant("owner", created.grant.id, AT + 40);
-  assert.equal(
-    revokedAgain?.find((grant) => grant.id === created.grant.id)?.revokedAt,
-    AT + 30,
-  );
-  assert.equal(repo.authenticate(created.token), null);
-  assert.equal(repo.authenticate(second.token)?.grantId, second.grant.id);
+  const revokedAgain = await repo.revokeGrant("owner", created.grant.id, AT + 40);
+  assert.equal(revokedAgain?.find((grant) => grant.id === created.grant.id)?.revokedAt, AT + 30);
+  assert.equal(await repo.authenticate(created.token), null);
+  assert.equal((await repo.authenticate(second.token))?.grantId, second.grant.id);
 
-  const opened = repo.ingest(
+  const opened = await repo.ingest(
     "owner",
     delivery({
       turns: [turn("turn_one0001", { inputTokens: 10, outputTokens: 1, totalTokens: 11 })],
@@ -106,7 +104,7 @@ function assertContract(repo: ResearchRepo) {
   assert.equal(opened.run.publishedAt, null);
   assert.equal(opened.run.userId, "owner");
 
-  const replaced = repo.ingest(
+  const replaced = await repo.ingest(
     "owner",
     delivery({
       at: AT + 1,
@@ -114,12 +112,12 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(replaced.ok && replaced.replay, false);
-  const afterReplace = repo.readRun("owner", "thread_abc12345");
+  const afterReplace = await repo.readRun("owner", "thread_abc12345");
   assert.equal(afterReplace?.turns.length, 1);
   assert.equal(afterReplace?.turns[0]?.usage.inputTokens, 12);
   assert.equal(afterReplace?.turns[0]?.usage.totalTokens, 13);
 
-  const added = repo.ingest(
+  const added = await repo.ingest(
     "owner",
     delivery({
       at: AT + 2,
@@ -135,7 +133,7 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(added.ok, true);
-  const both = repo.readRun("owner", "thread_abc12345");
+  const both = await repo.readRun("owner", "thread_abc12345");
   assert.equal(both?.turns.length, 2);
   const spend = sumTurnSnapshots(both?.turns ?? []);
   assert.equal(spend.inputTokens, 62);
@@ -145,10 +143,12 @@ function assertContract(repo: ResearchRepo) {
   assert.equal(spend.reasoningOutputTokens, null);
   assert.notEqual(
     spend.totalTokens,
-    (spend.inputTokens ?? 0) + (both?.turns[1]?.usage.cachedInputTokens ?? 0) + (spend.outputTokens ?? 0),
+    (spend.inputTokens ?? 0) +
+      (both?.turns[1]?.usage.cachedInputTokens ?? 0) +
+      (spend.outputTokens ?? 0),
   );
 
-  const replay = repo.ingest(
+  const replay = await repo.ingest(
     "owner",
     delivery({
       at: AT + 99,
@@ -165,16 +165,13 @@ function assertContract(repo: ResearchRepo) {
   );
   assert.equal(replay.ok && replay.replay, true);
   if (replay.ok) assert.equal(replay.run.updatedAt, AT + 2);
-  assert.equal(repo.readRun("owner", "thread_abc12345")?.turns.length, 2);
+  assert.equal((await repo.readRun("owner", "thread_abc12345"))?.turns.length, 2);
 
-  const waiting = repo.ingest(
-    "owner",
-    delivery({ status: "waiting", at: AT + 3 }),
-  );
+  const waiting = await repo.ingest("owner", delivery({ status: "waiting", at: AT + 3 }));
   assert.equal(waiting.ok && waiting.run.status, "waiting");
   assert.equal(waiting.ok && waiting.run.publishedAt, null);
 
-  const quiet = repo.ingest(
+  const quiet = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_quiet0001",
@@ -184,20 +181,20 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(quiet.ok, true);
-  const quietRun = repo.readRun("owner", "thread_quiet0001");
+  const quietRun = await repo.readRun("owner", "thread_quiet0001");
   assert.equal(quietRun?.turns[0]?.usageKnown, false);
   assert.equal(quietRun?.turns[0]?.usage.inputTokens, null);
   assert.equal(quietRun?.publishedAt, null);
   assert.equal(sumTurnSnapshots(quietRun?.turns ?? []).inputTokens, null);
 
-  const unfinished = repo.ingest(
+  const unfinished = await repo.ingest(
     "owner",
     delivery({ threadId: "thread_done00001", status: "completed", at: AT + 5 }),
   );
   assert.deepEqual(unfinished, { ok: false, error: "invalid" });
-  assert.equal(repo.readRun("owner", "thread_done00001"), null);
+  assert.equal(await repo.readRun("owner", "thread_done00001"), null);
 
-  const done = repo.ingest(
+  const done = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_done00001",
@@ -211,16 +208,16 @@ function assertContract(repo: ResearchRepo) {
   assert.equal(done.ok && done.run.status, "completed");
   assert.equal(done.ok && done.run.publishedAt, AT + 6);
   assert.equal(done.ok && done.run.report?.findings, "Уже исправлено");
-  assert.deepEqual(repo.readLimit("owner")?.primary, {
+  assert.deepEqual((await repo.readLimit("owner"))?.primary, {
     usedPercent: 12,
     windowDurationMins: 10080,
     resetsAt: AT + 86_400,
   });
-  assert.equal(repo.readLimit("owner")?.secondary, null);
-  assert.equal(repo.readLimit("owner")?.individualRemainingPercent, null);
-  assert.equal(repo.readLimit("other"), null);
+  assert.equal((await repo.readLimit("owner"))?.secondary, null);
+  assert.equal((await repo.readLimit("owner"))?.individualRemainingPercent, null);
+  assert.equal(await repo.readLimit("other"), null);
 
-  const sameDone = repo.ingest(
+  const sameDone = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_done00001",
@@ -236,10 +233,10 @@ function assertContract(repo: ResearchRepo) {
     assert.equal(sameDone.run.updatedAt, AT + 6);
     assert.equal(sameDone.run.publishedAt, AT + 6);
   }
-  assert.equal(repo.readRun("owner", "thread_done00001")?.turns.length, 1);
-  assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 18);
+  assert.equal((await repo.readRun("owner", "thread_done00001"))?.turns.length, 1);
+  assert.equal((await repo.readLimit("owner"))?.primary?.usedPercent, 18);
 
-  const changed = repo.ingest(
+  const changed = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_done00001",
@@ -251,18 +248,21 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.deepEqual(changed, { ok: false, error: "conflict" });
-  assert.equal(repo.readRun("owner", "thread_done00001")?.report?.findings, "Уже исправлено");
-  assert.equal(repo.readRun("owner", "thread_done00001")?.publishedAt, AT + 6);
-  assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 33);
+  assert.equal(
+    (await repo.readRun("owner", "thread_done00001"))?.report?.findings,
+    "Уже исправлено",
+  );
+  assert.equal((await repo.readRun("owner", "thread_done00001"))?.publishedAt, AT + 6);
+  assert.equal((await repo.readLimit("owner"))?.primary?.usedPercent, 33);
 
-  const regressed = repo.ingest(
+  const regressed = await repo.ingest(
     "owner",
     delivery({ threadId: "thread_done00001", status: "in_progress", at: AT + 9 }),
   );
   assert.deepEqual(regressed, { ok: false, error: "conflict" });
-  assert.equal(repo.readRun("owner", "thread_done00001")?.status, "completed");
+  assert.equal((await repo.readRun("owner", "thread_done00001"))?.status, "completed");
 
-  const rebound = repo.ingest(
+  const rebound = await repo.ingest(
     "owner",
     delivery({
       missionId: "golang/go#2",
@@ -273,9 +273,9 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.deepEqual(rebound, { ok: false, error: "conflict" });
-  assert.equal(repo.readRun("owner", "thread_abc12345")?.missionId, "vitejs/vite#1");
+  assert.equal((await repo.readRun("owner", "thread_abc12345"))?.missionId, "vitejs/vite#1");
 
-  const stolen = repo.ingest(
+  const stolen = await repo.ingest(
     "other",
     delivery({
       status: "failed",
@@ -284,12 +284,12 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.deepEqual(stolen, { ok: false, error: "forbidden" });
-  assert.equal(repo.readRun("owner", "thread_abc12345")?.status, "waiting");
-  assert.equal(repo.readRun("other", "thread_abc12345"), null);
-  assert.equal(repo.readLimit("other"), null);
-  assert.equal(repo.readLimit("owner")?.primary?.usedPercent, 33);
+  assert.equal((await repo.readRun("owner", "thread_abc12345"))?.status, "waiting");
+  assert.equal(await repo.readRun("other", "thread_abc12345"), null);
+  assert.equal(await repo.readLimit("other"), null);
+  assert.equal((await repo.readLimit("owner"))?.primary?.usedPercent, 33);
 
-  const duplicated = repo.ingest(
+  const duplicated = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_dup000001",
@@ -300,16 +300,18 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.deepEqual(duplicated, { ok: false, error: "invalid" });
-  assert.equal(repo.readRun("owner", "thread_dup000001"), null);
+  assert.equal(await repo.readRun("owner", "thread_dup000001"), null);
 
-  const held = repo.ingest(
+  const held = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_park00001",
       status: "interrupted",
       at: AT + 12,
       report: report(),
-      turns: [turn("turn_park0001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "interrupted")],
+      turns: [
+        turn("turn_park0001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "interrupted"),
+      ],
     }),
   );
   assert.equal(held.ok && held.run.status, "interrupted");
@@ -317,17 +319,19 @@ function assertContract(repo: ResearchRepo) {
   assert.equal(held.ok && held.run.report, null);
   assert.equal(held.ok && held.run.turns[0]?.usage.inputTokens, 4);
 
-  const drafting = repo.ingest(
+  const drafting = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_pub000001",
       status: "in_progress",
       at: AT + 13,
-      turns: [turn("turn_pub00001", { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, "inProgress")],
+      turns: [
+        turn("turn_pub00001", { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, "inProgress"),
+      ],
     }),
   );
   assert.equal(drafting.ok && drafting.run.publishedAt, null);
-  const finished = repo.ingest(
+  const finished = await repo.ingest(
     "owner",
     delivery({
       threadId: "thread_pub000001",
@@ -338,15 +342,54 @@ function assertContract(repo: ResearchRepo) {
     }),
   );
   assert.equal(finished.ok && finished.run.publishedAt, AT + 14);
-  assert.equal(repo.readRun("owner", "thread_pub000001")?.publishedAt, AT + 14);
-  assert.equal(repo.readRun("owner", "thread_pub000001")?.turns[0]?.usage.inputTokens, 2);
+  assert.equal((await repo.readRun("owner", "thread_pub000001"))?.publishedAt, AT + 14);
+  assert.equal((await repo.readRun("owner", "thread_pub000001"))?.turns[0]?.usage.inputTokens, 2);
+  await repo.ingest(
+    "owner",
+    delivery({
+      threadId: "latest_limit_thread",
+      limit: {
+        readAt: AT + 100,
+        primary: null,
+        secondary: null,
+        spendControlReached: null,
+        individualRemainingPercent: 42,
+      },
+    }),
+  );
+  await repo.ingest(
+    "owner",
+    delivery({
+      threadId: "older_limit_thread",
+      limit: {
+        readAt: AT + 50,
+        primary: null,
+        secondary: null,
+        spendControlReached: null,
+        individualRemainingPercent: 99,
+      },
+    }),
+  );
+  assert.equal((await repo.readLimit("owner"))?.readAt, AT + 100);
+  assert.equal((await repo.readLimit("owner"))?.individualRemainingPercent, 42);
 }
 
-function assertPublication(repo: ResearchRepo) {
-  repo.upsertAuthor({ id: "gh-a", login: "Lesha", name: "Lesha", avatarUrl: "https://example.com/a.png" });
-  repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
-  const known = { inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 0, totalTokens: 9 };
-  const first = repo.ingest(
+async function assertPublication(repo: ResearchRepo) {
+  await repo.upsertAuthor({
+    id: "gh-a",
+    login: "Lesha",
+    name: "Lesha",
+    avatarUrl: "https://example.com/a.png",
+  });
+  await repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
+  const known = {
+    inputTokens: 7,
+    cachedInputTokens: 1,
+    outputTokens: 2,
+    reasoningOutputTokens: 0,
+    totalTokens: 9,
+  };
+  const first = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_pub_a001",
@@ -358,7 +401,7 @@ function assertPublication(repo: ResearchRepo) {
       at: AT,
     }),
   );
-  const second = repo.ingest(
+  const second = await repo.ingest(
     "gh-b",
     delivery({
       threadId: "thread_pub_b001",
@@ -368,29 +411,39 @@ function assertPublication(repo: ResearchRepo) {
       at: AT + 1,
     }),
   );
-  const again = repo.ingest(
+  const again = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_pub_a002",
       status: "completed",
       report: report("Второй заход"),
-      turns: [turn("turn_pub_a002", { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 })],
+      turns: [
+        turn("turn_pub_a002", {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 0,
+        }),
+      ],
       at: AT + 2,
     }),
   );
-  const quiet = repo.ingest(
+  const quiet = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_hide001",
       status: "in_progress",
-      turns: [turn("turn_hide001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "inProgress")],
+      turns: [
+        turn("turn_hide001", { inputTokens: 4, outputTokens: 1, totalTokens: 5 }, "inProgress"),
+      ],
       at: AT + 3,
     }),
   );
   assert.equal(first.ok && second.ok && again.ok && quiet.ok, true);
   if (!first.ok || !second.ok || !again.ok) return;
 
-  const board = repo.missionBoard("Vitejs", "vite", 1, "gh-a");
+  const board = await repo.missionBoard("Vitejs", "vite", 1, "gh-a");
   assert.deepEqual(
     board.reports.map((item) => item.report.findings),
     ["Второй заход", "Нужно уточнение", "Уже исправлено"],
@@ -404,14 +457,14 @@ function assertPublication(repo: ResearchRepo) {
   assert.equal(leaked.includes("thread_"), false);
   assert.equal(leaked.includes("gh-a"), false);
   assert.equal(leaked.includes("individualRemainingPercent"), false);
-  assert.equal(repo.readLimit("gh-a")?.primary?.usedPercent, 12);
-  assert.equal(repo.missionBoard("vitejs", "vite", 1, null).viewerSpend, null);
-  assert.equal(repo.missionBoard("vitejs", "vite", 1, "gh-b").hidden.length, 0);
+  assert.equal((await repo.readLimit("gh-a"))?.primary?.usedPercent, 12);
+  assert.equal((await repo.missionBoard("vitejs", "vite", 1, null)).viewerSpend, null);
+  assert.equal((await repo.missionBoard("vitejs", "vite", 1, "gh-b")).hidden.length, 0);
 
-  assert.equal(repo.setPublished("gh-b", first.run.id, false, AT + 4), "missing");
-  assert.equal(repo.missionBoard("vitejs", "vite", 1, null).reports.length, 3);
-  assert.equal(repo.setPublished("gh-a", first.run.id, false, AT + 5), "updated");
-  const hidden = repo.missionBoard("vitejs", "vite", 1, "gh-a");
+  assert.equal(await repo.setPublished("gh-b", first.run.id, false, AT + 4), "missing");
+  assert.equal((await repo.missionBoard("vitejs", "vite", 1, null)).reports.length, 3);
+  assert.equal(await repo.setPublished("gh-a", first.run.id, false, AT + 5), "updated");
+  const hidden = await repo.missionBoard("vitejs", "vite", 1, "gh-a");
   assert.deepEqual(
     hidden.reports.map((item) => item.report.findings),
     ["Второй заход", "Нужно уточнение"],
@@ -419,13 +472,13 @@ function assertPublication(repo: ResearchRepo) {
   assert.equal(hidden.hidden[0]?.report.findings, "Уже исправлено");
   assert.equal(hidden.hidden[0]?.spend.totalTokens, 9);
   assert.equal(hidden.viewerSpend?.inputTokens, 11);
-  assert.equal(repo.authorBoard("lesha", "gh-b").hidden.length, 0);
-  assert.equal(repo.authorBoard("lesha", "gh-a").reports.length, 1);
-  assert.equal(repo.authorBoard("lesha", "gh-a").hidden.length, 1);
-  assert.equal(repo.authorBoard("nobody", null).login, "nobody");
-  assert.equal(repo.authorBoard("nobody", null).reports.length, 0);
+  assert.equal((await repo.authorBoard("lesha", "gh-b")).hidden.length, 0);
+  assert.equal((await repo.authorBoard("lesha", "gh-a")).reports.length, 1);
+  assert.equal((await repo.authorBoard("lesha", "gh-a")).hidden.length, 1);
+  assert.equal((await repo.authorBoard("nobody", null)).login, "nobody");
+  assert.equal((await repo.authorBoard("nobody", null)).reports.length, 0);
 
-  const replay = repo.ingest(
+  const replay = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_pub_a001",
@@ -437,8 +490,8 @@ function assertPublication(repo: ResearchRepo) {
     }),
   );
   assert.equal(replay.ok && replay.replay, true);
-  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, null);
-  const conflict = repo.ingest(
+  assert.equal((await repo.readRun("gh-a", "thread_pub_a001"))?.publishedAt, null);
+  const conflict = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_pub_a001",
@@ -450,112 +503,147 @@ function assertPublication(repo: ResearchRepo) {
     }),
   );
   assert.deepEqual(conflict, { ok: false, error: "conflict" });
-  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, null);
-  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.report?.findings, "Уже исправлено");
-  assert.equal(repo.setPublished("gh-a", quiet.ok ? quiet.run.id : "missing", true, AT + 7), "blocked");
-  assert.equal(repo.setPublished("gh-a", first.run.id, true, AT + 8), "updated");
-  assert.equal(repo.readRun("gh-a", "thread_pub_a001")?.publishedAt, AT + 8);
-  assert.equal(repo.missionBoard("vitejs", "vite", 1, "gh-a").reports[0]?.report.findings, "Уже исправлено");
-  const zero = repo.missionBoard("vitejs", "vite", 1, null).reports.find((item) => item.report.findings === "Второй заход");
+  assert.equal((await repo.readRun("gh-a", "thread_pub_a001"))?.publishedAt, null);
+  assert.equal((await repo.readRun("gh-a", "thread_pub_a001"))?.report?.findings, "Уже исправлено");
+  assert.equal(
+    await repo.setPublished("gh-a", quiet.ok ? quiet.run.id : "missing", true, AT + 7),
+    "blocked",
+  );
+  assert.equal(await repo.setPublished("gh-a", first.run.id, true, AT + 8), "updated");
+  assert.equal((await repo.readRun("gh-a", "thread_pub_a001"))?.publishedAt, AT + 8);
+  assert.equal(
+    (await repo.missionBoard("vitejs", "vite", 1, "gh-a")).reports[0]?.report.findings,
+    "Уже исправлено",
+  );
+  const zero = (await repo.missionBoard("vitejs", "vite", 1, null)).reports.find(
+    (item) => item.report.findings === "Второй заход",
+  );
   assert.equal(zero?.spend.totalTokens, 0);
 }
 
 describe("research publication", () => {
-  it("memory: public boards hide private fields and keep an unpublish", () => {
-    assertPublication(createMemoryResearch());
+  it("memory: public boards hide private fields and keep an unpublish", async () => {
+    await assertPublication(createMemoryResearch());
   });
 
-  it("sqlite: public boards hide private fields and keep an unpublish", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      assertPublication(createSqliteResearch(db));
-    } finally {
-      db.close();
-    }
-  });
+  it(
+    "postgres: public boards hide private fields and keep an unpublish",
+    { skip: !process.env.TEST_DATABASE_URL },
+    async () => {
+      const isolated = await isolatedDatabase();
+      const db = isolated.pool;
+      try {
+        await assertPublication(createPostgresResearch(db));
+      } finally {
+        await isolated.close();
+      }
+    },
+  );
 });
 
 describe("research contract", () => {
-  it("memory: grants, snapshots, and completion stay idempotent", () => {
-    assertContract(createMemoryResearch());
+  it("memory: grants, snapshots, and completion stay idempotent", async () => {
+    await assertContract(createMemoryResearch());
   });
 
-  it("sqlite: grants, snapshots, and completion stay idempotent", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      assertContract(createSqliteResearch(db));
-    } finally {
-      db.close();
-    }
-  });
+  it(
+    "postgres: grants, snapshots, and completion stay idempotent",
+    { skip: !process.env.TEST_DATABASE_URL },
+    async () => {
+      const isolated = await isolatedDatabase();
+      const db = isolated.pool;
+      try {
+        await assertContract(createPostgresResearch(db));
+      } finally {
+        await isolated.close();
+      }
+    },
+  );
 
-  it("sqlite: keeps journal and usage rows, and stores only the grant hash", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      const usage = createSqliteUsage(db);
-      const journal = createSqliteJournal(db);
-      const night: LogEntry = {
-        id: "vitejs/vite#9",
-        owner: "vitejs",
-        repo: "vite",
-        number: 9,
-        title: "Night",
-        kind: "blinding",
-        url: "https://github.com/vitejs/vite/issues/9",
-        isPr: false,
-        status: "taken",
-        takenAt: 5,
-      };
-      usage.record("owner", {
-        at: 5,
-        harness: "codex",
-        model: "gpt-6-astra",
-        inputTokens: 3,
-        outputTokens: 4,
-        missionId: "vitejs/vite#9",
-      });
-      journal.take("owner", night);
-      const research = createSqliteResearch(db);
-      const { token } = research.createGrant("owner", AT);
-      const saved = research.ingest(
-        "owner",
-        delivery({
-          status: "completed",
-          report: report(),
-          turns: [turn("turn_old00001", { inputTokens: 8, cachedInputTokens: 2, outputTokens: 1, totalTokens: 9 })],
-        }),
-      );
-      assert.equal(saved.ok, true);
-      if (saved.ok) assert.equal(saved.run.publishedAt, AT);
-      assert.deepEqual(usage.list("owner"), [
-        {
+  it(
+    "postgres: keeps journal and usage rows, and stores only the grant hash",
+    { skip: !process.env.TEST_DATABASE_URL },
+    async () => {
+      const isolated = await isolatedDatabase();
+      const db = isolated.pool;
+      try {
+        const usage = createPostgresUsage(db);
+        const journal = createPostgresJournal(db);
+        const night: LogEntry = {
+          id: "vitejs/vite#9",
+          owner: "vitejs",
+          repo: "vite",
+          number: 9,
+          title: "Night",
+          kind: "blinding",
+          url: "https://github.com/vitejs/vite/issues/9",
+          isPr: false,
+          status: "taken",
+          takenAt: 5,
+        };
+        await usage.record("owner", {
           at: 5,
           harness: "codex",
           model: "gpt-6-astra",
           inputTokens: 3,
           outputTokens: 4,
           missionId: "vitejs/vite#9",
-        },
-      ]);
-      assert.equal(journal.list("owner")[0]?.id, "vitejs/vite#9");
-      const row = db.prepare("SELECT token_hash FROM connector_grants").get() as {
-        token_hash: string;
-      };
-      assert.notEqual(row.token_hash, token);
-      assert.equal(row.token_hash.includes(token), false);
-      const spend = sumTurnSnapshots(research.readRun("owner", "thread_abc12345")?.turns ?? []);
-      assert.equal(spend.totalTokens, 9);
-      assert.equal(spend.cachedInputTokens, 2);
-      assert.notEqual(spend.totalTokens, 8 + 2 + 1);
-    } finally {
-      db.close();
-    }
-  });
+        });
+        await journal.take("owner", night);
+        const research = createPostgresResearch(db);
+        const { token } = await research.createGrant("owner", AT);
+        const saved = await research.ingest(
+          "owner",
+          delivery({
+            status: "completed",
+            report: report(),
+            turns: [
+              turn("turn_old00001", {
+                inputTokens: 8,
+                cachedInputTokens: 2,
+                outputTokens: 1,
+                totalTokens: 9,
+              }),
+            ],
+          }),
+        );
+        assert.equal(saved.ok, true);
+        if (saved.ok) assert.equal(saved.run.publishedAt, AT);
+        assert.deepEqual(await usage.list("owner"), [
+          {
+            at: 5,
+            harness: "codex",
+            model: "gpt-6-astra",
+            inputTokens: 3,
+            outputTokens: 4,
+            missionId: "vitejs/vite#9",
+          },
+        ]);
+        assert.equal((await journal.list("owner"))[0]?.id, "vitejs/vite#9");
+        const row = (
+          await db.query<{ token_hash: string }>("SELECT token_hash FROM connector_grants")
+        ).rows[0]!;
+        assert.notEqual(row.token_hash, token);
+        assert.equal(row.token_hash.includes(token), false);
+        const spend = sumTurnSnapshots(
+          (await research.readRun("owner", "thread_abc12345"))?.turns ?? [],
+        );
+        assert.equal(spend.totalTokens, 9);
+        assert.equal(spend.cachedInputTokens, 2);
+        assert.notEqual(spend.totalTokens, 8 + 2 + 1);
+      } finally {
+        await isolated.close();
+      }
+    },
+  );
 });
 
-async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number; links: number }) {
-  repo.upsertAuthor({ id: "gh-a", login: "Lesha", name: "Lesha", avatarUrl: "" });
-  repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
+async function assertWatch(
+  repo: ResearchRepo,
+  sample?: () => Promise<{ subjects: number; links: number }>,
+) {
+  await repo.upsertAuthor({ id: "gh-a", login: "Lesha", name: "Lesha", avatarUrl: "" });
+  await repo.upsertAuthor({ id: "gh-b", login: "masha", name: "Masha", avatarUrl: "" });
   const body = (findings: string): ResearchReport => ({
     ...report(findings),
     links: [
@@ -564,7 +652,7 @@ async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number
       { url: "https://github.com/vitejs/vite/pull/3", kind: "pull" },
     ],
   });
-  const first = repo.ingest(
+  const first = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_watch_a",
@@ -573,7 +661,7 @@ async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number
       turns: [turn("turn_watch_a", { inputTokens: 1, outputTokens: 1, totalTokens: 2 })],
     }),
   );
-  const second = repo.ingest(
+  const second = await repo.ingest(
     "gh-b",
     delivery({
       threadId: "thread_watch_b",
@@ -635,8 +723,8 @@ async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number
   const ids = [first.run.id, second.run.id];
   await repo.refreshGithub(ids, AT, fetchImpl);
   assert.equal(calls, 5);
-  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
-  const board = repo.missionBoard("vitejs", "vite", 1, null);
+  if (sample) assert.deepEqual(await sample(), { subjects: 3, links: 6 });
+  const board = await repo.missionBoard("vitejs", "vite", 1, null);
   assert.deepEqual(
     board.reports.map((item) => item.github.links.map((link) => link.title)),
     [
@@ -657,30 +745,44 @@ async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number
 
   await repo.refreshGithub(ids, AT + 1_000, fetchImpl);
   assert.equal(calls, 5);
-  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
+  if (sample) assert.deepEqual(await sample(), { subjects: 3, links: 6 });
 
-  assert.equal(repo.setPublished("gh-a", first.run.id, false, AT + 2), "updated");
-  const hidden = repo.missionBoard("vitejs", "vite", 1, null);
-  assert.deepEqual(hidden.reports.map((item) => item.report.findings), ["Второй"]);
-  assert.equal(hidden.reports[0]?.github.links.some((link) => link.title === "Общий"), true);
-  assert.equal(JSON.stringify(hidden).includes("Первый"), false);
-  const owner = repo.missionBoard("vitejs", "vite", 1, "gh-a");
-  assert.equal(owner.hidden[0]?.github.source?.title, "Задача");
-  const stranger = repo.authorBoard("lesha", null);
-  assert.equal(stranger.reports.some((item) => item.report.findings === "Первый"), false);
-  assert.equal(stranger.hidden.length, 0);
-  const self = repo.authorBoard("lesha", "gh-a");
-  assert.equal(self.hidden[0]?.github.links.some((link) => link.title === "Общий"), true);
-
-  assert.equal(repo.setPublished("gh-a", first.run.id, true, AT + 3), "updated");
-  await repo.refreshGithub([first.run.id], AT + 4_000, fetchImpl);
-  assert.equal(calls, 5);
+  assert.equal(await repo.setPublished("gh-a", first.run.id, false, AT + 2), "updated");
+  const hidden = await repo.missionBoard("vitejs", "vite", 1, null);
+  assert.deepEqual(
+    hidden.reports.map((item) => item.report.findings),
+    ["Второй"],
+  );
   assert.equal(
-    repo.missionBoard("vitejs", "vite", 1, null).reports.some((item) => item.github.source?.title === "Задача"),
+    hidden.reports[0]?.github.links.some((link) => link.title === "Общий"),
+    true,
+  );
+  assert.equal(JSON.stringify(hidden).includes("Первый"), false);
+  const owner = await repo.missionBoard("vitejs", "vite", 1, "gh-a");
+  assert.equal(owner.hidden[0]?.github.source?.title, "Задача");
+  const stranger = await repo.authorBoard("lesha", null);
+  assert.equal(
+    stranger.reports.some((item) => item.report.findings === "Первый"),
+    false,
+  );
+  assert.equal(stranger.hidden.length, 0);
+  const self = await repo.authorBoard("lesha", "gh-a");
+  assert.equal(
+    self.hidden[0]?.github.links.some((link) => link.title === "Общий"),
     true,
   );
 
-  const quiet = repo.ingest(
+  assert.equal(await repo.setPublished("gh-a", first.run.id, true, AT + 3), "updated");
+  await repo.refreshGithub([first.run.id], AT + 4_000, fetchImpl);
+  assert.equal(calls, 5);
+  assert.equal(
+    (await repo.missionBoard("vitejs", "vite", 1, null)).reports.some(
+      (item) => item.github.source?.title === "Задача",
+    ),
+    true,
+  );
+
+  const quiet = await repo.ingest(
     "gh-a",
     delivery({
       threadId: "thread_watch_q",
@@ -692,7 +794,7 @@ async function assertWatch(repo: ResearchRepo, sample?: () => { subjects: number
   assert.equal(quiet.ok, true);
   if (quiet.ok) await repo.refreshGithub([quiet.run.id], AT + 6_000, fetchImpl);
   assert.equal(calls, 5);
-  if (sample) assert.deepEqual(sample(), { subjects: 3, links: 6 });
+  if (sample) assert.deepEqual(await sample(), { subjects: 3, links: 6 });
 }
 
 describe("research github history", () => {
@@ -700,52 +802,60 @@ describe("research github history", () => {
     await assertWatch(createMemoryResearch());
   });
 
-  it("sqlite: two reports share one pull, and the journal stays intact", async () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      const usage = createSqliteUsage(db);
-      const journal = createSqliteJournal(db);
-      const night: LogEntry = {
-        id: "vitejs/vite#9",
-        owner: "vitejs",
-        repo: "vite",
-        number: 9,
-        title: "Night",
-        kind: "blinding",
-        url: "https://github.com/vitejs/vite/issues/9",
-        isPr: false,
-        status: "taken",
-        takenAt: 5,
-      };
-      usage.record("owner", {
-        at: 5,
-        harness: "codex",
-        model: "gpt-6-astra",
-        inputTokens: 3,
-        outputTokens: 4,
-        missionId: "vitejs/vite#9",
-      });
-      journal.take("owner", night);
-      const repo = createSqliteResearch(db);
-      await assertWatch(repo, () => ({
-        subjects: (db.prepare("SELECT COUNT(*) AS n FROM github_subjects").get() as { n: number }).n,
-        links: (db.prepare("SELECT COUNT(*) AS n FROM research_links").get() as { n: number }).n,
-      }));
-      assert.equal(journal.list("owner")[0]?.id, "vitejs/vite#9");
-      assert.deepEqual(usage.list("owner"), [
-        {
+  it(
+    "postgres: two reports share one pull, and the journal stays intact",
+    { skip: !process.env.TEST_DATABASE_URL },
+    async () => {
+      const isolated = await isolatedDatabase();
+      const db = isolated.pool;
+      try {
+        const usage = createPostgresUsage(db);
+        const journal = createPostgresJournal(db);
+        const night: LogEntry = {
+          id: "vitejs/vite#9",
+          owner: "vitejs",
+          repo: "vite",
+          number: 9,
+          title: "Night",
+          kind: "blinding",
+          url: "https://github.com/vitejs/vite/issues/9",
+          isPr: false,
+          status: "taken",
+          takenAt: 5,
+        };
+        await usage.record("owner", {
           at: 5,
           harness: "codex",
           model: "gpt-6-astra",
           inputTokens: 3,
           outputTokens: 4,
           missionId: "vitejs/vite#9",
-        },
-      ]);
-      const facts = db.prepare("SELECT COUNT(*) AS n FROM github_facts").get() as { n: number };
-      assert.equal(facts.n, 2);
-    } finally {
-      db.close();
-    }
-  });
+        });
+        await journal.take("owner", night);
+        const repo = createPostgresResearch(db);
+        await assertWatch(repo, async () => ({
+          subjects: (await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM github_subjects"))
+            .rows[0]!.n,
+          links: (await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM research_links"))
+            .rows[0]!.n,
+        }));
+        assert.equal((await journal.list("owner"))[0]?.id, "vitejs/vite#9");
+        assert.deepEqual(await usage.list("owner"), [
+          {
+            at: 5,
+            harness: "codex",
+            model: "gpt-6-astra",
+            inputTokens: 3,
+            outputTokens: 4,
+            missionId: "vitejs/vite#9",
+          },
+        ]);
+        const facts = (await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM github_facts"))
+          .rows[0]!;
+        assert.equal(facts.n, 2);
+      } finally {
+        await isolated.close();
+      }
+    },
+  );
 });

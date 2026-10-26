@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { githubOAuthConfigured } from "./flags.ts";
+import { dataDirectory } from "./data-dir.ts";
 
 export { githubOAuthConfigured };
 
@@ -15,10 +16,10 @@ export function readAuthSecret(): string {
     }
     return fromEnv;
   }
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL) {
     throw new Error("AUTH_SECRET is required in production.");
   }
-  const file = join(process.cwd(), "data", ".auth-secret");
+  const file = join(dataDirectory(), ".auth-secret");
   try {
     const existing = readFileSync(file, "utf8").trim();
     if (existing.length >= MIN_SECRET_BYTES) return existing;

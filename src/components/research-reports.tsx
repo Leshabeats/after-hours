@@ -2,17 +2,11 @@ import { useState } from "react";
 import { Link, useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { LocalTime } from "@/components/local-time";
 import { reportLinkHref, spendLabel, type PublicReport } from "@/lib/research/catalog";
 import { setReportPublished } from "@/lib/research/api";
 import type { TurnSpend } from "@/lib/research/accounting";
 import { githubStateLabel, type GithubCard, type GithubHistory } from "@/lib/research/github-watch";
-
-function formatWhen(at: number) {
-  return new Date(at).toLocaleString("ru-RU", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 
 function GithubLine({ card }: { card: GithubCard }) {
   if (card.visibility === "hidden") {
@@ -45,9 +39,9 @@ function GithubLine({ card }: { card: GithubCard }) {
       ) : null}
       {card.review === "unknown" ? <p>Ревью не разобрано до конца.</p> : null}
       {card.stale && card.checkedAt != null ? (
-        <p>Не удалось обновить. Последняя проверка {formatWhen(card.checkedAt)}.</p>
+        <p>Не удалось обновить. Последняя проверка <LocalTime at={card.checkedAt} />.</p>
       ) : card.checkedAt != null ? (
-        <p>Проверено {formatWhen(card.checkedAt)}</p>
+        <p>Проверено <LocalTime at={card.checkedAt} /></p>
       ) : null}
     </div>
   );
@@ -139,7 +133,7 @@ function ReportCard({
             <p className="font-mono text-xs text-muted">{author}</p>
           )}
           <p className="mt-1 text-sm text-muted">
-            {report.publishedAt ? formatWhen(report.publishedAt) : "Снято с публикации"}
+            {report.publishedAt ? <LocalTime at={report.publishedAt} /> : "Снято с публикации"}
             {" · "}
             {report.model ?? "модель не указана"}
           </p>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { LocalTime } from "@/components/local-time";
 import {
   createConnectorGrant,
   listConnectorGrants,
@@ -7,13 +8,6 @@ import {
   type GrantLoad,
 } from "@/lib/research/api";
 import type { ConnectorGrant } from "@/lib/research/types";
-
-function formatWhen(at: number) {
-  return new Date(at).toLocaleString("ru-RU", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 
 export function ConnectorAccess({
   signedIn,
@@ -138,12 +132,12 @@ export function ConnectorAccess({
               <div className="min-w-0">
                 <p className="truncate font-mono text-xs text-fg">{grant.id}</p>
                 <p className="mt-1 text-sm text-muted">
-                  {grant.revokedAt ? "Отозван" : "Действует"} · {formatWhen(grant.createdAt)}
+                  {grant.revokedAt ? "Отозван" : "Действует"} · <LocalTime at={grant.createdAt} />
                 </p>
                 <p className="mt-1 text-sm text-muted">
-                  {grant.lastUsedAt
-                    ? `Последнее обращение ${formatWhen(grant.lastUsedAt)}`
-                    : "Ещё не обращался"}
+                  {grant.lastUsedAt ? (
+                    <>Последнее обращение <LocalTime at={grant.lastUsedAt} /></>
+                  ) : "Ещё не обращался"}
                 </p>
               </div>
               {grant.revokedAt ? null : (

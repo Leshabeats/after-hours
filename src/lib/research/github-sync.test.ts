@@ -50,9 +50,10 @@ function stage(run: WatchRun, login = "Lesha") {
   const book = createMemoryWatch(() => `gh_${String(++n).padStart(2, "0")}`);
   const reader = {
     book,
-    runs: () => [{ run, researcherLogin: login }],
+    runs: async () => [{ run, researcherLogin: login }],
   };
-  const history = () => book.history([{ id: run.id, researcherLogin: login }]).get(run.id);
+  const history = async () =>
+    (await book.history([{ id: run.id, researcherLogin: login }])).get(run.id);
   return { book, reader, run, history };
 }
 
@@ -77,7 +78,11 @@ function response(
   } as unknown as Response;
 }
 
-function issue(number: number, title: string, html = `https://github.com/vitejs/vite/issues/${number}`) {
+function issue(
+  number: number,
+  title: string,
+  html = `https://github.com/vitejs/vite/issues/${number}`,
+) {
   return {
     node_id: `I${number}`,
     number,
@@ -145,8 +150,11 @@ describe("github sync", () => {
     });
 
     await refreshWatch(reader, [run.id], 1_000_000, fetchImpl);
-    assert.equal(history()?.links[0]?.review, "changes_requested");
-    assert.deepEqual(history()?.links[0]?.facts.map((fact) => fact.kind), ["changes_requested"]);
+    assert.equal((await history())?.links[0]?.review, "changes_requested");
+    assert.deepEqual(
+      (await history())?.links[0]?.facts.map((fact) => fact.kind),
+      ["changes_requested"],
+    );
     const firstCalls = sent.length;
     await refreshWatch(reader, [run.id], 1_000_000 + 1_000, fetchImpl);
     assert.equal(sent.length, firstCalls);
@@ -154,33 +162,47 @@ describe("github sync", () => {
     reviewState = "APPROVED";
     comments = 4;
     await refreshWatch(reader, [run.id], 1_000_000 + FRESH_OPEN_MS, fetchImpl);
-    assert.deepEqual(history()?.links[0]?.facts.map((fact) => fact.kind), [
-      "approved",
-      "comments",
-      "changes_requested",
-    ]);
+    assert.deepEqual(
+      (await history())?.links[0]?.facts.map((fact) => fact.kind),
+      ["approved", "comments", "changes_requested"],
+    );
 
     closed = true;
     await refreshWatch(reader, [run.id], 1_000_000 + FRESH_OPEN_MS * 2, fetchImpl);
-    assert.equal(history()?.links[0]?.state, "closed");
-    assert.equal(history()?.links[0]?.facts.some((fact) => fact.kind === "closed"), true);
+    assert.equal((await history())?.links[0]?.state, "closed");
+    assert.equal(
+      (await history())?.links[0]?.facts.some((fact) => fact.kind === "closed"),
+      true,
+    );
 
     closed = false;
-    await refreshWatch(reader, [run.id], 1_000_000 + FRESH_OPEN_MS * 2 + FRESH_TERMINAL_MS, fetchImpl);
-    assert.equal(history()?.links[0]?.state, "open");
-    assert.equal(history()?.links[0]?.facts.some((fact) => fact.kind === "reopened"), true);
-    assert.equal(history()?.links[0]?.facts.some((fact) => fact.kind === "closed"), true);
+    await refreshWatch(
+      reader,
+      [run.id],
+      1_000_000 + FRESH_OPEN_MS * 2 + FRESH_TERMINAL_MS,
+      fetchImpl,
+    );
+    assert.equal((await history())?.links[0]?.state, "open");
+    assert.equal(
+      (await history())?.links[0]?.facts.some((fact) => fact.kind === "reopened"),
+      true,
+    );
+    assert.equal(
+      (await history())?.links[0]?.facts.some((fact) => fact.kind === "closed"),
+      true,
+    );
 
     merged = true;
-    const beforeMerge = history()?.links[0]?.facts.length ?? 0;
+    const beforeMerge = (await history())?.links[0]?.facts.length ?? 0;
     await refreshWatch(
       reader,
       [run.id],
       1_000_000 + FRESH_OPEN_MS * 3 + FRESH_TERMINAL_MS,
       fetchImpl,
     );
-    assert.equal(history()?.links[0]?.state, "merged");
-    const mergedFacts = history()?.links[0]?.facts.filter((fact) => fact.kind === "merged") ?? [];
+    assert.equal((await history())?.links[0]?.state, "merged");
+    const mergedFacts =
+      (await history())?.links[0]?.facts.filter((fact) => fact.kind === "merged") ?? [];
     assert.equal(mergedFacts.length, 1);
     await refreshWatch(
       reader,
@@ -189,10 +211,10 @@ describe("github sync", () => {
       fetchImpl,
     );
     assert.equal(
-      history()?.links[0]?.facts.filter((fact) => fact.kind === "merged").length,
+      (await history())?.links[0]?.facts.filter((fact) => fact.kind === "merged").length,
       1,
     );
-    assert.ok((history()?.links[0]?.facts.length ?? 0) >= beforeMerge);
+    assert.ok(((await history())?.links[0]?.facts.length ?? 0) >= beforeMerge);
   });
 
   it("leaves review unknown when the review page is truncated", async () => {
@@ -208,14 +230,19 @@ describe("github sync", () => {
       github(sent, (url) => {
         if (url.endsWith("/issues/1")) return response(200, issue(1, "Задача"), url);
         if (url.includes("/reviews")) {
-          return response(200, [{ user: { login: "Ann" }, state: "APPROVED", submitted_at: "1" }], url, {
-            link: '<https://api.github.com/repos/vitejs/vite/pulls/9/reviews?page=2>; rel="next"',
-          });
+          return response(
+            200,
+            [{ user: { login: "Ann" }, state: "APPROVED", submitted_at: "1" }],
+            url,
+            {
+              link: '<https://api.github.com/repos/vitejs/vite/pulls/9/reviews?page=2>; rel="next"',
+            },
+          );
         }
         return response(200, pull(9, "Правка", "Lesha"), url);
       }),
     );
-    assert.equal(history()?.links[0]?.review, "unknown");
+    assert.equal((await history())?.links[0]?.review, "unknown");
   });
 
   it("keeps the last public snapshot when GitHub rate-limits the next poll", async () => {
@@ -241,10 +268,10 @@ describe("github sync", () => {
     const before = sent.length;
     await refreshWatch(reader, [run.id], 3_000_000 + FRESH_OPEN_MS, fetchImpl);
     assert.equal(sent.length, before + 1);
-    assert.equal(history()?.source?.title, "Живой");
-    assert.equal(history()?.source?.stale, true);
-    assert.equal(history()?.links[0]?.title, "Правка");
-    assert.equal(history()?.links[0]?.stale, false);
+    assert.equal((await history())?.source?.title, "Живой");
+    assert.equal((await history())?.source?.stale, true);
+    assert.equal((await history())?.links[0]?.title, "Правка");
+    assert.equal((await history())?.links[0]?.stale, false);
     assert.ok(githubPausedUntil() > 3_000_000 + FRESH_OPEN_MS);
     const paused = sent.length;
     await refreshWatch(reader, [run.id], 3_000_000 + FRESH_OPEN_MS + 1_000, fetchImpl);
@@ -270,15 +297,20 @@ describe("github sync", () => {
       }),
     );
     missing = true;
-    await refreshWatch(reader, [run.id], 4_000_000 + FRESH_OPEN_MS, github(sent, (url) => {
-      if (url.endsWith("/pulls/9")) return response(404, "missing", url);
-      if (url.endsWith("/issues/1")) return response(200, issue(1, "Задача"), url);
-      return response(404, "missing", url);
-    }));
-    assert.equal(history()?.links[0]?.title, null);
-    assert.equal(history()?.links[0]?.visibility, "hidden");
-    assert.equal(history()?.links[0]?.facts.length, 0);
-    assert.equal(history()?.source?.title, "Задача");
+    await refreshWatch(
+      reader,
+      [run.id],
+      4_000_000 + FRESH_OPEN_MS,
+      github(sent, (url) => {
+        if (url.endsWith("/pulls/9")) return response(404, "missing", url);
+        if (url.endsWith("/issues/1")) return response(200, issue(1, "Задача"), url);
+        return response(404, "missing", url);
+      }),
+    );
+    assert.equal((await history())?.links[0]?.title, null);
+    assert.equal((await history())?.links[0]?.visibility, "hidden");
+    assert.equal((await history())?.links[0]?.facts.length, 0);
+    assert.equal((await history())?.source?.title, "Задача");
   });
 
   it("follows a transfer and keeps the same public subject", async () => {
@@ -290,14 +322,12 @@ describe("github sync", () => {
       reader,
       [run.id],
       5_000_000,
-      github(sent, () =>
-        response(200, moved, "https://api.github.com/repos/new/name/issues/1"),
-      ),
+      github(sent, () => response(200, moved, "https://api.github.com/repos/new/name/issues/1")),
     );
-    assert.equal(history()?.source?.owner, "new");
-    assert.equal(history()?.source?.repo, "name");
-    assert.equal(history()?.source?.title, "Переехала");
-    assert.equal(history()?.source?.visibility, "public");
+    assert.equal((await history())?.source?.owner, "new");
+    assert.equal((await history())?.source?.repo, "name");
+    assert.equal((await history())?.source?.title, "Переехала");
+    assert.equal((await history())?.source?.visibility, "public");
     await refreshWatch(
       reader,
       [run.id],
@@ -324,31 +354,47 @@ describe("github sync", () => {
       6_000_000,
       github(sent, (url) => {
         if (url.endsWith("/graphql")) {
-          return response(200, {
-            data: {
-              repository: {
-                issue: {
-                  closedByPullRequestsReferences: { nodes: [{ number: 3, merged: true }, { number: 44, merged: true }] },
+          return response(
+            200,
+            {
+              data: {
+                repository: {
+                  issue: {
+                    closedByPullRequestsReferences: {
+                      nodes: [
+                        { number: 3, merged: true },
+                        { number: 44, merged: true },
+                      ],
+                    },
+                  },
                 },
               },
             },
-          }, url);
+            url,
+          );
         }
         if (url.endsWith("/issues/1")) return response(200, issue(1, "Задача"), url);
         if (url.includes("/reviews")) return response(200, [], url);
-        if (url.endsWith("/pulls/3")) return response(200, pull(3, "Чужой", "Other", { merged: true }), url);
+        if (url.endsWith("/pulls/3"))
+          return response(200, pull(3, "Чужой", "Other", { merged: true }), url);
         return response(404, "missing", url);
       }),
     );
     assert.deepEqual(
-      history()?.links.map((link) => link.number),
+      (await history())?.links.map((link) => link.number),
       [3],
     );
-    assert.equal(history()?.links[0]?.byResearcher, false);
-    assert.equal(history()?.links[0]?.fixedByResearcher, false);
-    assert.equal(history()?.links[0]?.state, "merged");
-    assert.equal(sent.some((item) => item.url.endsWith("/pulls/44")), false);
-    assert.equal(sent.some((item) => item.hasCookie), false);
+    assert.equal((await history())?.links[0]?.byResearcher, false);
+    assert.equal((await history())?.links[0]?.fixedByResearcher, false);
+    assert.equal((await history())?.links[0]?.state, "merged");
+    assert.equal(
+      sent.some((item) => item.url.endsWith("/pulls/44")),
+      false,
+    );
+    assert.equal(
+      sent.some((item) => item.hasCookie),
+      false,
+    );
   });
 
   it("labels a fix only from an explicit merged pull by the report author", async () => {
@@ -360,28 +406,40 @@ describe("github sync", () => {
     );
     const fetchImpl = github(sent, (url) => {
       if (url.endsWith("/graphql")) {
-        return response(200, {
-          data: {
-            repository: {
-              issue: { closedByPullRequestsReferences: { nodes: [{ number: 9, merged: true }] } },
+        return response(
+          200,
+          {
+            data: {
+              repository: {
+                issue: { closedByPullRequestsReferences: { nodes: [{ number: 9, merged: true }] } },
+              },
             },
           },
-        }, url);
+          url,
+        );
       }
       if (url.endsWith("/issues/1")) return response(200, issue(1, "Задача"), url);
       if (url.includes("/reviews")) return response(200, [], url);
       return response(200, pull(9, "Правка", "lesha", { merged: true }), url);
     });
     await refreshWatch(reader, [run.id], 7_000_000, fetchImpl);
-    assert.equal(history()?.links[0]?.fixedByResearcher, true);
-    assert.equal(history()?.links[0]?.byResearcher, true);
-    assert.equal(sent.some((item) => item.authorization === "Bearer test-token"), true);
-    assert.equal(sent.some((item) => item.hasCookie), false);
+    assert.equal((await history())?.links[0]?.fixedByResearcher, true);
+    assert.equal((await history())?.links[0]?.byResearcher, true);
+    assert.equal(
+      sent.some((item) => item.authorization === "Bearer test-token"),
+      true,
+    );
+    assert.equal(
+      sent.some((item) => item.hasCookie),
+      false,
+    );
 
     delete process.env.GITHUB_TOKEN;
     resetGithubPause();
     const bare: Sent[] = [];
-    const second = stage(watchRun([{ url: "https://github.com/vitejs/vite/pull/8", kind: "pull" }]));
+    const second = stage(
+      watchRun([{ url: "https://github.com/vitejs/vite/pull/8", kind: "pull" }]),
+    );
     await refreshWatch(
       second.reader,
       [second.run.id],
@@ -392,10 +450,13 @@ describe("github sync", () => {
         return response(200, pull(8, "Без справки", "Lesha", { merged: true }), url);
       }),
     );
-    assert.equal(second.history()?.links[0]?.state, "merged");
-    assert.equal(second.history()?.links[0]?.byResearcher, true);
-    assert.equal(second.history()?.links[0]?.fixedByResearcher, false);
-    assert.equal(bare.some((item) => item.url.endsWith("/graphql")), false);
+    assert.equal((await second.history())?.links[0]?.state, "merged");
+    assert.equal((await second.history())?.links[0]?.byResearcher, true);
+    assert.equal((await second.history())?.links[0]?.fixedByResearcher, false);
+    assert.equal(
+      bare.some((item) => item.url.endsWith("/graphql")),
+      false,
+    );
   });
 
   it("stops after the call budget and saves a pull when review would be the extra call", async () => {
@@ -417,8 +478,11 @@ describe("github sync", () => {
       }),
     );
     assert.equal(sent.length, 6);
-    assert.equal(crowded.history()?.links.find((link) => link.number === 7)?.checkedAt, null);
-    assert.equal(crowded.history()?.source?.title, "Задача 1");
+    assert.equal(
+      (await crowded.history())?.links.find((link) => link.number === 7)?.checkedAt,
+      null,
+    );
+    assert.equal((await crowded.history())?.source?.title, "Задача 1");
 
     const tight: Sent[] = [];
     const pullLast = stage(
@@ -442,9 +506,15 @@ describe("github sync", () => {
       }),
     );
     assert.equal(tight.length, 6);
-    assert.equal(tight.some((item) => item.url.includes("/reviews")), false);
-    assert.equal(pullLast.history()?.links.find((link) => link.number === 9)?.review, null);
-    assert.equal(pullLast.history()?.links.find((link) => link.number === 9)?.title, "Позже");
+    assert.equal(
+      tight.some((item) => item.url.includes("/reviews")),
+      false,
+    );
+    assert.equal((await pullLast.history())?.links.find((link) => link.number === 9)?.review, null);
+    assert.equal(
+      (await pullLast.history())?.links.find((link) => link.number === 9)?.title,
+      "Позже",
+    );
   });
 
   it("continues after one broken payload", async () => {
@@ -474,8 +544,11 @@ describe("github sync", () => {
         return response(200, pull(9, "Правка", "Lesha"), url);
       }),
     );
-    assert.equal(history()?.source?.stale, true);
-    assert.equal(history()?.links[0]?.title, "Правка");
-    assert.equal(sent.some((item) => item.hasCookie), false);
+    assert.equal((await history())?.source?.stale, true);
+    assert.equal((await history())?.links[0]?.title, "Правка");
+    assert.equal(
+      sent.some((item) => item.hasCookie),
+      false,
+    );
   });
 });
