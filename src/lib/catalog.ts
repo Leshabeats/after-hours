@@ -1,3 +1,5 @@
+import { GAME_TAGS, type GameTag, type DiscoveryMode } from "./discovery/types.ts";
+
 export const DEFAULT_CATEGORY = "web";
 
 /** Repo star floor kept for copy. Lists themselves are curated, not a language dump. */
@@ -75,8 +77,8 @@ export const WORLDS = [
   },
   {
     id: "games",
-    label: "Games",
-    hint: "Движки и инструменты",
+    label: "GameDev",
+    hint: "Движки, инструменты и игровые платформы",
     projects: [
       { owner: "godotengine", repo: "godot", blurb: "Игровой движок" },
       { owner: "bevyengine", repo: "bevy", blurb: "Движок на Rust" },
@@ -216,7 +218,16 @@ const ECOSYSTEMS: Record<LanguageId, readonly CatalogRepo[]> = {
 export type CatalogSearch = {
   cat?: CategoryId;
   lang?: LanguageId;
+  tag?: GameTag;
+  view?: DiscoveryMode;
 };
+
+export const DISCOVERY_MODES = [
+  { id: "all", label: "Все находки" },
+  { id: "new", label: "Недавно созданы" },
+  { id: "discovered", label: "Недавно найдены" },
+  { id: "growing", label: "Растут" },
+] as const;
 
 const CATEGORY_IDS = new Set<string>(WORLDS.map((c) => c.id));
 const LANGUAGE_IDS = new Set<string>(LANGUAGES.map((l) => l.id));
@@ -246,9 +257,7 @@ export function parseLanguageId(raw: unknown): LanguageId | undefined {
   return undefined;
 }
 
-export function parseCatalogSearch(
-  search: Record<string, unknown>,
-): CatalogSearch {
+export function parseCatalogSearch(search: Record<string, unknown>): CatalogSearch {
   const out: CatalogSearch = {};
   if (typeof search.cat === "string" && CATEGORY_IDS.has(search.cat)) {
     out.cat = search.cat as CategoryId;
@@ -257,7 +266,20 @@ export function parseCatalogSearch(
     parseLanguageId(search.lang) ??
     (typeof search.cat === "string" ? LEGACY_LANGUAGE[search.cat] : undefined);
   if (lang) out.lang = lang;
+  if (out.cat === "games") {
+    if (GAME_TAGS.some((tag) => tag.id === search.tag)) out.tag = search.tag as GameTag;
+    if (DISCOVERY_MODES.some((view) => view.id === search.view))
+      out.view = search.view as DiscoveryMode;
+  }
   return out;
+}
+
+/** Keep independent filters while changing one dimension; other worlds clear GameDev filters. */
+export function changeCatalogSearch(
+  search: CatalogSearch,
+  patch: Partial<CatalogSearch>,
+): CatalogSearch {
+  return parseCatalogSearch({ ...search, ...patch });
 }
 
 export function keepCatalogSearch(search: Record<string, unknown>): CatalogSearch {
@@ -291,10 +313,7 @@ export function libraryPicks(lang: LanguageId): readonly CatalogRepo[] {
   return [];
 }
 
-export function catalogProjects(
-  cat: CategoryId,
-  lang?: LanguageId,
-): readonly CatalogRepo[] {
+export function catalogProjects(cat: CategoryId, lang?: LanguageId): readonly CatalogRepo[] {
   if (lang) return ecosystemProjects(lang);
   return worldProjects(cat);
 }

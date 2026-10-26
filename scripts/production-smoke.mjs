@@ -22,6 +22,7 @@ import { createPostgresJournal, upsertUser } from "../src/lib/journal/store.ts";
 import { createPostgresResearch } from "../src/lib/research/store.ts";
 import { enqueue, emptyQueue, readQueue, writeQueue } from "../src/lib/research/queue.ts";
 import { createPostgresUsage } from "../src/lib/usage/store.ts";
+import { createPostgresDiscovery } from "../src/lib/discovery/store.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const entry = join(root, ".output/server/index.mjs");
@@ -190,7 +191,48 @@ try {
   assert.equal(callback.headers.get("location"), `${origin}/log?auth=error`);
   assert.equal(callback.headers.get("set-cookie"), null);
   assert.equal((await post({})).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 1);
+  assert.ok(
+    (await html("/list?cat=games")).includes("Первая ежедневная подборка ещё не опубликована"),
+  );
+  const discovery = createPostgresDiscovery(db);
+  const discoveryAt = Date.now() - 3 * 86_400_000;
+  const discoveryLease = await discovery.acquire(discoveryAt, 60_000);
+  assert.ok(discoveryLease);
+  await discovery.publish(discoveryLease, discoveryAt, {
+    version: 1,
+    generatedAt: discoveryAt,
+    cards: [
+      {
+        isPublic: true,
+        id: "smoke-game",
+        owner: "smoke",
+        repo: "deck-discovery-fixture",
+        description: "Discovery persisted smoke fixture",
+        blurb: "Fixture",
+        logoUrl: "",
+        url: "https://github.com/smoke/deck-discovery-fixture",
+        language: "Rust",
+        stars: 23,
+        live: false,
+        tags: ["steamos", "emulation"],
+        createdAt: discoveryAt - 100 * 86_400_000,
+        firstSeenAt: discoveryAt,
+        observedAt: discoveryAt,
+        badges: ["discovered"],
+        reasons: ["Добавлен в каталог за последние 7 дней"],
+        growth: null,
+      },
+    ],
+  });
+  const discoveryPage = await html("/list?cat=games&tag=steamos&view=discovered");
+  assert.ok(discoveryPage.includes("deck-discovery-fixture"));
+  assert.ok(discoveryPage.includes("Обновление задерживается"));
+  assert.ok(
+    !(await html("/list?cat=games&tag=engines")).includes('href="/r/smoke/deck-discovery-fixture"'),
+  );
+  assert.ok((await html("/fate?cat=games&tag=steamos")).includes("GameDev"));
+  console.log("PASS GameDev empty bootstrap, persisted snapshot, delayed freshness and tag filter");
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 2);
   assert.equal((await journal.list(user.id)).length, 1);
   assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
   const usageBody = {
@@ -334,7 +376,7 @@ try {
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
   await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 1);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 2);
   console.log(
     "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );

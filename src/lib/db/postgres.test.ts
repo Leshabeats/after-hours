@@ -94,7 +94,7 @@ function night(id: string): LogEntry {
 
 postgresTest("postgres: concurrent migrations apply once and detect edits", async (pool) => {
   await Promise.all([migrate(pool), migrate(pool), migrate(pool)]);
-  assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 1);
+  assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 2);
   await pool.query("UPDATE schema_migrations SET checksum = 'changed'");
   await assert.rejects(migrate(pool), /Applied migration changed/);
   assert.equal((await pool.query("SELECT count(*) AS n FROM users")).rows[0].n, 0);

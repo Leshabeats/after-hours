@@ -1,0 +1,28 @@
+# TEMPLATE ONLY: outside .github/workflows; this file does not activate automation.
+# Enabling requires approved migration002, restricted DB role/secret, and main merge.
+name: GameDev catalog discovery
+on:
+  workflow_dispatch:
+  # Enable only after an explicit activation decision:
+  # schedule:
+  #   - cron: '17 7 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: catalog-discovery-production
+  cancel-in-progress: false
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g npm@11
+      - run: npm ci --ignore-scripts
+      - run: npm run catalog:sync -- --write
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CATALOG_DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}

@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
 import { CatalogFilters } from "@/components/catalog-filters";
+import { DiscoveryDetails, DiscoveryStatus } from "@/components/project-card";
+import { fateProjects } from "@/lib/discovery/presentation";
+import type { DiscoveryCard } from "@/lib/discovery/types";
 import { getProjects } from "@/lib/api";
 import { getCategory, parseCatalogSearch, parseCategoryId } from "@/lib/catalog";
 import type { ProjectCard } from "@/lib/github-live";
@@ -20,16 +23,16 @@ export const Route = createFileRoute("/fate")({
   pendingComponent: function FatePending() {
     return (
       <NightShell>
-        <p className="font-mono text-xs uppercase tracking-caps text-muted">
-          Загрузка эфира
-        </p>
+        <p className="font-mono text-xs uppercase tracking-caps text-muted">Загрузка эфира</p>
       </NightShell>
     );
   },
   component: FatePage,
 });
 
-function pick(projects: ProjectCard[], avoid?: string) {
+type FateProject = ProjectCard | DiscoveryCard;
+
+function pick(projects: FateProject[], avoid?: string) {
   const pool = avoid
     ? projects.filter((project) => `${project.owner}/${project.repo}` !== avoid)
     : projects;
@@ -39,16 +42,13 @@ function pick(projects: ProjectCard[], avoid?: string) {
 
 function FatePage() {
   const shelf = Route.useLoaderData();
-  const projects = useMemo(
-    () => [...shelf.ecosystem, ...shelf.direction, ...shelf.libraries],
-    [shelf],
-  );
   const search = Route.useSearch();
+  const projects = useMemo(() => fateProjects(shelf, search), [shelf, search]);
   const cat = parseCategoryId(search.cat);
   const lang = search.lang;
   const category = getCategory(cat);
   const [spinning, setSpinning] = useState(true);
-  const [project, setProject] = useState<ProjectCard | null>(null);
+  const [project, setProject] = useState<FateProject | null>(null);
   const reduced = usePrefersReducedMotion();
 
   const strip = useMemo(() => {
@@ -92,19 +92,23 @@ function FatePage() {
 
   return (
     <NightShell>
-      <p className="font-mono text-xs uppercase tracking-caps text-accent">
-        Как повезёт
-      </p>
-      <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">
-        Ночь решает
-      </h1>
+      <p className="font-mono text-xs uppercase tracking-caps text-accent">Как повезёт</p>
+      <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">Ночь решает</h1>
       <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted">
         Один проект
-        {lang ? ` экосистемы ${lang}` : ` направления ${category.label}`}. Ишью
-        уже внутри.
+        {lang ? ` экосистемы ${lang}` : ` направления ${category.label}`}. Ишью уже внутри.
       </p>
 
-      <CatalogFilters to="/fate" cat={cat} lang={lang} />
+      <CatalogFilters to="/fate" cat={cat} lang={lang} tag={search.tag} view={search.view} />
+      {cat === "games" ? (
+        <>
+          <DiscoveryStatus discovery={shelf.discovery} />
+          <p className="mt-2 text-xs leading-relaxed text-faint">
+            Область и тип находки фильтруют ежедневную подборку. Проекты с полки и экосистема языка
+            тоже участвуют в выборе.
+          </p>
+        </>
+      ) : null}
 
       {projects.length === 0 ? (
         <p className="mt-10 text-sm text-muted">В этой полосе ночь пустая.</p>
@@ -115,7 +119,7 @@ function FatePage() {
               <ul className="spin-strip py-8">
                 {strip.map((item, i) => (
                   <li
-                    key={`${item.owner}/${item.repo}-${i}`}
+                    key={`${"id" in item ? `github:${item.id}` : `${item.owner}/${item.repo}`}-${i}`}
                     className="px-6 py-3 font-display text-2xl italic text-fg/80 sm:text-3xl"
                   >
                     {item.repo}
@@ -134,12 +138,11 @@ function FatePage() {
               />
               <div>
                 <p className="font-mono text-xs text-muted">{project.owner}</p>
-                <h2 className="mt-2 font-display text-4xl italic leading-none">
-                  {project.repo}
-                </h2>
+                <h2 className="mt-2 font-display text-4xl italic leading-none">{project.repo}</h2>
                 <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
                   {project.description}
                 </p>
+                {"firstSeenAt" in project ? <DiscoveryDetails project={project} /> : null}
                 <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                   <Button asChild size="lg">
                     <Link

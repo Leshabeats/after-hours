@@ -6,6 +6,9 @@ import {
   libraryPicks,
   parseCatalogSearch,
   parseCategoryId,
+  changeCatalogSearch,
+  keepCatalogSearch,
+  getCategory,
 } from "./catalog.ts";
 
 describe("parseCatalogSearch", () => {
@@ -19,6 +22,44 @@ describe("parseCatalogSearch", () => {
       lang: "TypeScript",
     });
   });
+
+  it("keeps the Games URL and validates GameDev filters", () => {
+    assert.equal(getCategory("games").label, "GameDev");
+    assert.deepEqual(
+      parseCatalogSearch({ cat: "games", lang: "Rust", tag: "engines", view: "new" }),
+      {
+        cat: "games",
+        lang: "Rust",
+        tag: "engines",
+        view: "new",
+      },
+    );
+    assert.deepEqual(
+      parseCatalogSearch({ cat: "games", lang: "invalid", tag: ["tools"], view: "unknown" }),
+      { cat: "games" },
+    );
+    assert.deepEqual(parseCatalogSearch({ cat: "web", tag: "tools", view: "growing" }), {
+      cat: "web",
+    });
+  });
+
+  it("preserves filters between routes and language changes and clears only GameDev filters when leaving", () => {
+    const search = { cat: "games", lang: "Rust", tag: "proton", view: "growing" } as const;
+    assert.deepEqual(keepCatalogSearch(search), search);
+    assert.deepEqual(changeCatalogSearch(search, { lang: "C++" }), { ...search, lang: "C++" });
+    assert.deepEqual(changeCatalogSearch(search, { lang: undefined }), {
+      cat: "games",
+      tag: "proton",
+      view: "growing",
+    });
+    assert.deepEqual(changeCatalogSearch(search, { cat: "linux" }), { cat: "linux", lang: "Rust" });
+    assert.deepEqual(changeCatalogSearch(search, { cat: "games" }), search);
+    assert.deepEqual(changeCatalogSearch(search, { tag: undefined, view: "all" }), {
+      cat: "games",
+      lang: "Rust",
+      view: "all",
+    });
+  });
 });
 
 describe("catalogProjects", () => {
@@ -29,9 +70,7 @@ describe("catalogProjects", () => {
   });
 
   it("lists the language itself, not libraries written in it", () => {
-    const names = catalogProjects("web", "TypeScript").map(
-      (p) => `${p.owner}/${p.repo}`,
-    );
+    const names = catalogProjects("web", "TypeScript").map((p) => `${p.owner}/${p.repo}`);
     assert.deepEqual(names[0], "microsoft/TypeScript");
     assert.equal(names.includes("microsoft/vscode"), false);
     assert.equal(names.includes("colinhacks/zod"), false);
