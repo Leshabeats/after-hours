@@ -9,13 +9,7 @@ import {
 } from "@/lib/research/api";
 import type { ConnectorGrant } from "@/lib/research/types";
 
-export function ConnectorAccess({
-  signedIn,
-  initial,
-}: {
-  signedIn: boolean;
-  initial: GrantLoad;
-}) {
+export function ConnectorAccess({ signedIn, initial }: { signedIn: boolean; initial: GrantLoad }) {
   const [grants, setGrants] = useState<ConnectorGrant[]>(
     initial.ok === "account" ? initial.grants : [],
   );
@@ -35,7 +29,10 @@ export function ConnectorAccess({
       const result = await createConnectorGrant();
       if (result.ok === "account") {
         setToken({ value: result.token, grantId: result.grant.id });
-        setGrants((current) => [result.grant, ...current.filter((item) => item.id !== result.grant.id)]);
+        setGrants((current) => [
+          result.grant,
+          ...current.filter((item) => item.id !== result.grant.id),
+        ]);
         setLoadError(false);
         return;
       }
@@ -65,7 +62,11 @@ export function ConnectorAccess({
         setActionError("Этот доступ уже не твой.");
         return;
       }
-      setActionError(result.ok === "anonymous" ? "Сессия кончилась. Войди ещё раз." : "Не удалось отозвать доступ.");
+      setActionError(
+        result.ok === "anonymous"
+          ? "Сессия кончилась. Войди ещё раз."
+          : "Не удалось отозвать доступ.",
+      );
     } finally {
       setPending(false);
     }
@@ -86,8 +87,8 @@ export function ConnectorAccess({
     <section className="mt-8 max-w-xl">
       <p className="font-mono text-xs uppercase tracking-caps text-accent">Коннектор</p>
       <p className="mt-3 text-sm leading-relaxed text-muted">
-        Локальный Codex сам открывает исследование и присылает отчёт. Сайт агента не
-        запускает. Токен показывается один раз.
+        Подключи свой харнесс через MCP на странице «Подключить агента». Здесь можно выдать
+        Bearer-токен или отозвать доступ. Токен показывается один раз.
       </p>
       {loadError ? (
         <p className="mt-3 text-sm text-muted">Не удалось прочитать доступы коннектора.</p>
@@ -132,12 +133,27 @@ export function ConnectorAccess({
               <div className="min-w-0">
                 <p className="truncate font-mono text-xs text-fg">{grant.id}</p>
                 <p className="mt-1 text-sm text-muted">
-                  {grant.revokedAt ? "Отозван" : "Действует"} · <LocalTime at={grant.createdAt} />
+                  {grant.revokedAt
+                    ? "Отозван"
+                    : grant.expiresAt && grant.expiresAt <= Date.now()
+                      ? "Истёк"
+                      : "Действует"}{" "}
+                  · <LocalTime at={grant.createdAt} />
+                  {grant.expiresAt ? (
+                    <>
+                      {" "}
+                      · До <LocalTime at={grant.expiresAt} />
+                    </>
+                  ) : null}
                 </p>
                 <p className="mt-1 text-sm text-muted">
                   {grant.lastUsedAt ? (
-                    <>Последнее обращение <LocalTime at={grant.lastUsedAt} /></>
-                  ) : "Ещё не обращался"}
+                    <>
+                      Последнее обращение <LocalTime at={grant.lastUsedAt} />
+                    </>
+                  ) : (
+                    "Ещё не обращался"
+                  )}
                 </p>
               </div>
               {grant.revokedAt ? null : (

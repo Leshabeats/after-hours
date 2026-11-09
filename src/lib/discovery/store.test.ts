@@ -524,7 +524,7 @@ postgresTest(
 );
 
 postgresTest(
-  "postgres: fresh 002 schema and repeated migrator are ready without HTTP DDL",
+  "postgres: fresh current schema and repeated migrator are ready without HTTP DDL",
   async (pool) => {
     const tables = (
       await pool.query<{ table_name: string }>(`SELECT table_name FROM information_schema.tables
@@ -537,7 +537,7 @@ postgresTest(
       "discovery_sync_state",
     ]);
     await Promise.all([migrate(pool), migrate(pool)]);
-    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 2);
+    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 3);
     assert.equal(await createPostgresDiscovery(pool).snapshot(), null);
   },
 );
@@ -548,7 +548,9 @@ postgresTest(
     // Reconstruct exactly the 001 state inside this test's isolated schema.
     await pool.query(`DROP TABLE discovery_sync_state, discovery_daily_metrics;
     DROP TABLE discovery_runs, discovery_repositories;
-    DELETE FROM schema_migrations WHERE version = '002_discovery.sql'`);
+    DROP TABLE mcp_authorization_codes;
+    ALTER TABLE connector_grants DROP COLUMN expires_at;
+    DELETE FROM schema_migrations WHERE version IN ('002_discovery.sql','003_mcp.sql')`);
     await pool.query("INSERT INTO users (id,login,created_at) VALUES ('existing','Existing',1)");
     await createPostgresJournal(pool).take("existing", {
       id: "owner/repo#1",
@@ -574,8 +576,12 @@ postgresTest(
     const after = await Promise.all(
       names.map(async (name) => (await pool.query(`SELECT * FROM ${name}`)).rows),
     );
+    after[3] = after[3].map(({ expires_at, ...row }) => {
+      assert.equal(expires_at, null);
+      return row;
+    });
     assert.deepEqual(after, before);
-    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 2);
+    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 3);
     assert.ok(await createPostgresDiscovery(pool).acquire(NOW, 100));
   },
 );

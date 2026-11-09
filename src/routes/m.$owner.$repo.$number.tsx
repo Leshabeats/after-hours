@@ -6,11 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { getMission } from "@/lib/api";
 import { defaultAgentPrompt } from "@/lib/agent-prompt";
 import { briefPrompt } from "@/lib/brief-prompt";
-import { codexAppChatUrl } from "@/lib/codex-link";
 import { repoIssuesLink } from "@/lib/repo-issues";
-import { shouldMarkShipping } from "@/lib/take-night";
 import { KIND_META, relativeTime } from "@/lib/kinds";
-import { useAccount } from "@/components/account-session";
 import { ResearchReportSection } from "@/components/research-reports";
 import { listMissionReports } from "@/lib/research/api";
 import { ExternalLink } from "lucide-react";
@@ -46,9 +43,7 @@ export const Route = createFileRoute("/m/$owner/$repo/$number")({
 function MissionPending() {
   return (
     <NightShell>
-      <p className="font-mono text-xs uppercase tracking-caps text-muted">
-        Загрузка эфира
-      </p>
+      <p className="font-mono text-xs uppercase tracking-caps text-muted">Загрузка эфира</p>
     </NightShell>
   );
 }
@@ -57,8 +52,6 @@ function MissionPage() {
   const { mission, reports } = Route.useLoaderData();
   const issuesLink = repoIssuesLink(mission.owner, mission.repo);
   const meta = KIND_META[mission.kind];
-  const { take, setStatus, entries } = useAccount();
-  const entry = entries.find((item) => item.id === mission.id);
 
   async function copyPrompt(text: string, label: string) {
     try {
@@ -84,21 +77,15 @@ function MissionPage() {
         </Link>
       </div>
 
-      <p className="mt-6 font-mono text-xs uppercase tracking-caps text-accent">
-        {meta.track}
-      </p>
+      <p className="mt-6 font-mono text-xs uppercase tracking-caps text-accent">{meta.track}</p>
       <p className="mt-3 font-mono text-xs text-muted">
         {mission.owner}/{mission.repo}{" "}
         <span className="text-faint">
           {mission.isPr ? "PR" : "#"}
           {mission.number}
         </span>
-        {mission.author ? (
-          <span className="text-faint"> · {mission.author}</span>
-        ) : null}
-        {mission.language ? (
-          <span className="text-faint"> · {mission.language}</span>
-        ) : null}
+        {mission.author ? <span className="text-faint"> · {mission.author}</span> : null}
+        {mission.language ? <span className="text-faint"> · {mission.language}</span> : null}
         <span className="text-faint"> · {relativeTime(mission.updatedAt)}</span>
         {mission.comments > 0 ? (
           <span className="text-faint"> · {mission.comments} комм.</span>
@@ -118,35 +105,15 @@ function MissionPage() {
 
       <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         <Button asChild size="lg">
-          <a
-            href={codexAppChatUrl(defaultAgentPrompt(mission))}
-            onClick={(event) => {
-              event.preventDefault();
-              const href = event.currentTarget.href;
-              void (async () => {
-                try {
-                  if (!entry) await take(mission);
-                  if (shouldMarkShipping(entry?.status)) {
-                    await setStatus(mission.id, "shipping");
-                  }
-                } catch {
-                  // A journal failure must not keep Codex from opening.
-                }
-                window.location.href = href;
-                toast("Codex открыт. Промпт в новом чате, осталось нажать Enter.");
-              })();
-            }}
-          >
-            Взять эту ночь
-          </a>
+          <Link to="/connect" search={{ mission: mission.id }}>
+            Исследовать своим агентом
+          </Link>
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="lg"
-          onClick={() =>
-            copyPrompt(defaultAgentPrompt(mission), "Протокол агента скопирован")
-          }
+          onClick={() => copyPrompt(defaultAgentPrompt(mission), "Протокол агента скопирован")}
         >
           Протокол агента
         </Button>
@@ -160,9 +127,7 @@ function MissionPage() {
 
       {mission.body ? (
         <section className="mt-12">
-          <h2 className="font-mono text-xs uppercase tracking-caps text-muted">
-            Тело
-          </h2>
+          <h2 className="font-mono text-xs uppercase tracking-caps text-muted">Тело</h2>
           <pre className="body-scroll mt-4 overflow-auto whitespace-pre-wrap rounded-lg bg-surface p-5 font-sans text-sm leading-relaxed text-fg/90 shadow-border">
             {mission.body}
           </pre>
@@ -188,20 +153,16 @@ function MissionPage() {
       <section className="mt-12 rounded-xl bg-surface p-6 shadow-border sm:p-8">
         <h2 className="font-display text-3xl italic">Разбор ночи</h2>
         <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-          Открывает новый чат в Codex у тебя на компьютере. Промпт уже внутри:
-          суть, шаги, риски. Ключ сайта не используется.
+          Скопируй задание для своего агента: суть, шаги и риски. Для сохранения публичного отчёта
+          подключи After Hours через MCP.
         </p>
-        <Button asChild className="mt-6" variant="paper" size="lg">
-          <a
-            href={codexAppChatUrl(briefPrompt(mission))}
-            onClick={(event) => {
-              event.preventDefault();
-              window.location.href = event.currentTarget.href;
-              toast("Codex открыт. Промпт разбора в новом чате, осталось нажать Enter.");
-            }}
-          >
-            Разобрать
-          </a>
+        <Button
+          className="mt-6"
+          variant="paper"
+          size="lg"
+          onClick={() => void copyPrompt(briefPrompt(mission), "Задание скопировано")}
+        >
+          Скопировать разбор
         </Button>
       </section>
     </NightShell>

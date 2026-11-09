@@ -32,7 +32,11 @@ export type PublishResult = "updated" | "missing" | "blocked";
 export type ResearchAuthor = ReportAuthor & { id: string };
 
 export type ResearchRepo = {
-  createGrant: (userId: string, at: number) => Promise<{ grant: ConnectorGrant; token: string }>;
+  createGrant: (
+    userId: string,
+    at: number,
+    expiresAt?: number,
+  ) => Promise<{ grant: ConnectorGrant; token: string }>;
   listGrants: (userId: string) => Promise<ConnectorGrant[]>;
   revokeGrant: (userId: string, grantId: string, at: number) => Promise<ConnectorGrant[] | null>;
   authenticate: (token: string) => Promise<{ userId: string; grantId: string } | null>;
@@ -63,7 +67,11 @@ export type ResearchRepo = {
 
 type StoredRun = ResearchRun & { deliveryHash: string };
 
-type GrantRecord = ConnectorGrant & { userId: string; tokenHash: string };
+type GrantRecord = Omit<ConnectorGrant, "expiresAt"> & {
+  userId: string;
+  tokenHash: string;
+  expiresAt: number | null;
+};
 
 type Decision =
   | { kind: "invalid" }
@@ -135,6 +143,7 @@ function publicGrant(grant: GrantRecord): ConnectorGrant {
     createdAt: grant.createdAt,
     revokedAt: grant.revokedAt,
     lastUsedAt: grant.lastUsedAt,
+    ...(grant.expiresAt != null ? { expiresAt: grant.expiresAt } : {}),
   };
 }
 
@@ -293,12 +302,13 @@ export function createMemoryResearch(): ResearchRepo {
   }
 
   return {
-    async createGrant(userId, at) {
+    async createGrant(userId, at, expiresAt) {
       const token = `ahc_${randomBytes(32).toString("base64url")}`;
       const grant: GrantRecord = {
         id: newId("gr"),
         userId,
         tokenHash: hashToken(token),
+        expiresAt: expiresAt ?? null,
         createdAt: at,
         revokedAt: null,
         lastUsedAt: null,
@@ -318,7 +328,12 @@ export function createMemoryResearch(): ResearchRepo {
     async authenticate(token) {
       const hash = hashToken(token);
       const grant = grants.find((item) => item.tokenHash === hash);
-      if (!grant || grant.revokedAt != null || !tokenMatches(token, grant.tokenHash)) {
+      if (
+        !grant ||
+        grant.revokedAt != null ||
+        (grant.expiresAt != null && grant.expiresAt <= Date.now()) ||
+        !tokenMatches(token, grant.tokenHash)
+      ) {
         return null;
       }
       return { userId: grant.userId, grantId: grant.id };
@@ -430,7 +445,7 @@ const runSelect = `SELECT r.id, r.user_id AS "userId", r.mission_id AS "missionI
   FROM research_runs r`;
 const authorSelect = `SELECT id, login, name, avatar_url AS "avatarUrl" FROM users`;
 const grantSelect = `SELECT id, user_id AS "userId", token_hash AS "tokenHash",
-  created_at AS "createdAt", revoked_at AS "revokedAt", last_used_at AS "lastUsedAt"
+  created_at AS "createdAt", revoked_at AS "revokedAt", last_used_at AS "lastUsedAt", expires_at AS "expiresAt"
   FROM connector_grants`;
 
 export function createPostgresResearch(pool: Pool): ResearchRepo {
@@ -544,20 +559,21 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
     }
   }
   return {
-    async createGrant(userId, at) {
+    async createGrant(userId, at, expiresAt) {
       const token = `ahc_${randomBytes(32).toString("base64url")}`;
       const grant: GrantRecord = {
         id: newId("gr"),
         userId,
         tokenHash: hashToken(token),
+        expiresAt: expiresAt ?? null,
         createdAt: at,
         revokedAt: null,
         lastUsedAt: null,
       };
       await pool.query(
-        `INSERT INTO connector_grants (id,user_id,token_hash,created_at)
-        VALUES ($1,$2,$3,$4)`,
-        [grant.id, userId, grant.tokenHash, at],
+        `INSERT INTO connector_grants (id,user_id,token_hash,created_at,expires_at)
+        VALUES ($1,$2,$3,$4,$5)`,
+        [grant.id, userId, grant.tokenHash, at, grant.expiresAt],
       );
       return { grant: publicGrant(grant), token };
     },
@@ -574,7 +590,13 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
       const grant = (
         await pool.query<GrantRecord>(`${grantSelect} WHERE token_hash = $1`, [hashToken(token)])
       ).rows[0];
-      if (!grant || grant.revokedAt != null || !tokenMatches(token, grant.tokenHash)) return null;
+      if (
+        !grant ||
+        grant.revokedAt != null ||
+        (grant.expiresAt != null && grant.expiresAt <= Date.now()) ||
+        !tokenMatches(token, grant.tokenHash)
+      )
+        return null;
       return { userId: grant.userId, grantId: grant.id };
     },
     async markUsed(grantId, at) {

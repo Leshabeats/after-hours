@@ -7,12 +7,7 @@ export const RUN_STATUSES = [
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
-export const TURN_STATUSES = [
-  "inProgress",
-  "completed",
-  "interrupted",
-  "failed",
-] as const;
+export const TURN_STATUSES = ["inProgress", "completed", "interrupted", "failed"] as const;
 export type TurnStatus = (typeof TURN_STATUSES)[number];
 
 export type TurnUsage = {
@@ -81,6 +76,7 @@ export type ResearchRun = {
 
 export type ConnectorGrant = {
   id: string;
+  expiresAt?: number;
   createdAt: number;
   revokedAt: number | null;
   lastUsedAt: number | null;

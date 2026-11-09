@@ -14,8 +14,13 @@ export const Route = createFileRoute("/api/auth/callback")({
           if (url.searchParams.get("error")) return fail();
           const code = url.searchParams.get("code");
           const state = url.searchParams.get("state");
-          const { OAUTH_COOKIE, clearCookie, readOAuthStateFromRequest, sessionCookie } =
-            await import("@/lib/auth/session");
+          const {
+            OAUTH_COOKIE,
+            clearCookie,
+            readOAuthStateFromRequest,
+            readOAuthReturnTo,
+            sessionCookie,
+          } = await import("@/lib/auth/session");
           const expected = readOAuthStateFromRequest(request);
           if (!code || !state || !expected || state !== expected) return fail();
           const { exchangeGithubCode, fetchGithubUser } = await import("@/lib/auth/github");
@@ -24,7 +29,7 @@ export const Route = createFileRoute("/api/auth/callback")({
           const { saveUser } = await import("@/lib/auth/db");
           await saveUser(user);
           const headers = new Headers();
-          headers.append("Location", `${origin}/log`);
+          headers.append("Location", `${origin}${readOAuthReturnTo(request)}`);
           headers.append("Set-Cookie", sessionCookie(user));
           headers.append("Set-Cookie", clearCookie(OAUTH_COOKIE));
           return new Response(null, { status: 302, headers });

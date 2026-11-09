@@ -225,6 +225,36 @@ try {
     ],
   });
   const discoveryPage = await html("/list?cat=games&tag=steamos&view=discovered");
+  assert.ok((await html("/connect?mission=smoke/public%237")).includes("Подключить своего агента"));
+  assert.equal((await request("/mcp", { method: "POST" })).status, 401);
+  const resourceMetadata = await request("/.well-known/oauth-protected-resource/mcp");
+  assert.equal(resourceMetadata.status, 200);
+  assert.equal((await resourceMetadata.json()).resource, origin + "/mcp");
+  const authMetadata = await request("/.well-known/oauth-authorization-server");
+  assert.equal(authMetadata.status, 200);
+  assert.equal((await authMetadata.json()).registration_endpoint, origin + "/mcp/register");
+  const mcpRegistration = await request("/mcp/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
+  });
+  assert.equal(mcpRegistration.status, 201);
+  const { token: mcpToken } = await createPostgresResearch(db).createGrant(user.id, Date.now());
+  const mcpTools = await request("/mcp", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + mcpToken,
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+      "MCP-Protocol-Version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+  assert.equal(mcpTools.status, 200);
+  assert.equal((await mcpTools.json()).result.tools.length, 6);
+  console.log(
+    "PASS MCP onboarding, OAuth discovery/registration and authenticated tools over production HTTP",
+  );
   assert.ok(discoveryPage.includes("deck-discovery-fixture"));
   assert.ok(discoveryPage.includes("Обновление задерживается"));
   assert.ok(
@@ -232,7 +262,7 @@ try {
   );
   assert.ok((await html("/fate?cat=games&tag=steamos")).includes("GameDev"));
   console.log("PASS GameDev empty bootstrap, persisted snapshot, delayed freshness and tag filter");
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 2);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 3);
   assert.equal((await journal.list(user.id)).length, 1);
   assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
   const usageBody = {
@@ -376,7 +406,7 @@ try {
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
   await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 2);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 3);
   console.log(
     "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );
