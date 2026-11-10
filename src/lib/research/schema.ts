@@ -22,7 +22,7 @@ const turnSchema = z.object({
   usage: usageSchema.nullable(),
 });
 
-const reportSchema = z.object({
+export const reportSchema = z.object({
   schemaVersion: z.literal(1),
   findings: z.string().trim().min(1).max(8_000),
   work: z.string().trim().min(1).max(8_000),

@@ -10,11 +10,15 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as FateRouteImport } from './routes/fate'
 import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
+import { Route as McpRouteImport } from './routes/mcp'
+import { Route as DotwellKnownSplatRouteImport } from './routes/[.]well-known.$'
 import { Route as ApiResearchRouteImport } from './routes/api/research'
 import { Route as ApiUsageRouteImport } from './routes/api/usage'
+import { Route as McpSplatRouteImport } from './routes/mcp.$'
 import { Route as ULoginRouteImport } from './routes/u.$login'
 import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
@@ -24,6 +28,11 @@ import { Route as MOwnerRepoNumberRouteImport } from './routes/m.$owner.$repo.$n
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectRoute = ConnectRouteImport.update({
+  id: '/connect',
+  path: '/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FateRoute = FateRouteImport.update({
@@ -41,6 +50,16 @@ const LogRoute = LogRouteImport.update({
   path: '/log',
   getParentRoute: () => rootRouteImport,
 } as any)
+const McpRoute = McpRouteImport.update({
+  id: '/mcp',
+  path: '/mcp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DotwellKnownSplatRoute = DotwellKnownSplatRouteImport.update({
+  id: '/.well-known/$',
+  path: '/.well-known/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiResearchRoute = ApiResearchRouteImport.update({
   id: '/api/research',
   path: '/api/research',
@@ -50,6 +69,11 @@ const ApiUsageRoute = ApiUsageRouteImport.update({
   id: '/api/usage',
   path: '/api/usage',
   getParentRoute: () => rootRouteImport,
+} as any)
+const McpSplatRoute = McpSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => McpRoute,
 } as any)
 const ULoginRoute = ULoginRouteImport.update({
   id: '/u/$login',
@@ -79,11 +103,15 @@ const MOwnerRepoNumberRoute = MOwnerRepoNumberRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/mcp': typeof McpRouteWithChildren
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -92,11 +120,15 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/mcp': typeof McpRouteWithChildren
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -106,11 +138,15 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/connect': typeof ConnectRoute
   '/fate': typeof FateRoute
   '/list': typeof ListRoute
   '/log': typeof LogRoute
+  '/mcp': typeof McpRouteWithChildren
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/api/research': typeof ApiResearchRoute
   '/api/usage': typeof ApiUsageRoute
+  '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
   '/api/auth/callback': typeof ApiAuthCallbackRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -121,11 +157,15 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/connect'
     | '/fate'
     | '/list'
     | '/log'
+    | '/mcp'
+    | '/.well-known/$'
     | '/api/research'
     | '/api/usage'
+    | '/mcp/$'
     | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -134,11 +174,15 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/connect'
     | '/fate'
     | '/list'
     | '/log'
+    | '/mcp'
+    | '/.well-known/$'
     | '/api/research'
     | '/api/usage'
+    | '/mcp/$'
     | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -147,11 +191,15 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/connect'
     | '/fate'
     | '/list'
     | '/log'
+    | '/mcp'
+    | '/.well-known/$'
     | '/api/research'
     | '/api/usage'
+    | '/mcp/$'
     | '/u/$login'
     | '/api/auth/callback'
     | '/api/auth/github'
@@ -161,9 +209,12 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConnectRoute: typeof ConnectRoute
   FateRoute: typeof FateRoute
   ListRoute: typeof ListRoute
   LogRoute: typeof LogRoute
+  McpRoute: typeof McpRouteWithChildren
+  DotwellKnownSplatRoute: typeof DotwellKnownSplatRoute
   ApiResearchRoute: typeof ApiResearchRoute
   ApiUsageRoute: typeof ApiUsageRoute
   ULoginRoute: typeof ULoginRoute
@@ -180,6 +231,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect': {
+      id: '/connect'
+      path: '/connect'
+      fullPath: '/connect'
+      preLoaderRoute: typeof ConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/fate': {
@@ -203,6 +261,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mcp': {
+      id: '/mcp'
+      path: '/mcp'
+      fullPath: '/mcp'
+      preLoaderRoute: typeof McpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/$': {
+      id: '/.well-known/$'
+      path: '/.well-known/$'
+      fullPath: '/.well-known/$'
+      preLoaderRoute: typeof DotwellKnownSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/research': {
       id: '/api/research'
       path: '/api/research'
@@ -216,6 +288,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/usage'
       preLoaderRoute: typeof ApiUsageRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/mcp/$': {
+      id: '/mcp/$'
+      path: '/$'
+      fullPath: '/mcp/$'
+      preLoaderRoute: typeof McpSplatRouteImport
+      parentRoute: typeof McpRoute
     }
     '/u/$login': {
       id: '/u/$login'
@@ -255,11 +334,24 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface McpRouteChildren {
+  McpSplatRoute: typeof McpSplatRoute
+}
+
+const McpRouteChildren: McpRouteChildren = {
+  McpSplatRoute: McpSplatRoute,
+}
+
+const McpRouteWithChildren = McpRoute._addFileChildren(McpRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConnectRoute: ConnectRoute,
   FateRoute: FateRoute,
   ListRoute: ListRoute,
   LogRoute: LogRoute,
+  McpRoute: McpRouteWithChildren,
+  DotwellKnownSplatRoute: DotwellKnownSplatRoute,
   ApiResearchRoute: ApiResearchRoute,
   ApiUsageRoute: ApiUsageRoute,
   ULoginRoute: ULoginRoute,
