@@ -60,7 +60,11 @@ const registration = z.object({
     .refine((uris) => uris.join("").length <= 800),
   client_name: z.string().trim().min(1).max(100).default("MCP client"),
   token_endpoint_auth_method: z.literal("none").default("none"),
-  grant_types: z.array(z.literal("authorization_code")).optional(),
+  // Native clients also request refresh; the response registers only the supported code flow.
+  grant_types: z
+    .array(z.enum(["authorization_code", "refresh_token"]))
+    .refine((grants) => grants.includes("authorization_code"))
+    .optional(),
   response_types: z.array(z.literal("code")).optional(),
 });
 type Client = { purpose: "mcp_client"; name: string; redirects: string[] };

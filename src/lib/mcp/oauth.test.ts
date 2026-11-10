@@ -85,13 +85,81 @@ function exchange(client_id: string, code: string, proof = verifier, resource = 
     }),
   });
 }
+it("OAuth: registers the supported code flow when Codex or Inspector also requests refresh", async () => {
+  const deps = {
+    origin,
+    secret,
+    repo: createMemoryResearch(),
+    codes: codes(),
+    user: null,
+  };
+  for (const [client_name, redirect_uri] of [
+    ["Codex", "http://127.0.0.1:61450/callback/_JJamN-VJrjf"],
+    ["MCP Inspector", "http://127.0.0.1:6274/oauth/callback"],
+  ]) {
+    const response = await handleOAuth(
+      new Request(origin + "/mcp/register", {
+        method: "POST",
+        body: JSON.stringify({
+          client_name,
+          redirect_uris: [redirect_uri],
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        }),
+      }),
+      deps,
+    );
+    assert.equal(response.status, 201, client_name);
+    const registered = await response.json();
+    assert.equal(typeof registered.client_id, "string");
+    assert.deepEqual(registered.redirect_uris, [redirect_uri]);
+    assert.deepEqual(registered.grant_types, ["authorization_code"]);
+    assert.deepEqual(registered.response_types, ["code"]);
+    assert.equal(registered.token_endpoint_auth_method, "none");
+    assert.equal(registered.client_secret, undefined);
+  }
+  const metadata = await handleOAuth(
+    new Request(origin + "/.well-known/oauth-authorization-server"),
+    deps,
+  );
+  assert.deepEqual((await metadata.json()).grant_types_supported, ["authorization_code"]);
+});
+it("OAuth: rejects registration without a supported authorization-code flow", async () => {
+  const deps = {
+    origin,
+    secret,
+    repo: createMemoryResearch(),
+    codes: codes(),
+    user: null,
+  };
+  for (const grant_types of [
+    [],
+    ["refresh_token"],
+    ["client_credentials"],
+    ["authorization_code", "client_credentials"],
+  ]) {
+    const response = await handleOAuth(
+      new Request(origin + "/mcp/register", {
+        method: "POST",
+        body: JSON.stringify({
+          redirect_uris: ["http://127.0.0.1:9999/callback"],
+          grant_types,
+        }),
+      }),
+      deps,
+    );
+    assert.equal(response.status, 400, JSON.stringify(grant_types));
+  }
+});
 it("OAuth: consent, PKCE, audience, single-use codes, revocation and expiry", async () => {
   const repo = createMemoryResearch();
   const deps = { origin, secret, repo, codes: codes(), user: { id: "owner", login: "owner" } };
   const { client_id, code } = await authorize(deps);
   const response = await handleOAuth(exchange(client_id, code), deps);
   assert.equal(response.status, 200);
-  const { access_token } = await response.json();
+  const { access_token, refresh_token } = await response.json();
+  assert.equal(refresh_token, undefined);
   const grant = await repo.authenticate(access_token);
   assert.equal(grant?.userId, "owner");
   assert.equal((await handleOAuth(exchange(client_id, code), deps)).status, 400);
