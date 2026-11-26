@@ -5,6 +5,7 @@ import { z } from "zod";
 import { missionId, parseGithubRef } from "../kinds.ts";
 import type { ResearchRepo } from "../research/store.ts";
 import { reportSchema } from "../research/schema.ts";
+import { mcpRunId as runId } from "../research/claude-usage.ts";
 import {
   findInput,
   findMissions,
@@ -26,7 +27,6 @@ function result(data: Record<string, unknown>) {
     structuredContent: data,
   };
 }
-const runId = z.string().regex(/^mcp_[a-f0-9]{48}$/);
 export function createResearchServer(deps: McpDeps, userId: string) {
   const { repo, origin } = deps;
   const loadMission = deps.mission ?? publicMission;
@@ -113,7 +113,7 @@ export function createResearchServer(deps: McpDeps, userId: string) {
         status: run.status,
         report: run.report,
         published: run.publishedAt != null,
-        usage: null,
+        usage: run.claudeTotalTokens == null ? null : { totalTokens: run.claudeTotalTokens },
       });
     },
   );
@@ -180,7 +180,10 @@ export function createResearchServer(deps: McpDeps, userId: string) {
         replay: accepted.replay,
         published: accepted.run.publishedAt != null,
         url: origin + `/m/${run.owner}/${run.repo}/${run.number}`,
-        usage: null,
+        usage:
+          accepted.run.claudeTotalTokens == null
+            ? null
+            : { totalTokens: accepted.run.claudeTotalTokens },
       });
     },
   );

@@ -1,6 +1,7 @@
 import { missionId, parseGithubRef } from "../kinds.ts";
 import { researchDeliverySchema, type ResearchDeliveryInput } from "./schema.ts";
 import type { ResearchRepo } from "./store.ts";
+import { CLAUDE_USAGE_PATH, claudeUsageDeliverySchema } from "./claude-usage.ts";
 import { emptyUsage, type ResearchRun, type ResearchTurn } from "./types.ts";
 
 function bearerToken(request: Request) {
@@ -114,4 +115,44 @@ export async function handleResearchPost(request: Request, repo: ResearchRepo, n
     return invalid();
   }
   return acceptBody(body, grant, repo, now);
+}
+
+export async function handleClaudeUsagePost(request: Request, repo: ResearchRepo, origin: string) {
+  const response = (body: object, status: number) =>
+    Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+  const token = bearerToken(request);
+  const grant = token
+    ? await repo.authenticate(token, origin + CLAUDE_USAGE_PATH, { scopedOnly: true })
+    : null;
+  if (!grant) return response({ error: "unauthorized" }, 401);
+
+  const reader = request.body?.getReader();
+  if (!reader) return response({ error: "invalid" }, 400);
+  let parsed;
+  try {
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 4096) {
+        await reader.cancel();
+        return response({ error: "too_large" }, 413);
+      }
+      chunks.push(value);
+    }
+    parsed = claudeUsageDeliverySchema.safeParse(
+      JSON.parse(Buffer.concat(chunks).toString("utf8")),
+    );
+  } catch {
+    return response({ error: "invalid" }, 400);
+  }
+  if (!parsed.success) return response({ error: "invalid" }, 400);
+
+  const result = await repo.recordClaudeUsage(grant.userId, parsed.data.run_id, parsed.data.usage);
+  if (result === "missing") return response({ error: result }, 404);
+  if (result === "conflict") return response({ error: result }, 409);
+  await repo.markUsed(grant.grantId, Date.now());
+  return response({ ok: true, replay: result === "replay" }, 200);
 }

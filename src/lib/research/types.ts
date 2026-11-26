@@ -72,10 +72,12 @@ export type ResearchRun = {
   createdAt: number;
   updatedAt: number;
   turns: ResearchTurn[];
+  claudeTotalTokens?: number | null;
 };
 
 export type ConnectorGrant = {
   id: string;
+  purpose?: "mcp" | "telemetry";
   expiresAt?: number;
   createdAt: number;
   revokedAt: number | null;

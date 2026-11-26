@@ -1,4 +1,4 @@
-import { sumTurnSnapshots, type TurnSpend } from "./accounting.ts";
+import { sumResearchSpend, type TurnSpend } from "./accounting.ts";
 import { emptyHistory, type GithubHistory } from "./github-watch.ts";
 import type { ResearchReport, ResearchRun } from "./types.ts";
 
@@ -64,10 +64,7 @@ export function spendLabel(spend: TurnSpend): { total: string; note: string | nu
   return { total: spend.totalTokens.toLocaleString("ru-RU"), note };
 }
 
-function authorOf(
-  authors: ReadonlyMap<string, ReportAuthor>,
-  userId: string,
-): ReportAuthor {
+function authorOf(authors: ReadonlyMap<string, ReportAuthor>, userId: string): ReportAuthor {
   return authors.get(userId) ?? EMPTY_AUTHOR;
 }
 
@@ -90,7 +87,7 @@ function toCard(
     model: run.model,
     publishedAt: run.publishedAt,
     report: run.report,
-    spend: sumTurnSnapshots(run.turns),
+    spend: sumResearchSpend([run]),
     github: histories.get(run.id) ?? emptyHistory(),
   };
 }
@@ -101,10 +98,7 @@ function byNewest(a: PublicReport, b: PublicReport) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-function sameMission(
-  run: ResearchRun,
-  mission: { owner: string; repo: string; number: number },
-) {
+function sameMission(run: ResearchRun, mission: { owner: string; repo: string; number: number }) {
   return (
     run.owner.toLowerCase() === mission.owner.trim().toLowerCase() &&
     run.repo.toLowerCase() === mission.repo.trim().toLowerCase() &&
@@ -142,9 +136,9 @@ export function buildMissionBoard(
   const own = viewerId == null ? [] : matching.filter((run) => run.userId === viewerId);
   return {
     reports,
-    publicSpend: sumTurnSnapshots(published.flatMap((run) => run.turns)),
+    publicSpend: sumResearchSpend(published),
     hidden,
-    viewerSpend: own.length === 0 ? null : sumTurnSnapshots(own.flatMap((run) => run.turns)),
+    viewerSpend: own.length === 0 ? null : sumResearchSpend(own),
   };
 }
 
@@ -187,7 +181,7 @@ export function buildAuthorBoard(
     name: header.name,
     avatarUrl: header.avatarUrl,
     reports,
-    publicSpend: sumTurnSnapshots(published.flatMap((run) => run.turns)),
+    publicSpend: sumResearchSpend(published),
     hidden,
   };
 }

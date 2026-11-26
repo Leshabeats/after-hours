@@ -22,6 +22,12 @@ import { upsertUser } from "../journal/store.ts";
 import type { WatchRun } from "./github-watch.ts";
 import { refreshWatch } from "./github-sync.ts";
 import { createMemoryWatch, createPostgresWatch } from "./watch-book.ts";
+import {
+  CLAUDE_USAGE_PATH,
+  claudeUsageTotal,
+  sameClaudeUsage,
+  type ClaudeUsage,
+} from "./claude-usage.ts";
 
 export type IngestResult =
   | { ok: true; replay: boolean; run: ResearchRun }
@@ -32,22 +38,28 @@ export type PublishResult = "updated" | "missing" | "blocked";
 export type ResearchAuthor = ReportAuthor & { id: string };
 
 type OAuthGrant = { resource: string; expiresAt: number };
+type IssuedGrant = { grant: ConnectorGrant; token: string };
+export type ClaudeGrantPair = { mcp: IssuedGrant; telemetry: IssuedGrant };
+export type ClaudeUsageResult = "recorded" | "replay" | "missing" | "conflict";
 
 export type ResearchRepo = {
-  createGrant: (
-    userId: string,
-    at: number,
-    oauth?: OAuthGrant,
-  ) => Promise<{ grant: ConnectorGrant; token: string }>;
+  createGrant: (userId: string, at: number, oauth?: OAuthGrant) => Promise<IssuedGrant>;
+  createClaudeGrants: (userId: string, at: number, origin: string) => Promise<ClaudeGrantPair>;
   listGrants: (userId: string) => Promise<ConnectorGrant[]>;
   revokeGrant: (userId: string, grantId: string, at: number) => Promise<ConnectorGrant[] | null>;
   authenticate: (
     token: string,
     resource?: string,
+    options?: { scopedOnly: true },
   ) => Promise<{ userId: string; grantId: string } | null>;
   markUsed: (grantId: string, at: number) => Promise<void>;
   ingest: (userId: string, delivery: ResearchDelivery, mode?: "start") => Promise<IngestResult>;
   readRun: (userId: string, threadId: string) => Promise<ResearchRun | null>;
+  recordClaudeUsage: (
+    userId: string,
+    threadId: string,
+    usage: ClaudeUsage,
+  ) => Promise<ClaudeUsageResult>;
   readLimit: (userId: string) => Promise<LimitSnapshot | null>;
   upsertAuthor: (user: ResearchAuthor) => Promise<void>;
   missionBoard: (
@@ -111,10 +123,27 @@ function issueGrant(userId: string, at: number, oauth?: OAuthGrant) {
   return { grant, token };
 }
 
-function authenticateGrant(grant: GrantRecord | undefined, token: string, resource?: string) {
+function issueClaudeGrants(userId: string, at: number, origin: string) {
+  const expiresAt = at + 30 * 86_400_000;
+  return {
+    mcp: issueGrant(userId, at, { resource: origin + "/mcp", expiresAt }),
+    telemetry: issueGrant(userId, at, { resource: origin + CLAUDE_USAGE_PATH, expiresAt }),
+  };
+}
+
+function issuedGrant({ grant, token }: ReturnType<typeof issueGrant>): IssuedGrant {
+  return { grant: publicGrant(grant), token };
+}
+
+function authenticateGrant(
+  grant: GrantRecord | undefined,
+  token: string,
+  resource?: string,
+  options?: { scopedOnly: true },
+) {
   if (!grant || grant.revokedAt != null) return null;
-  // Only the requested MCP resource can consume a scoped grant. Reject old unscoped OAuth grants.
-  if (grant.resource !== null || grant.expiresAt !== null) {
+  // Only the intended endpoint can consume a scoped grant. Reject old unscoped OAuth grants.
+  if (options?.scopedOnly || grant.resource !== null || grant.expiresAt !== null) {
     if (
       !grant.resource ||
       grant.resource !== resource ||
@@ -156,9 +185,9 @@ function cloneRun(run: StoredRun): StoredRun {
 }
 
 function toPublic(run: StoredRun): ResearchRun {
-  const { deliveryHash, ...rest } = cloneRun(run);
+  const { deliveryHash, claudeTotalTokens, ...rest } = cloneRun(run);
   void deliveryHash;
-  return rest;
+  return claudeTotalTokens == null ? rest : { ...rest, claudeTotalTokens };
 }
 
 function cloneLimit(limit: LimitSnapshot): LimitSnapshot {
@@ -172,13 +201,31 @@ function cloneLimit(limit: LimitSnapshot): LimitSnapshot {
 }
 
 function publicGrant(grant: GrantRecord): ConnectorGrant {
+  const purpose = grant.resource
+    ? grant.resource.endsWith(CLAUDE_USAGE_PATH)
+      ? "telemetry"
+      : "mcp"
+    : undefined;
   return {
     id: grant.id,
     createdAt: grant.createdAt,
     revokedAt: grant.revokedAt,
     lastUsedAt: grant.lastUsedAt,
     ...(grant.expiresAt != null ? { expiresAt: grant.expiresAt } : {}),
+    ...(purpose ? { purpose } : {}),
   };
+}
+
+function decideClaudeUsage(
+  run: StoredRun | undefined | null,
+  userId: string,
+  previous: ClaudeUsage | undefined,
+  next: ClaudeUsage,
+): ClaudeUsageResult {
+  if (!run || run.userId !== userId) return "missing";
+  if (run.status !== "completed" || !run.report || run.turns.length > 0) return "conflict";
+  if (previous) return sameClaudeUsage(previous, next) ? "replay" : "conflict";
+  return "recorded";
 }
 
 function deliveryHash(delivery: ResearchDelivery) {
@@ -308,6 +355,7 @@ function publishRun(run: StoredRun, published: boolean, at: number): PublishResu
 
 export function createMemoryResearch(): ResearchRepo {
   const grants: GrantRecord[] = [];
+  const claudeUsage = new Map<string, ClaudeUsage>();
   const runs: StoredRun[] = [];
   const limits = new Map<string, LimitSnapshot>();
   const authors = new Map<string, ResearchAuthor>();
@@ -344,9 +392,14 @@ export function createMemoryResearch(): ResearchRepo {
 
   return {
     async createGrant(userId, at, oauth) {
-      const { grant, token } = issueGrant(userId, at, oauth);
-      grants.push(grant);
-      return { grant: publicGrant(grant), token };
+      const issued = issueGrant(userId, at, oauth);
+      grants.push(issued.grant);
+      return issuedGrant(issued);
+    },
+    async createClaudeGrants(userId, at, origin) {
+      const { mcp, telemetry } = issueClaudeGrants(userId, at, origin);
+      grants.push(mcp.grant, telemetry.grant);
+      return { mcp: issuedGrant(mcp), telemetry: issuedGrant(telemetry) };
     },
     async listGrants(userId) {
       return listGrants(userId);
@@ -357,10 +410,10 @@ export function createMemoryResearch(): ResearchRepo {
       if (grant.revokedAt == null) grant.revokedAt = at;
       return listGrants(userId);
     },
-    async authenticate(token, resource) {
+    async authenticate(token, resource, options) {
       const hash = hashToken(token);
       const grant = grants.find((item) => item.tokenHash === hash);
-      return authenticateGrant(grant, token, resource);
+      return authenticateGrant(grant, token, resource, options);
     },
     async markUsed(grantId, at) {
       const grant = grants.find((item) => item.id === grantId);
@@ -387,6 +440,16 @@ export function createMemoryResearch(): ResearchRepo {
     async readRun(userId, threadId) {
       const run = runs.find((item) => item.threadId === threadId && item.userId === userId);
       return run ? toPublic(run) : null;
+    },
+    async recordClaudeUsage(userId, threadId, usage) {
+      const run = runs.find((item) => item.threadId === threadId && item.userId === userId);
+      if (!run) return "missing";
+      const decision = decideClaudeUsage(run, userId, claudeUsage.get(run.id), usage);
+      if (decision === "recorded") {
+        claudeUsage.set(run.id, { ...usage });
+        run.claudeTotalTokens = claudeUsageTotal(usage);
+      }
+      return decision;
     },
     async readLimit(userId) {
       const limit = limits.get(userId);
@@ -459,6 +522,8 @@ const runSelect = `SELECT r.id, r.user_id AS "userId", r.mission_id AS "missionI
   r.owner, r.repo, r.number, r.is_pr AS "isPr", r.thread_id AS "threadId", r.status,
   r.model, r.report_json AS report, r.published_at AS "publishedAt",
   r.created_at AS "createdAt", r.updated_at AS "updatedAt", r.delivery_hash AS "deliveryHash",
+  (SELECT u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens
+   FROM claude_research_usage u WHERE u.run_id = r.id) AS "claudeTotalTokens",
   COALESCE((SELECT jsonb_agg(jsonb_build_object(
     'turnId', t.turn_id, 'status', t.status, 'usageKnown', t.usage_known,
     'updatedAt', t.updated_at, 'usage', jsonb_build_object(
@@ -480,6 +545,24 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
   }
   async function loadRun(db: Database, threadId: string) {
     return (await loadRuns(db, "WHERE r.thread_id = $1", [threadId]))[0] ?? null;
+  }
+  async function insertGrants(grants: GrantRecord[]) {
+    const values = grants.flatMap((g) => [
+      g.id,
+      g.userId,
+      g.tokenHash,
+      g.createdAt,
+      g.expiresAt,
+      g.resource,
+    ]);
+    const rows = grants.map(
+      (_, i) => `(${Array.from({ length: 6 }, (_, j) => `$${i * 6 + j + 1}`).join(",")})`,
+    );
+    await pool.query(
+      `INSERT INTO connector_grants (id,user_id,token_hash,created_at,expires_at,resource)
+      VALUES ${rows.join(",")}`,
+      values,
+    );
   }
   async function listGrants(userId: string) {
     return (
@@ -585,13 +668,14 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
   }
   return {
     async createGrant(userId, at, oauth) {
-      const { grant, token } = issueGrant(userId, at, oauth);
-      await pool.query(
-        `INSERT INTO connector_grants (id,user_id,token_hash,created_at,expires_at,resource)
-        VALUES ($1,$2,$3,$4,$5,$6)`,
-        [grant.id, userId, grant.tokenHash, at, grant.expiresAt, grant.resource],
-      );
-      return { grant: publicGrant(grant), token };
+      const issued = issueGrant(userId, at, oauth);
+      await insertGrants([issued.grant]);
+      return issuedGrant(issued);
+    },
+    async createClaudeGrants(userId, at, origin) {
+      const { mcp, telemetry } = issueClaudeGrants(userId, at, origin);
+      await insertGrants([mcp.grant, telemetry.grant]);
+      return { mcp: issuedGrant(mcp), telemetry: issuedGrant(telemetry) };
     },
     listGrants,
     async revokeGrant(userId, grantId, at) {
@@ -602,11 +686,11 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
       );
       return result.rowCount ? listGrants(userId) : null;
     },
-    async authenticate(token, resource) {
+    async authenticate(token, resource, options) {
       const grant = (
         await pool.query<GrantRecord>(`${grantSelect} WHERE token_hash = $1`, [hashToken(token)])
       ).rows[0];
-      return authenticateGrant(grant, token, resource);
+      return authenticateGrant(grant, token, resource, options);
     },
     async markUsed(grantId, at) {
       await pool.query(
@@ -632,6 +716,37 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
       const run = await loadRun(pool, threadId);
       return run?.userId === userId ? toPublic(run) : null;
     },
+    recordClaudeUsage: (userId, threadId, usage) =>
+      transaction(pool, `research:${threadId}`, async (db) => {
+        const run = await loadRun(db, threadId);
+        if (!run || run.userId !== userId) return "missing";
+        const prior =
+          run.claudeTotalTokens == null
+            ? undefined
+            : (
+                await db.query<ClaudeUsage>(
+                  `SELECT input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+            FROM claude_research_usage WHERE run_id = $1`,
+                  [run.id],
+                )
+              ).rows[0];
+        const decision = decideClaudeUsage(run, userId, prior, usage);
+        if (decision === "recorded") {
+          await db.query(
+            `INSERT INTO claude_research_usage
+            (run_id,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens)
+            VALUES ($1,$2,$3,$4,$5)`,
+            [
+              run.id,
+              usage.input_tokens,
+              usage.output_tokens,
+              usage.cache_creation_input_tokens,
+              usage.cache_read_input_tokens,
+            ],
+          );
+        }
+        return decision;
+      }),
     async readLimit(userId) {
       const row = (
         await pool.query<{

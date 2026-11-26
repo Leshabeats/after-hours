@@ -4,12 +4,10 @@ import { getPool } from "../db/postgres.ts";
 import { getResearchRepo } from "../auth/db.ts";
 import { readAuthSecret } from "../auth/secret.ts";
 import { readSessionFromRequest } from "../auth/session";
+import { appOrigin } from "../auth/app-origin.ts";
 
 export async function handleMcpRoute(request: Request) {
-  // APP_ORIGIN is the OAuth issuer; never derive production redirects from Host.
-  const origin =
-    process.env.APP_ORIGIN?.replace(/\/$/, "") ||
-    (process.env.NODE_ENV !== "production" ? new URL(request.url).origin : "");
+  const origin = appOrigin(request);
   if (!origin) return new Response("APP_ORIGIN is required.", { status: 503 });
   try {
     // Bound memory use before parsing OAuth forms or JSON-RPC payloads.
