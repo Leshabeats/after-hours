@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 export const Route = createFileRoute("/api/auth/github")({
   server: {
     handlers: {
-      GET: async () => {
+      GET: async ({ request }) => {
         const { githubOAuthConfigured } = await import("@/lib/auth/flags");
         if (!githubOAuthConfigured()) {
           return new Response("GitHub OAuth is not configured.", { status: 503 });
@@ -15,7 +15,10 @@ export const Route = createFileRoute("/api/auth/github")({
           status: 302,
           headers: {
             Location: githubAuthorizeUrl(state),
-            "Set-Cookie": oauthStateCookie(state),
+            "Set-Cookie": oauthStateCookie(
+              state,
+              new URL(request.url).searchParams.get("returnTo") ?? undefined,
+            ),
           },
         });
       },

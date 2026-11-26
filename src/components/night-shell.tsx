@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 
 const NAV = [
+  { to: "/connect" as const, label: "Подключить агента", short: "Агент", catalog: false },
   { to: "/fate" as const, label: "Как повезёт", short: "Удача", catalog: true },
   { to: "/list" as const, label: "Список", short: "Список", catalog: true },
   { to: "/log" as const, label: "Журнал", short: "Журнал", catalog: false },

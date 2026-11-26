@@ -8,7 +8,7 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const OAUTH_MAX_AGE = 600;
 
 type SessionPayload = SessionUser & { exp: number };
-type OAuthPayload = { state: string; exp: number };
+type OAuthPayload = { state: string; exp: number; returnTo?: string };
 
 function cookieBase() {
   const secure = process.env.APP_ORIGIN?.startsWith("https:") ?? false;
@@ -22,13 +22,7 @@ function cookieBase() {
 
 function serializeCookie(name: string, value: string, maxAge: number) {
   const base = cookieBase();
-  const parts = [
-    `${name}=${value}`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    `Max-Age=${maxAge}`,
-  ];
+  const parts = [`${name}=${value}`, "Path=/", "HttpOnly", "SameSite=Lax", `Max-Age=${maxAge}`];
   if (base.secure) parts.push("Secure");
   return parts.join("; ");
 }
@@ -44,9 +38,13 @@ export function cookieFromRequest(request: Request, name: string) {
   return undefined;
 }
 
-export function oauthStateCookie(state: string) {
+export function oauthStateCookie(state: string, returnTo?: string) {
   const token = signPayload(
-    { state, exp: Date.now() + OAUTH_MAX_AGE * 1000 },
+    {
+      state,
+      exp: Date.now() + OAUTH_MAX_AGE * 1000,
+      ...(returnTo?.startsWith("/mcp/authorize?") ? { returnTo } : {}),
+    },
     readAuthSecret(),
   );
   return serializeCookie(OAUTH_COOKIE, token, OAUTH_MAX_AGE);
@@ -106,10 +104,7 @@ export function clearSession() {
 }
 
 export function writeOAuthState(state: string) {
-  const token = signPayload(
-    { state, exp: Date.now() + OAUTH_MAX_AGE * 1000 },
-    readAuthSecret(),
-  );
+  const token = signPayload({ state, exp: Date.now() + OAUTH_MAX_AGE * 1000 }, readAuthSecret());
   setCookie(OAUTH_COOKIE, token, { ...cookieBase(), maxAge: OAUTH_MAX_AGE });
 }
 
@@ -123,4 +118,12 @@ export function readOAuthState(): string | null {
 
 export function clearOAuthState() {
   deleteCookie(OAUTH_COOKIE, cookieBase());
+}
+
+export function readOAuthReturnTo(request: Request) {
+  const token = cookieFromRequest(request, OAUTH_COOKIE);
+  const payload = token ? verifyPayload<OAuthPayload>(token, readAuthSecret()) : null;
+  return payload && payload.exp > Date.now() && payload.returnTo?.startsWith("/mcp/authorize?")
+    ? payload.returnTo
+    : "/log";
 }
