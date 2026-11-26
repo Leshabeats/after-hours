@@ -16,7 +16,9 @@ import { Route as ListRouteImport } from './routes/list'
 import { Route as LogRouteImport } from './routes/log'
 import { Route as McpRouteImport } from './routes/mcp'
 import { Route as DotwellKnownSplatRouteImport } from './routes/[.]well-known.$'
+import { Route as ApiClaudeAccessRouteImport } from './routes/api/claude-access'
 import { Route as ApiResearchRouteImport } from './routes/api/research'
+import { Route as ApiResearchUsageRouteImport } from './routes/api/research-usage'
 import { Route as ApiUsageRouteImport } from './routes/api/usage'
 import { Route as McpSplatRouteImport } from './routes/mcp.$'
 import { Route as ULoginRouteImport } from './routes/u.$login'
@@ -60,9 +62,19 @@ const DotwellKnownSplatRoute = DotwellKnownSplatRouteImport.update({
   path: '/.well-known/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiClaudeAccessRoute = ApiClaudeAccessRouteImport.update({
+  id: '/api/claude-access',
+  path: '/api/claude-access',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiResearchRoute = ApiResearchRouteImport.update({
   id: '/api/research',
   path: '/api/research',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiResearchUsageRoute = ApiResearchUsageRouteImport.update({
+  id: '/api/research-usage',
+  path: '/api/research-usage',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiUsageRoute = ApiUsageRouteImport.update({
@@ -109,7 +121,9 @@ export interface FileRoutesByFullPath {
   '/log': typeof LogRoute
   '/mcp': typeof McpRouteWithChildren
   '/.well-known/$': typeof DotwellKnownSplatRoute
+  '/api/claude-access': typeof ApiClaudeAccessRoute
   '/api/research': typeof ApiResearchRoute
+  '/api/research-usage': typeof ApiResearchUsageRoute
   '/api/usage': typeof ApiUsageRoute
   '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
@@ -126,7 +140,9 @@ export interface FileRoutesByTo {
   '/log': typeof LogRoute
   '/mcp': typeof McpRouteWithChildren
   '/.well-known/$': typeof DotwellKnownSplatRoute
+  '/api/claude-access': typeof ApiClaudeAccessRoute
   '/api/research': typeof ApiResearchRoute
+  '/api/research-usage': typeof ApiResearchUsageRoute
   '/api/usage': typeof ApiUsageRoute
   '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
@@ -144,7 +160,9 @@ export interface FileRoutesById {
   '/log': typeof LogRoute
   '/mcp': typeof McpRouteWithChildren
   '/.well-known/$': typeof DotwellKnownSplatRoute
+  '/api/claude-access': typeof ApiClaudeAccessRoute
   '/api/research': typeof ApiResearchRoute
+  '/api/research-usage': typeof ApiResearchUsageRoute
   '/api/usage': typeof ApiUsageRoute
   '/mcp/$': typeof McpSplatRoute
   '/u/$login': typeof ULoginRoute
@@ -163,7 +181,9 @@ export interface FileRouteTypes {
     | '/log'
     | '/mcp'
     | '/.well-known/$'
+    | '/api/claude-access'
     | '/api/research'
+    | '/api/research-usage'
     | '/api/usage'
     | '/mcp/$'
     | '/u/$login'
@@ -180,7 +200,9 @@ export interface FileRouteTypes {
     | '/log'
     | '/mcp'
     | '/.well-known/$'
+    | '/api/claude-access'
     | '/api/research'
+    | '/api/research-usage'
     | '/api/usage'
     | '/mcp/$'
     | '/u/$login'
@@ -197,7 +219,9 @@ export interface FileRouteTypes {
     | '/log'
     | '/mcp'
     | '/.well-known/$'
+    | '/api/claude-access'
     | '/api/research'
+    | '/api/research-usage'
     | '/api/usage'
     | '/mcp/$'
     | '/u/$login'
@@ -215,7 +239,9 @@ export interface RootRouteChildren {
   LogRoute: typeof LogRoute
   McpRoute: typeof McpRouteWithChildren
   DotwellKnownSplatRoute: typeof DotwellKnownSplatRoute
+  ApiClaudeAccessRoute: typeof ApiClaudeAccessRoute
   ApiResearchRoute: typeof ApiResearchRoute
+  ApiResearchUsageRoute: typeof ApiResearchUsageRoute
   ApiUsageRoute: typeof ApiUsageRoute
   ULoginRoute: typeof ULoginRoute
   ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
@@ -275,11 +301,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotwellKnownSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/claude-access': {
+      id: '/api/claude-access'
+      path: '/api/claude-access'
+      fullPath: '/api/claude-access'
+      preLoaderRoute: typeof ApiClaudeAccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/research': {
       id: '/api/research'
       path: '/api/research'
       fullPath: '/api/research'
       preLoaderRoute: typeof ApiResearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/research-usage': {
+      id: '/api/research-usage'
+      path: '/api/research-usage'
+      fullPath: '/api/research-usage'
+      preLoaderRoute: typeof ApiResearchUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/usage': {
@@ -352,7 +392,9 @@ const rootRouteChildren: RootRouteChildren = {
   LogRoute: LogRoute,
   McpRoute: McpRouteWithChildren,
   DotwellKnownSplatRoute: DotwellKnownSplatRoute,
+  ApiClaudeAccessRoute: ApiClaudeAccessRoute,
   ApiResearchRoute: ApiResearchRoute,
+  ApiResearchUsageRoute: ApiResearchUsageRoute,
   ApiUsageRoute: ApiUsageRoute,
   ULoginRoute: ULoginRoute,
   ApiAuthCallbackRoute: ApiAuthCallbackRoute,

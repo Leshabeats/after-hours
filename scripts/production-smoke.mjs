@@ -23,6 +23,7 @@ import { createPostgresResearch } from "../src/lib/research/store.ts";
 import { enqueue, emptyQueue, readQueue, writeQueue } from "../src/lib/research/queue.ts";
 import { createPostgresUsage } from "../src/lib/usage/store.ts";
 import { createPostgresDiscovery } from "../src/lib/discovery/store.ts";
+import { claudeUsageSmoke } from "./fixtures/claude-usage-e2e.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const entry = join(root, ".output/server/index.mjs");
@@ -274,7 +275,7 @@ try {
   );
   assert.ok((await html("/fate?cat=games&tag=steamos")).includes("GameDev"));
   console.log("PASS GameDev empty bootstrap, persisted snapshot, delayed freshness and tag filter");
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 4);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 5);
   assert.equal((await journal.list(user.id)).length, 1);
   assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
   const usageBody = {
@@ -418,10 +419,26 @@ try {
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
   await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 4);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 5);
   console.log(
     "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );
+  const claudeAuthor = { ...user, id: "smoke-claude", login: "after-hours-claude-smoke" };
+  await upsertUser(db, claudeAuthor);
+  await claudeUsageSmoke({
+    root,
+    temp,
+    origin,
+    db,
+    repo,
+    request,
+    html,
+    cookie,
+    author: claudeAuthor,
+    other,
+    stop,
+    start,
+  });
   passed = true;
 } finally {
   await stop();

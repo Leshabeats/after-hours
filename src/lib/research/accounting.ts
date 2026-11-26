@@ -1,4 +1,4 @@
-import type { ResearchTurn, TurnUsage } from "./types.ts";
+import type { ResearchRun, ResearchTurn, TurnUsage } from "./types.ts";
 
 export type TurnSpend = {
   inputTokens: number | null;
@@ -9,10 +9,7 @@ export type TurnSpend = {
   unknownTurns: number;
 };
 
-function sumField(
-  turns: readonly ResearchTurn[],
-  field: keyof TurnUsage,
-): number | null {
+function sumField(turns: readonly ResearchTurn[], field: keyof TurnUsage): number | null {
   if (turns.length === 0) return null;
   let sum = 0;
   for (const turn of turns) {
@@ -47,4 +44,15 @@ export function sumTurnSnapshots(turns: readonly ResearchTurn[]): TurnSpend {
     totalTokens: sumField(known, "totalTokens"),
     unknownTurns: turns.length - known.length,
   };
+}
+
+// Expose only the aggregate from Claude Code. Existing turn counters still describe Codex.
+export function sumResearchSpend(runs: readonly ResearchRun[]): TurnSpend {
+  const spend = sumTurnSnapshots(runs.flatMap((run) => run.turns));
+  for (const run of runs) {
+    if (run.claudeTotalTokens != null) {
+      spend.totalTokens = (spend.totalTokens ?? 0) + run.claudeTotalTokens;
+    }
+  }
+  return spend;
 }
