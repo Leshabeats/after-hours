@@ -239,7 +239,10 @@ try {
     body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
   });
   assert.equal(mcpRegistration.status, 201);
-  const { token: mcpToken } = await createPostgresResearch(db).createGrant(user.id, Date.now());
+  const { token: mcpToken } = await createPostgresResearch(db).createGrant(user.id, Date.now(), {
+    resource: origin + "/mcp",
+    expiresAt: Date.now() + 60_000,
+  });
   const mcpTools = await request("/mcp", {
     method: "POST",
     headers: {
@@ -252,6 +255,15 @@ try {
   });
   assert.equal(mcpTools.status, 200);
   assert.equal((await mcpTools.json()).result.tools.length, 6);
+  assert.equal(
+    (
+      await request("/api/research", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + mcpToken },
+      })
+    ).status,
+    401,
+  );
   console.log(
     "PASS MCP onboarding, OAuth discovery/registration and authenticated tools over production HTTP",
   );
@@ -262,7 +274,7 @@ try {
   );
   assert.ok((await html("/fate?cat=games&tag=steamos")).includes("GameDev"));
   console.log("PASS GameDev empty bootstrap, persisted snapshot, delayed freshness and tag filter");
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 3);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 4);
   assert.equal((await journal.list(user.id)).length, 1);
   assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
   const usageBody = {
@@ -406,7 +418,7 @@ try {
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
   await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 3);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 4);
   console.log(
     "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );

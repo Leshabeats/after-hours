@@ -31,17 +31,22 @@ export type PublishResult = "updated" | "missing" | "blocked";
 
 export type ResearchAuthor = ReportAuthor & { id: string };
 
+type OAuthGrant = { resource: string; expiresAt: number };
+
 export type ResearchRepo = {
   createGrant: (
     userId: string,
     at: number,
-    expiresAt?: number,
+    oauth?: OAuthGrant,
   ) => Promise<{ grant: ConnectorGrant; token: string }>;
   listGrants: (userId: string) => Promise<ConnectorGrant[]>;
   revokeGrant: (userId: string, grantId: string, at: number) => Promise<ConnectorGrant[] | null>;
-  authenticate: (token: string) => Promise<{ userId: string; grantId: string } | null>;
+  authenticate: (
+    token: string,
+    resource?: string,
+  ) => Promise<{ userId: string; grantId: string } | null>;
   markUsed: (grantId: string, at: number) => Promise<void>;
-  ingest: (userId: string, delivery: ResearchDelivery) => Promise<IngestResult>;
+  ingest: (userId: string, delivery: ResearchDelivery, mode?: "start") => Promise<IngestResult>;
   readRun: (userId: string, threadId: string) => Promise<ResearchRun | null>;
   readLimit: (userId: string) => Promise<LimitSnapshot | null>;
   upsertAuthor: (user: ResearchAuthor) => Promise<void>;
@@ -71,6 +76,7 @@ type GrantRecord = Omit<ConnectorGrant, "expiresAt"> & {
   userId: string;
   tokenHash: string;
   expiresAt: number | null;
+  resource: string | null;
 };
 
 type Decision =
@@ -85,14 +91,42 @@ function newId(prefix: string) {
 }
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  const digest = createHash("sha256").update(token).digest("hex");
+  // Older deployments look up only bare SHA-256 hex hashes, even during rollback.
+  return token.startsWith("ahm_") ? `mcp:${digest}` : digest;
 }
 
-function tokenMatches(token: string, hashHex: string) {
-  const got = createHash("sha256").update(token).digest();
-  const expected = Buffer.from(hashHex, "hex");
-  if (expected.length !== got.length) return false;
-  return timingSafeEqual(got, expected);
+function issueGrant(userId: string, at: number, oauth?: OAuthGrant) {
+  const token = `${oauth ? "ahm" : "ahc"}_${randomBytes(32).toString("base64url")}`;
+  const grant: GrantRecord = {
+    id: newId("gr"),
+    userId,
+    tokenHash: hashToken(token),
+    resource: oauth?.resource ?? null,
+    expiresAt: oauth?.expiresAt ?? null,
+    createdAt: at,
+    revokedAt: null,
+    lastUsedAt: null,
+  };
+  return { grant, token };
+}
+
+function authenticateGrant(grant: GrantRecord | undefined, token: string, resource?: string) {
+  if (!grant || grant.revokedAt != null) return null;
+  // Only the requested MCP resource can consume a scoped grant. Reject old unscoped OAuth grants.
+  if (grant.resource !== null || grant.expiresAt !== null) {
+    if (
+      !grant.resource ||
+      grant.resource !== resource ||
+      !grant.expiresAt ||
+      grant.expiresAt <= Date.now()
+    )
+      return null;
+  }
+  const got = Buffer.from(hashToken(token));
+  const expected = Buffer.from(grant.tokenHash);
+  if (expected.length !== got.length || !timingSafeEqual(got, expected)) return null;
+  return { userId: grant.userId, grantId: grant.id };
 }
 
 function cloneUsage(usage: TurnUsage): TurnUsage {
@@ -194,6 +228,7 @@ function planIngest(
   userId: string,
   delivery: ResearchDelivery,
   runId: string,
+  mode?: "start",
 ): Decision {
   if (delivery.status === "completed" && !delivery.report) return { kind: "invalid" };
   const turnIds = new Set<string>();
@@ -202,8 +237,14 @@ function planIngest(
     turnIds.add(turn.turnId);
   }
   if (existing && existing.userId !== userId) return { kind: "forbidden" };
-  if (existing && (existing.missionId !== delivery.missionId || existing.isPr !== delivery.isPr)) {
-    return { kind: "conflict" };
+  if (existing) {
+    if (mode === "start") {
+      return existing.missionId.toLowerCase() === delivery.missionId.toLowerCase()
+        ? { kind: "replay", run: cloneRun(existing) }
+        : { kind: "conflict" };
+    }
+    if (existing.missionId !== delivery.missionId || existing.isPr !== delivery.isPr)
+      return { kind: "conflict" };
   }
 
   const hash = deliveryHash(delivery);
@@ -302,17 +343,8 @@ export function createMemoryResearch(): ResearchRepo {
   }
 
   return {
-    async createGrant(userId, at, expiresAt) {
-      const token = `ahc_${randomBytes(32).toString("base64url")}`;
-      const grant: GrantRecord = {
-        id: newId("gr"),
-        userId,
-        tokenHash: hashToken(token),
-        expiresAt: expiresAt ?? null,
-        createdAt: at,
-        revokedAt: null,
-        lastUsedAt: null,
-      };
+    async createGrant(userId, at, oauth) {
+      const { grant, token } = issueGrant(userId, at, oauth);
       grants.push(grant);
       return { grant: publicGrant(grant), token };
     },
@@ -325,27 +357,19 @@ export function createMemoryResearch(): ResearchRepo {
       if (grant.revokedAt == null) grant.revokedAt = at;
       return listGrants(userId);
     },
-    async authenticate(token) {
+    async authenticate(token, resource) {
       const hash = hashToken(token);
       const grant = grants.find((item) => item.tokenHash === hash);
-      if (
-        !grant ||
-        grant.revokedAt != null ||
-        (grant.expiresAt != null && grant.expiresAt <= Date.now()) ||
-        !tokenMatches(token, grant.tokenHash)
-      ) {
-        return null;
-      }
-      return { userId: grant.userId, grantId: grant.id };
+      return authenticateGrant(grant, token, resource);
     },
     async markUsed(grantId, at) {
       const grant = grants.find((item) => item.id === grantId);
       if (!grant || grant.revokedAt != null) return;
       grant.lastUsedAt = at;
     },
-    async ingest(userId, delivery) {
+    async ingest(userId, delivery, mode) {
       const existing = runs.find((run) => run.threadId === delivery.threadId) ?? null;
-      const decision = planIngest(existing, userId, delivery, newId("run"));
+      const decision = planIngest(existing, userId, delivery, newId("run"), mode);
       if (decision.kind === "invalid" || decision.kind === "forbidden") {
         return { ok: false, error: decision.kind };
       }
@@ -445,7 +469,8 @@ const runSelect = `SELECT r.id, r.user_id AS "userId", r.mission_id AS "missionI
   FROM research_runs r`;
 const authorSelect = `SELECT id, login, name, avatar_url AS "avatarUrl" FROM users`;
 const grantSelect = `SELECT id, user_id AS "userId", token_hash AS "tokenHash",
-  created_at AS "createdAt", revoked_at AS "revokedAt", last_used_at AS "lastUsedAt", expires_at AS "expiresAt"
+  created_at AS "createdAt", revoked_at AS "revokedAt", last_used_at AS "lastUsedAt",
+  expires_at AS "expiresAt", resource
   FROM connector_grants`;
 
 export function createPostgresResearch(pool: Pool): ResearchRepo {
@@ -559,21 +584,12 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
     }
   }
   return {
-    async createGrant(userId, at, expiresAt) {
-      const token = `ahc_${randomBytes(32).toString("base64url")}`;
-      const grant: GrantRecord = {
-        id: newId("gr"),
-        userId,
-        tokenHash: hashToken(token),
-        expiresAt: expiresAt ?? null,
-        createdAt: at,
-        revokedAt: null,
-        lastUsedAt: null,
-      };
+    async createGrant(userId, at, oauth) {
+      const { grant, token } = issueGrant(userId, at, oauth);
       await pool.query(
-        `INSERT INTO connector_grants (id,user_id,token_hash,created_at,expires_at)
-        VALUES ($1,$2,$3,$4,$5)`,
-        [grant.id, userId, grant.tokenHash, at, grant.expiresAt],
+        `INSERT INTO connector_grants (id,user_id,token_hash,created_at,expires_at,resource)
+        VALUES ($1,$2,$3,$4,$5,$6)`,
+        [grant.id, userId, grant.tokenHash, at, grant.expiresAt, grant.resource],
       );
       return { grant: publicGrant(grant), token };
     },
@@ -586,18 +602,11 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
       );
       return result.rowCount ? listGrants(userId) : null;
     },
-    async authenticate(token) {
+    async authenticate(token, resource) {
       const grant = (
         await pool.query<GrantRecord>(`${grantSelect} WHERE token_hash = $1`, [hashToken(token)])
       ).rows[0];
-      if (
-        !grant ||
-        grant.revokedAt != null ||
-        (grant.expiresAt != null && grant.expiresAt <= Date.now()) ||
-        !tokenMatches(token, grant.tokenHash)
-      )
-        return null;
-      return { userId: grant.userId, grantId: grant.id };
+      return authenticateGrant(grant, token, resource);
     },
     async markUsed(grantId, at) {
       await pool.query(
@@ -605,10 +614,10 @@ export function createPostgresResearch(pool: Pool): ResearchRepo {
         [grantId, at],
       );
     },
-    ingest: (userId, delivery) =>
+    ingest: (userId, delivery, mode) =>
       transaction(pool, `research:${delivery.threadId}`, async (db): Promise<IngestResult> => {
         const existing = await loadRun(db, delivery.threadId);
-        const decision = planIngest(existing, userId, delivery, newId("run"));
+        const decision = planIngest(existing, userId, delivery, newId("run"), mode);
         if (decision.kind === "invalid" || decision.kind === "forbidden")
           return { ok: false, error: decision.kind };
         // Limit refreshes on a replay/conflict preserve the existing connector contract.

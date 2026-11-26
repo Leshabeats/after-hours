@@ -2,9 +2,16 @@ import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import { missionId, parseGithubRef } from "../kinds.ts";
 import type { ResearchRepo } from "../research/store.ts";
 import { reportSchema } from "../research/schema.ts";
-import { findInput, findMissions, missionRef, publicMission } from "./missions.ts";
+import {
+  findInput,
+  findMissions,
+  missionRef,
+  publicMission,
+  readPublicMission,
+} from "./missions.ts";
 import type { PublicMission } from "./missions.ts";
 
 export type McpDeps = {
@@ -49,7 +56,7 @@ export function createResearchServer(deps: McpDeps, userId: string) {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ mission }) => {
-      const task = await loadMission(mission);
+      const task = await (deps.mission ?? readPublicMission)(mission);
       const board = await repo.missionBoard(task.owner, task.repo, task.number, null);
       return result({ mission: task, research: board });
     },
@@ -69,21 +76,22 @@ export function createResearchServer(deps: McpDeps, userId: string) {
           .update(userId + ":" + request_id)
           .digest("hex")
           .slice(0, 48);
-      const task = await loadMission(mission);
       const previous = await repo.readRun(userId, id);
       if (previous) {
-        if (previous.missionId.toLowerCase() !== task.missionId.toLowerCase())
+        const ref = parseGithubRef(mission)!;
+        if (
+          previous.missionId.toLowerCase() !==
+          missionId(ref.owner, ref.repo, ref.number).toLowerCase()
+        )
           throw new Error("request_id already belongs to another mission.");
         return result({ run_id: id, status: previous.status });
       }
-      const accepted = await repo.ingest(userId, {
-        ...task,
-        threadId: id,
-        status: "in_progress",
-        turns: [],
-        limit: null,
-        at: Date.now(),
-      });
+      const task = await loadMission(mission);
+      const accepted = await repo.ingest(
+        userId,
+        { ...task, threadId: id, status: "in_progress", turns: [], limit: null, at: Date.now() },
+        "start",
+      );
       if (!accepted.ok) throw new Error("Cannot create research: " + accepted.error);
       return result({ run_id: id, status: accepted.run.status });
     },
@@ -153,8 +161,8 @@ export function createResearchServer(deps: McpDeps, userId: string) {
     async ({ run_id, report }) => {
       const run = await repo.readRun(userId, run_id);
       if (!run) throw new Error("Research not found.");
-      // Visibility can change during a long investigation.
-      await loadMission(run.missionId);
+      // Check visibility before first publication. A completed delivery can only replay or conflict.
+      if (run.status !== "completed") await loadMission(run.missionId);
       const accepted = await repo.ingest(userId, {
         ...run,
         threadId: run_id,
@@ -183,7 +191,7 @@ export async function handleMcp(request: Request, deps: McpDeps) {
   const origin = request.headers.get("origin");
   if (origin && origin !== deps.origin) return new Response("Origin denied", { status: 403 });
   const token = /^Bearer (\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-  const grant = token ? await deps.repo.authenticate(token) : null;
+  const grant = token ? await deps.repo.authenticate(token, deps.origin + "/mcp") : null;
   if (!grant)
     return Response.json(
       { error: "unauthorized" },

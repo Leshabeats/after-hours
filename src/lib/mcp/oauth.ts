@@ -174,13 +174,17 @@ export async function handleOAuth(request: Request, deps: OAuthDeps): Promise<Re
       value.expiresAt <= Date.now() ||
       value.clientId !== form.get("client_id") ||
       value.redirectUri !== form.get("redirect_uri") ||
+      value.resource !== resource ||
       value.resource !== form.get("resource") ||
       !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) ||
       createHash("sha256").update(verifier).digest("base64url") !== value.challenge
     )
       return json({ error: "invalid_grant" }, 400);
     const now = Date.now();
-    const { token } = await repo.createGrant(value.userId, now, now + 30 * 86400_000);
+    const { token } = await repo.createGrant(value.userId, now, {
+      resource: value.resource,
+      expiresAt: now + 30 * 86400_000,
+    });
     return json({
       access_token: token,
       token_type: "Bearer",

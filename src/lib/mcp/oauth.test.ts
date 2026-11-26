@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { it } from "node:test";
 import { createMemoryResearch, createPostgresResearch } from "../research/store.ts";
 import { postgresTest } from "../db/testing.ts";
+import { migrate } from "../db/migrate.ts";
+import { handleResearchPost } from "../research/http.ts";
 import { handleOAuth, postgresCodes, safeRedirect } from "./oauth.ts";
+import { handleMcp } from "./server.ts";
 import type { Code, CodeStore, OAuthDeps } from "./oauth.ts";
 
 const origin = "https://after-hours.test";
@@ -160,13 +163,17 @@ it("OAuth: consent, PKCE, audience, single-use codes, revocation and expiry", as
   assert.equal(response.status, 200);
   const { access_token, refresh_token } = await response.json();
   assert.equal(refresh_token, undefined);
-  const grant = await repo.authenticate(access_token);
+  await assertScopedAccess(repo, access_token);
+  const grant = await repo.authenticate(access_token, origin + "/mcp");
   assert.equal(grant?.userId, "owner");
   assert.equal((await handleOAuth(exchange(client_id, code), deps)).status, 400);
   await repo.revokeGrant("owner", grant!.grantId, Date.now());
-  assert.equal(await repo.authenticate(access_token), null);
-  const expired = await repo.createGrant("owner", Date.now(), Date.now() - 1);
-  assert.equal(await repo.authenticate(expired.token), null);
+  assert.equal(await repo.authenticate(access_token, origin + "/mcp"), null);
+  const expired = await repo.createGrant("owner", Date.now(), {
+    resource: origin + "/mcp",
+    expiresAt: Date.now() - 1,
+  });
+  assert.equal(await repo.authenticate(expired.token, origin + "/mcp"), null);
   for (const [proof, resource] of [
     ["wrong", origin + "/mcp"],
     [verifier, "https://evil.test/mcp"],
@@ -178,6 +185,36 @@ it("OAuth: consent, PKCE, audience, single-use codes, revocation and expiry", as
     );
   }
 });
+
+async function assertScopedAccess(repo: OAuthDeps["repo"], token: string) {
+  const headers = {
+    Authorization: "Bearer " + token,
+    Accept: "application/json, text/event-stream",
+    "Content-Type": "application/json",
+  };
+  const listTools = (target: string) =>
+    handleMcp(
+      new Request(target + "/mcp", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      }),
+      { repo, origin: target },
+    );
+  const result = await listTools(origin);
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).result.tools.length, 6);
+  assert.equal((await listTools("https://other-after-hours.test")).status, 401);
+  assert.equal(
+    (
+      await handleResearchPost(
+        new Request(origin + "/api/research", { method: "POST", headers }),
+        repo,
+      )
+    ).status,
+    401,
+  );
+}
 postgresTest(
   "OAuth: concurrent authorization-code exchange succeeds once in PostgreSQL",
   async (pool) => {
@@ -196,8 +233,42 @@ postgresTest(
       handleOAuth(exchange(client_id, code), deps),
     ]);
     assert.deepEqual(responses.map((r) => r.status).sort(), [200, 400]);
+    const { access_token } = await responses.find((r) => r.ok)!.json();
+    await assertScopedAccess(repo, access_token);
+    const legacyDigest = createHash("sha256").update(access_token).digest("hex");
+    // A deployment rolled back to 003 or earlier only looks up the bare digest.
+    assert.equal(
+      (await pool.query("SELECT id FROM connector_grants WHERE token_hash = $1", [legacyDigest]))
+        .rowCount,
+      0,
+    );
   },
 );
+postgresTest(
+  "OAuth: migration from 003 preserves manual grants and revokes unscoped OAuth grants",
+  async (pool) => {
+    const repo = createPostgresResearch(pool);
+    await repo.upsertAuthor({ id: "owner", login: "owner", name: "Owner", avatarUrl: "" });
+    const manual = await repo.createGrant("owner", Date.now());
+    await pool.query("ALTER TABLE connector_grants DROP COLUMN resource");
+    await pool.query("DELETE FROM schema_migrations WHERE version = '004_mcp_grant_resource.sql'");
+    const oldToken = "ahc_previous-oauth-fixture";
+    await pool.query(
+      `INSERT INTO connector_grants (id, user_id, token_hash, created_at, expires_at)
+     VALUES ('old-oauth', 'owner', $1, $2, $3)`,
+      [createHash("sha256").update(oldToken).digest("hex"), Date.now(), Date.now() + 600_000],
+    );
+    await migrate(pool);
+    assert.equal((await repo.authenticate(manual.token))?.grantId, manual.grant.id);
+    assert.equal(
+      (await repo.authenticate(manual.token, origin + "/mcp"))?.grantId,
+      manual.grant.id,
+    );
+    assert.equal(await repo.authenticate(oldToken), null);
+    assert.ok((await repo.listGrants("owner")).find((g) => g.id === "old-oauth")?.revokedAt);
+  },
+);
+
 it("OAuth: restricts callback URLs", () => {
   for (const url of [
     "javascript:alert(1)",
@@ -207,4 +278,5 @@ it("OAuth: restricts callback URLs", () => {
   ])
     assert.equal(safeRedirect(url), false);
   assert.equal(safeRedirect("http://127.0.0.1:1234/callback"), true);
+  assert.equal(safeRedirect("http://[::1]:1234/callback"), true);
 });
