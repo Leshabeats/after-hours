@@ -138,20 +138,20 @@ token. All timestamps use Unix milliseconds.
 3. Create a dedicated database login restricted to SELECT/INSERT/UPDATE/DELETE on
    the four discovery tables. It must have no application-user/journal access,
    DDL rights or migration-owner privileges. Approve credential creation/transfer
-   separately, then store its pooled URL as Actions secret CATALOG_DATABASE_URL.
+   separately, then store its pooled URL as the `CATALOG_DATABASE_URL` secret
+   in the Actions `catalog-production` environment restricted to `main`.
    Do not reuse the application owner connection string.
-4. Copy `docs/examples/catalog-discovery.yml` to `.github/workflows/` after approval.
-   Run GameDev and Web in order and verify the snapshots and UI. Enable the daily
-   schedule after the manual runs. Measure quota and snapshot age before increasing
-   cadence. Keep production credentials scoped to the scheduled/manual job.
+4. Dispatch `.github/workflows/catalog-discovery.yml` on `main` with `world=pilot`
+   and verify the GameDev and Web snapshots and UI. Enable the daily schedule
+   after the manual run. Measure quota and snapshot age before increasing cadence.
+   Keep production credentials scoped to the scheduled/manual job.
 5. Monitor the last successful snapshot age and GitHub run summaries. Public repo
    standard runners are free under current GitHub terms; no paid runner, API,
    artifact upload or plan upgrade is configured. If the repo becomes private,
    reassess included quotas before activation. Scheduled jobs may be delayed or
    disabled after 60 days of repository inactivity; manual dispatch remains available.
 
-This is application ingestion, not a chat notification or digest automation.
-The workflow template is deliberately outside the active workflow directory.
+The workflow in `docs/examples/` is an inactive reference.
 
 ## Research candidates
 
