@@ -78,6 +78,10 @@ const broadLabels =
   /(?:^|[ :_-])(?:epic|roadmap|tracking|proposal|spam|duplicate|wontfix)(?:$|[ :_-])/i;
 const fileReference =
   /(?:\b[\w@.-]+\/)+(?:[\w.-]+\.(?:tsx?|jsx?|html?|css|py|rs|go|java|cpp|c|h|md|json|ya?ml|toml|g?lsl|wgsl|zig))\b/i;
+const fencedBlock = /^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*$/gm;
+const checklistItem = /^[ \t]*[-+*][ \t]+\[[ xX]\]/gm;
+const MAX_PROSE_LENGTH = 4_000;
+const MAX_CHECKLIST_ITEMS = 5;
 
 function candidate(value: z.infer<typeof issue>, checkedAt: number) {
   const links = value.closedByPullRequestsReferences;
@@ -113,14 +117,15 @@ export function describeResearchIssue(
   labels: string[],
 ): { title: string; body: string; evidence: DiscoveryIssue["evidence"]; priority: number } | null {
   const title = rawTitle.trim();
-  const body = rawBody
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .trim()
-    .slice(0, 8000);
+  const description = rawBody.replace(/<!--[\s\S]*?-->/g, "").replaceAll("\r\n", "\n").trim();
+  const prose = description.replace(fencedBlock, "").trim();
+  const body = description.slice(0, 8000);
   if (
     title.length < 10 ||
     title.length > 500 ||
     body.length < 40 ||
+    prose.length > MAX_PROSE_LENGTH ||
+    (prose.match(checklistItem)?.length ?? 0) > MAX_CHECKLIST_ITEMS ||
     labels.some((label) => broadLabels.test(label)) ||
     /^(?:\[tracking\]|roadmap|rfc\b)/i.test(title)
   )

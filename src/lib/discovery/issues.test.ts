@@ -36,6 +36,19 @@ it("rejects filler, proposals and empty issue templates", () => {
   assert.equal(describeResearchIssue(issue.title, issue.body, [])?.evidence, "reproduction");
 });
 
+it("excludes large plans and release checklists while allowing long reproduction logs", () => {
+  const checklist = Array.from({ length: 8 }, (_, index) => `- [ ] Check subsystem ${index}\n`);
+  assert.equal(describeResearchIssue(issue.title, issue.body + "\n" + checklist.join(""), []), null);
+  const longPlan = "Update the renderer, runtime, bindings and migration guide.\n".repeat(90);
+  assert.equal(describeResearchIssue("Vulkan implementation plan", issue.body + longPlan, []), null);
+
+  const log = "```text\n" + "Test runner output\n".repeat(450) + "```";
+  assert.equal(
+    describeResearchIssue(issue.title, issue.body + "\n\n" + log, [])?.evidence,
+    "reproduction",
+  );
+});
+
 it("indexes open unassigned issues with complete fixing-PR checks", () => {
   const sample = (number: number, nodes: unknown[], hasNextPage = false) => ({
     ...issue,

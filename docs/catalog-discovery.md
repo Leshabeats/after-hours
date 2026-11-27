@@ -152,7 +152,9 @@ The workflow template is deliberately outside the active workflow directory.
 A write run indexes open issues for the verified publication winners through
 batched GitHub GraphQL read queries, within the same request budget. An issue
 needs a focused description with reproduction steps, a concrete file, or both
-expected and observed behavior. Assigned issues and issues with a detected open
+expected and observed behavior. The scope check allows at most 4,000 characters
+of prose and five checklist items, excluding fenced code and log blocks.
+Assigned issues and issues with a detected open
 or merged closing PR are excluded. PR checks are bounded and incomplete PR
 connections do not nominate a task. Each world publishes at most two suggestions
 per project. A failed issue batch preserves the previous snapshot.
