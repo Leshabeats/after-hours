@@ -1,6 +1,8 @@
 name: Catalog discovery
 
 on:
+  schedule:
+    - cron: '17 7 * * *'
   workflow_dispatch:
     inputs:
       world:
@@ -26,7 +28,7 @@ jobs:
     if: github.repository == 'Leshabeats/after-hours' && github.ref == 'refs/heads/main'
     environment: catalog-production
     runs-on: ubuntu-latest
-    timeout-minutes: 24
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -37,14 +39,26 @@ jobs:
       - run: npm install -g npm@11.9.0
       - run: npm ci --ignore-scripts
       - name: Collect and publish catalog snapshots
+        shell: bash
         run: |
+          collect_world() {
+            local attempt status
+            for attempt in 1 2 3; do
+              status=0
+              npm run catalog:sync -- --world "$1" --write || status=$?
+              if [ "$status" -ne 3 ]; then
+                return "$status"
+              fi
+            done
+            return 3
+          }
           if [ "$CATALOG_WORLD" = pilot ]; then
             result=0
-            npm run catalog:sync -- --world games --write || result=$?
-            npm run catalog:sync -- --world web --write || result=$?
+            collect_world games || result=$?
+            collect_world web || result=$?
             exit "$result"
           else
-            npm run catalog:sync -- --world "$CATALOG_WORLD" --write
+            collect_world "$CATALOG_WORLD"
           fi
         env:
           CATALOG_WORLD: ${{ inputs.world || 'pilot' }}

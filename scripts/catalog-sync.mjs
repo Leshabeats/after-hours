@@ -54,7 +54,8 @@ try {
   });
   console.log(JSON.stringify({ mode: write ? "write" : "dry-run", world, ...result }));
   if (!write) console.log(JSON.stringify(await store.snapshot()));
-  if (result.status !== "published" && result.status !== "busy") process.exitCode = 2;
+  if (result.status === "partial") process.exitCode = 3;
+  if (result.status === "paused") process.exitCode = 2;
 } catch {
   // No connection strings, upstream response bodies, or arbitrary error causes in CI output.
   console.error(
