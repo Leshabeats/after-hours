@@ -64,6 +64,12 @@ it("uses exact world topics rather than description or model guesses", () => {
 it("publishes the scoped Web feed only after licensing and stable-ID rechecks", async () => {
   const store = createMemoryDiscovery();
   const requests: URL[] = [];
+  const resetAt = NOW + 2 * DAY;
+  const quota = (limit: number, remaining: number) => ({
+    "x-ratelimit-limit": String(limit),
+    "x-ratelimit-remaining": String(remaining),
+    "x-ratelimit-reset": String(resetAt / 1000),
+  });
   let rateLimited = false;
   const options = {
     world: "web" as const,
@@ -75,50 +81,71 @@ it("publishes the scoped Web feed only after licensing and stable-ID rechecks", 
       const url = new URL(String(input));
       requests.push(url);
       if (url.pathname === "/search/repositories")
-        return Response.json({
-          items: [raw(1, "MIT"), raw(2, "NOASSERTION"), raw(3, "GPL-3.0-only"), raw(4)],
-          incomplete_results: false,
-          total_count: 4,
-        });
+        return Response.json(
+          {
+            items: [raw(1, "MIT"), raw(2, "NOASSERTION"), raw(3, "GPL-3.0-only"), raw(4)],
+            incomplete_results: false,
+            total_count: 4,
+          },
+          { headers: quota(30, 16) },
+        );
       if (url.pathname === "/repositories/1") return Response.json(raw(1, "Apache-2.0"));
       if (url.pathname === "/repositories/3") return Response.json(raw(3, "NOASSERTION"));
       if (url.pathname === "/graphql") {
         assert.equal(init?.method, "POST");
         assert.match(String(init?.body), /browser-tests-1/);
-        if (rateLimited) return Response.json({ errors: [{ type: "RATE_LIMITED" }] });
-        return Response.json({
-          data: {
-            r0: {
-              databaseId: 1,
-              nameWithOwner: "browser/browser-tests-1",
-              isPrivate: false,
-              visibility: "PUBLIC",
-              isArchived: false,
-              issues: {
-                nodes: [
-                  {
-                    number: 7,
-                    title: "Fix the browser permission test",
-                    body: "Steps to reproduce: open browser/tests/permissions.html and compare the expected and actual results.",
-                    state: "OPEN",
-                    updatedAt: new Date(NOW - 1000).toISOString(),
-                    assignees: { totalCount: 0 },
-                    labels: { nodes: [] },
-                    closedByPullRequestsReferences: { nodes: [], pageInfo: { hasNextPage: false } },
-                  },
-                ],
+        if (rateLimited)
+          return Response.json({ errors: [{ type: "RATE_LIMITED" }] }, { headers: quota(1000, 0) });
+        return Response.json(
+          {
+            data: {
+              r0: {
+                databaseId: 1,
+                nameWithOwner: "browser/browser-tests-1",
+                isPrivate: false,
+                visibility: "PUBLIC",
+                isArchived: false,
+                issues: {
+                  nodes: [
+                    {
+                      number: 7,
+                      title: "Fix the browser permission test",
+                      body: "Steps to reproduce: open browser/tests/permissions.html and compare the expected and actual results.",
+                      state: "OPEN",
+                      updatedAt: new Date(NOW - 1000).toISOString(),
+                      assignees: { totalCount: 0 },
+                      labels: { nodes: [] },
+                      closedByPullRequestsReferences: { nodes: [], pageInfo: { hasNextPage: false } },
+                    },
+                  ],
+                },
               },
             },
           },
-        });
+          { headers: quota(1000, 997) },
+        );
       }
       if (url.pathname.endsWith("/pulls")) return Response.json([]);
       return new Response(null, { status: 404 });
     },
   };
-  assert.equal((await collectDiscovery({ ...options, maxRequests: 2 })).status, "partial");
+  const partial = await collectDiscovery({ ...options, maxRequests: 2 });
+  assert.equal(partial.status, "partial");
+  assert.deepEqual(partial.githubUsage.search, {
+    requests: 2,
+    rateLimit: { limit: 30, remaining: 16, resetAt },
+  });
   assert.equal(await store.snapshot(), null);
-  assert.equal((await collectDiscovery(options)).status, "published");
+  const published = await collectDiscovery(options);
+  assert.equal(published.status, "published");
+  assert.equal(published.generatedAt, NOW);
+  assert.deepEqual(published.githubUsage.graphql, {
+    requests: 1,
+    rateLimit: { limit: 1000, remaining: 997, resetAt },
+  });
+  assert.deepEqual(published.githubUsage.core, {
+    requests: published.requests - published.searchRequests - 1,
+  });
   const result = (await store.snapshot())!;
   assert.equal(result.issuesIndexed, true);
   assert.deepEqual(
@@ -139,7 +166,11 @@ it("publishes the scoped Web feed only after licensing and stable-ID rechecks", 
   assert.ok(searches.every((url) => !url.searchParams.get("q")?.includes("topic:game-engine")));
   assert.ok(requests.some((url) => url.pathname === "/repositories/3"));
   rateLimited = true;
-  assert.equal((await collectDiscovery({ ...options, now: () => NOW + DAY })).status, "paused");
+  const paused = await collectDiscovery({ ...options, now: () => NOW + DAY });
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.generatedAt, undefined);
+  assert.equal(paused.retryAt, resetAt);
+  assert.equal(paused.githubUsage.graphql.rateLimit?.remaining, 0);
   assert.deepEqual(await store.snapshot(), result);
 });
 

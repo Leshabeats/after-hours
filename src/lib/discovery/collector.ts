@@ -176,11 +176,19 @@ class Pause extends Error {
 }
 class Budget extends Error {}
 class RepositoryUnavailable extends Error {}
+type GitHubUsage = {
+  requests: number;
+  rateLimit?: { limit: number; remaining: number; resetAt: number };
+};
 export type CollectorResult = {
   status: "published" | "paused" | "partial" | "busy";
   requests: number;
   searchRequests: number;
+  elapsedMs: number;
+  githubUsage: Record<"core" | "search" | "graphql", GitHubUsage>;
   cards?: number;
+  generatedAt?: number;
+  retryAt?: number;
 };
 export type CollectorOptions = {
   store: DiscoveryStore;
@@ -284,11 +292,22 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
   const maxRequests = Math.min(options.maxRequests ?? 500, 500);
   const maxSearch = Math.min(options.maxSearchRequests ?? 40, 40);
   let requests = 0,
-    searchRequests = 0,
     nextRequestAt = started,
     nextSearchAt = started;
+  const githubUsage: CollectorResult["githubUsage"] = {
+    core: { requests: 0 },
+    search: { requests: 0 },
+    graphql: { requests: 0 },
+  };
+  const result = (status: CollectorResult["status"]): CollectorResult => ({
+    status,
+    requests,
+    searchRequests: githubUsage.search.requests,
+    elapsedMs: Math.max(0, now() - started),
+    githubUsage,
+  });
   const lease = await store.acquire(started, LEASE_MS);
-  if (!lease) return { status: "busy", requests, searchRequests };
+  if (!lease) return result("busy");
 
   async function request(
     path: string,
@@ -299,14 +318,15 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
     const wait = Math.max(nextRequestAt, search ? nextSearchAt : 0) - now();
     if (
       requests >= maxRequests ||
-      (search && searchRequests >= maxSearch) ||
+      (search && githubUsage.search.requests >= maxSearch) ||
       now() + Math.max(wait, 0) >= deadline
     )
       throw new Budget();
     if (wait > 0) await sleep(wait);
     const at = now();
+    const usage = githubUsage[query ? "graphql" : search ? "search" : "core"];
+    usage.requests++;
     requests++;
-    if (search) searchRequests++;
     nextRequestAt = at + 500;
     if (search) nextSearchAt = at + 3100;
     const headers: Record<string, string> = {
@@ -326,6 +346,16 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       });
     } catch {
       throw new Pause("GitHub network unavailable", now() + 60_000);
+    }
+    const quotaHeaders = ["limit", "remaining", "reset"].map((key) =>
+      response.headers.get(`x-ratelimit-${key}`),
+    );
+    if (quotaHeaders.every((value) => value !== null && /^\d+$/.test(value))) {
+      const [limit, remaining, resetSeconds] = quotaHeaders.map(Number);
+      const resetAt = resetSeconds * 1000;
+      if ([limit, remaining, resetAt].every(Number.isSafeInteger) && remaining <= limit) {
+        usage.rateLimit = { limit, remaining, resetAt };
+      }
     }
     if ([301, 302, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
@@ -743,7 +773,11 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         snapshot.issuesIndexed = true;
       }
       await store.publish(lease, now(), snapshot);
-      return { status: "published", requests, searchRequests, cards: snapshot.cards.length };
+      return {
+        ...result("published"),
+        cards: snapshot.cards.length,
+        generatedAt: snapshot.generatedAt,
+      };
     }
   } catch (error) {
     const paused = error instanceof Pause;
@@ -756,6 +790,9 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           : "Discovery scan failed";
     await store.release(lease, now(), reason, paused ? error.retryAt : undefined);
     if (!(error instanceof Budget) && !paused) throw new Error(reason, { cause: error });
-    return { status: paused ? "paused" : "partial", requests, searchRequests };
+    return {
+      ...result(paused ? "paused" : "partial"),
+      ...(paused ? { retryAt: error.retryAt } : {}),
+    };
   }
 }
