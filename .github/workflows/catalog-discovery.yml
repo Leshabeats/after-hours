@@ -1,0 +1,52 @@
+name: Catalog discovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      world:
+        description: Run both pilot worlds or a single world
+        type: choice
+        options:
+          - pilot
+          - games
+          - web
+        default: pilot
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: catalog-discovery-production
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    if: github.repository == 'Leshabeats/after-hours' && github.ref == 'refs/heads/main'
+    environment: catalog-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install -g npm@11.9.0
+      - run: npm ci --ignore-scripts
+      - name: Collect and publish catalog snapshots
+        run: |
+          if [ "$CATALOG_WORLD" = pilot ]; then
+            result=0
+            npm run catalog:sync -- --world games --write || result=$?
+            npm run catalog:sync -- --world web --write || result=$?
+            exit "$result"
+          else
+            npm run catalog:sync -- --world "$CATALOG_WORLD" --write
+          fi
+        env:
+          CATALOG_WORLD: ${{ inputs.world || 'pilot' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CATALOG_DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}

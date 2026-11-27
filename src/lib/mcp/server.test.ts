@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createMemoryResearch } from "../research/store.ts";
 import { handleMcp } from "./server.ts";
 import { createPublicMissionReader, findMissions, publicMission } from "./missions.ts";
+import type { DiscoveryLoad } from "../discovery/types.ts";
 import { postgresTest } from "../db/testing.ts";
 import { createPostgresResearch } from "../research/store.ts";
 import type { ResearchRepo } from "../research/store.ts";
@@ -240,4 +241,103 @@ it("MCP: a rate-limited search does not look like an empty catalog", async () =>
     }),
     /GitHub rate limit\. Retry in 120 seconds/,
   );
+});
+
+it("MCP: uses the published topic selection and rechecks current repository and issue identity", async () => {
+  const now = Date.now();
+  const load = async (): Promise<DiscoveryLoad> => ({
+    status: "ready",
+    stale: false,
+    updatedAt: now,
+    issuesIndexed: true,
+    cards: [
+      {
+        isPublic: true,
+        world: "web",
+        id: "101",
+        owner: "fixture",
+        repo: "public",
+        description: "Fixture",
+        blurb: "",
+        logoUrl: "",
+        url: "https://github.com/fixture/public",
+        language: "TypeScript",
+        stars: 5,
+        live: false,
+        tags: ["web-tests"],
+        license: "MIT",
+        createdAt: now,
+        firstSeenAt: now,
+        observedAt: now,
+        badges: ["active"],
+        reasons: [],
+        growth: null,
+        issues: [
+          {
+            number: 8,
+            title: "Old permission test",
+            excerpt: "",
+            checkedAt: now,
+            evidence: "file",
+          },
+          {
+            number: 7,
+            title: "Permission test fails",
+            excerpt: "",
+            checkedAt: now,
+            evidence: "file",
+          },
+        ],
+      },
+    ],
+  });
+  let repoId = 101;
+  let unavailable = false;
+  const calls: string[] = [];
+  const fetcher = async (url: RequestInfo | URL) => {
+    if (unavailable) return new Response(null, { status: 503 });
+    const path = new URL(String(url)).pathname;
+    calls.push(path);
+    if (path === "/repos/fixture/public")
+      return Response.json({
+        id: repoId,
+        private: false,
+        archived: false,
+        license: { spdx_id: "MIT" },
+      });
+    assert.match(path, /^\/repos\/fixture\/public\/issues\/[78]$/);
+    const number = Number(path.split("/").at(-1));
+    return Response.json({
+      title: "Permission test fails",
+      body: "Steps to reproduce: open fullscreen/tests/permissions.html and compare the expected and actual values.",
+      number,
+      state: number === 7 ? "open" : "closed",
+      repository_url: "https://api.github.com/repos/fixture/public",
+    });
+  };
+  const input = {
+    category: "web",
+    tag: "web-tests",
+    language: "typescript",
+    view: "active" as const,
+    limit: 5,
+  };
+  assert.deepEqual(
+    (await findMissions(input, fetcher, load)).map(({ number }) => number),
+    [7],
+  );
+  assert.equal(calls.filter((path) => path === "/repos/fixture/public").length, 1);
+  assert.equal(
+    calls.some((path) => path === "/search/issues"),
+    false,
+  );
+  assert.deepEqual(
+    (await findMissions({ ...input, limit: 1 }, fetcher, load)).map(({ number }) => number),
+    [7],
+  );
+  assert.deepEqual(await findMissions({ ...input, tag: "browser-apis" }, fetcher, load), []);
+  repoId = 102;
+  assert.deepEqual(await findMissions(input, fetcher, load), []);
+  unavailable = true;
+  await assert.rejects(findMissions(input, fetcher, load), /GitHub data is unavailable/);
 });

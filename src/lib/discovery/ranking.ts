@@ -1,8 +1,10 @@
 import {
-  GAME_TAGS,
+  WORLD_TAGS,
   type DailyMetric,
   type DiscoveryCard,
   type DiscoverySnapshot,
+  type DiscoveryTag,
+  type DiscoveryWorld,
   type GameTag,
   type Observation,
   type StoredRepository,
@@ -19,10 +21,16 @@ const MANUAL_TAGS: Record<string, GameTag[]> = {
 
 export function classifyRepository(
   input: Pick<Observation, "owner" | "repo" | "description" | "topics">,
-): GameTag[] {
+  world: DiscoveryWorld = "games",
+): DiscoveryTag[] {
+  const topics = new Set(input.topics.map((topic) => topic.toLowerCase()));
+  if (world !== "games") {
+    return WORLD_TAGS[world]
+      .filter((tag) => tag.topics.some((topic) => topics.has(topic)))
+      .map((tag) => tag.id);
+  }
   const key = `${input.owner}/${input.repo}`.toLowerCase();
   const text = `${input.repo} ${input.description} ${input.topics.join(" ")}`.toLowerCase();
-  const topics = new Set(input.topics.map((topic) => topic.toLowerCase()));
   const tags = new Set<GameTag>(MANUAL_TAGS[key] ?? []);
   const game = /\b(game|games|gaming|gamedev|game-development|godot|unity|unreal|bevy)\b/.test(
     text,
@@ -63,6 +71,7 @@ export function eligible(repo: Observation): boolean {
     !repo.archived &&
     !repo.disabled &&
     !repo.mirror &&
+    repo.license !== null &&
     repo.tags.length > 0 &&
     (!repo.fork || FORK_EXCEPTIONS.has(`${repo.owner}/${repo.repo}`.toLowerCase()))
   );
@@ -91,6 +100,7 @@ export function buildSnapshot(
   repos: StoredRepository[],
   metrics: DailyMetric[],
   now: number,
+  world: DiscoveryWorld = "games",
 ): DiscoverySnapshot {
   // Publication remains strict: stale data is never relabeled as a current measurement.
   return {
@@ -100,6 +110,7 @@ export function buildSnapshot(
       repos.filter((repo) => now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY),
       metrics,
       now,
+      world,
     ),
   };
 }
@@ -110,15 +121,17 @@ export function selectPublicationCandidates(
   repos: StoredRepository[],
   metrics: DailyMetric[],
   now: number,
+  world: DiscoveryWorld = "games",
 ): DiscoveryCard[] {
   const fresh = rankCards(
     repos.filter((repo) => now - (repo.countsObservedAt ?? repo.observedAt) <= 2 * DAY),
     metrics,
     now,
+    world,
   );
   const ids = new Set(fresh.map((card) => card.id));
   const covered = new Set(fresh.flatMap((card) => card.tags));
-  const tagCounts = new Map<GameTag, number>();
+  const tagCounts = new Map<DiscoveryTag, number>();
   for (const card of fresh) {
     for (const tag of new Set(card.tags)) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
   }
@@ -130,7 +143,7 @@ export function selectPublicationCandidates(
         a.id.localeCompare(b.id),
     );
   const fallbacks: DiscoveryCard[] = [];
-  for (const { id: tag } of GAME_TAGS) {
+  for (const { id: tag } of WORLD_TAGS[world]) {
     if (covered.has(tag)) continue;
     const candidate = stale.find((repo) => !ids.has(repo.id) && repo.tags.includes(tag));
     if (!candidate) continue;
@@ -147,7 +160,7 @@ export function selectPublicationCandidates(
       for (const value of new Set(removed.tags)) tagCounts.set(value, tagCounts.get(value)! - 1);
     }
     // This is only a retry identity. Old growth must not influence candidate selection.
-    fallbacks.push(rankCards([candidate], [], now)[0]);
+    fallbacks.push(rankCards([candidate], [], now, world)[0]);
     ids.add(candidate.id);
     for (const value of candidate.tags) covered.add(value);
   }
@@ -171,6 +184,7 @@ function rankCards(
   repos: StoredRepository[],
   metrics: DailyMetric[],
   now: number,
+  world: DiscoveryWorld,
 ): DiscoveryCard[] {
   const scored = repos.filter(eligible).map((repo) => {
     const measuredAt = repo.countsObservedAt ?? repo.observedAt;
@@ -203,11 +217,13 @@ function rankCards(
       badges.push("growing");
       reasons.push(`+${delta} звёзд за ${growth!.days} дн. наблюдений`);
     }
+    if (releaseFresh || merged) badges.push("active");
     if (releaseFresh) reasons.push("Есть релиз за последние 30 дней");
     if (merged) reasons.push("Есть принятые PR в проверенной выборке за 30 дней");
-    if (!reasons.length) reasons.push("Подходит по тематике GameDev");
+    if (!reasons.length) reasons.push("Подходит по теме");
     const card: DiscoveryCard = {
       isPublic: true,
+      ...(world === "games" ? {} : { world }),
       id: repo.id,
       owner: repo.owner,
       repo: repo.repo,
@@ -219,6 +235,7 @@ function rankCards(
       stars: repo.stars,
       live: false,
       tags: repo.tags,
+      ...(repo.license ? { license: repo.license } : {}),
       createdAt: repo.createdAt,
       firstSeenAt: repo.firstSeenAt,
       observedAt: measuredAt,
@@ -247,11 +264,11 @@ function rankCards(
     return true;
   });
   const limit = 100;
-  const perTag = Math.floor(limit / GAME_TAGS.length);
+  const perTag = Math.floor(limit / WORLD_TAGS[world].length);
   const selected = new Set<string>();
   // Reserve the highest-ranked candidates in each tag before filling spare slots.
   // Overlapping tags share slots; the union of reservations cannot exceed the cap.
-  for (const { id: tag } of GAME_TAGS) {
+  for (const { id: tag } of WORLD_TAGS[world]) {
     for (const { card } of ranked.filter(({ card }) => card.tags.includes(tag)).slice(0, perTag)) {
       selected.add(card.id);
     }

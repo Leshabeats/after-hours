@@ -228,6 +228,7 @@ parity(
           countsSource: "repository",
           countsScanId: next,
           observedAt: NOW + 6,
+          identityVerified: true,
           stars: 0,
           forks: 0,
         }),
@@ -537,7 +538,7 @@ postgresTest(
       "discovery_sync_state",
     ]);
     await Promise.all([migrate(pool), migrate(pool)]);
-    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 5);
+    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 6);
     assert.equal(await createPostgresDiscovery(pool).snapshot(), null);
   },
 );
@@ -552,7 +553,7 @@ postgresTest(
     DROP TABLE claude_research_usage;
     ALTER TABLE connector_grants DROP COLUMN expires_at, DROP COLUMN resource;
     DELETE FROM schema_migrations
-    WHERE version IN ('002_discovery.sql','003_mcp.sql','004_mcp_grant_resource.sql','005_claude_research_usage.sql')`);
+    WHERE version IN ('002_discovery.sql','003_mcp.sql','004_mcp_grant_resource.sql','005_claude_research_usage.sql','006_discovery_worlds.sql')`);
     await pool.query("INSERT INTO users (id,login,created_at) VALUES ('existing','Existing',1)");
     await createPostgresJournal(pool).take("existing", {
       id: "owner/repo#1",
@@ -584,7 +585,7 @@ postgresTest(
       return row;
     });
     assert.deepEqual(after, before);
-    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 5);
+    assert.equal((await pool.query("SELECT count(*) AS n FROM schema_migrations")).rows[0].n, 6);
     assert.ok(await createPostgresDiscovery(pool).acquire(NOW, 100));
   },
 );

@@ -1,4 +1,9 @@
-import { GAME_TAGS, type GameTag, type DiscoveryMode } from "./discovery/types.ts";
+import {
+  WORLD_TAGS,
+  isDiscoveryWorld,
+  type DiscoveryTag,
+  type DiscoveryMode,
+} from "./discovery/types.ts";
 
 export const DEFAULT_CATEGORY = "web";
 
@@ -218,7 +223,7 @@ const ECOSYSTEMS: Record<LanguageId, readonly CatalogRepo[]> = {
 export type CatalogSearch = {
   cat?: CategoryId;
   lang?: LanguageId;
-  tag?: GameTag;
+  tag?: DiscoveryTag;
   view?: DiscoveryMode;
 };
 
@@ -226,6 +231,7 @@ export const DISCOVERY_MODES = [
   { id: "all", label: "Все находки" },
   { id: "new", label: "Недавно созданы" },
   { id: "discovered", label: "Недавно найдены" },
+  { id: "active", label: "Активные" },
   { id: "growing", label: "Растут" },
 ] as const;
 
@@ -266,20 +272,27 @@ export function parseCatalogSearch(search: Record<string, unknown>): CatalogSear
     parseLanguageId(search.lang) ??
     (typeof search.cat === "string" ? LEGACY_LANGUAGE[search.cat] : undefined);
   if (lang) out.lang = lang;
-  if (out.cat === "games") {
-    if (GAME_TAGS.some((tag) => tag.id === search.tag)) out.tag = search.tag as GameTag;
+  const world = out.cat ?? DEFAULT_CATEGORY;
+  if (isDiscoveryWorld(world)) {
+    const tag = WORLD_TAGS[world].find((entry) => entry.id === search.tag);
+    if (tag) out.tag = tag.id;
     if (DISCOVERY_MODES.some((view) => view.id === search.view))
       out.view = search.view as DiscoveryMode;
   }
   return out;
 }
 
-/** Keep independent filters while changing one dimension; other worlds clear GameDev filters. */
+/** Theme and discovery mode belong to the selected direction. */
 export function changeCatalogSearch(
   search: CatalogSearch,
   patch: Partial<CatalogSearch>,
 ): CatalogSearch {
-  return parseCatalogSearch({ ...search, ...patch });
+  const changingWorld = patch.cat !== undefined && patch.cat !== (search.cat ?? DEFAULT_CATEGORY);
+  return parseCatalogSearch({
+    ...search,
+    ...(changingWorld ? { tag: undefined, view: undefined } : {}),
+    ...patch,
+  });
 }
 
 export function keepCatalogSearch(search: Record<string, unknown>): CatalogSearch {

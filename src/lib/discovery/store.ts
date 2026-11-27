@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { transaction, type Database } from "../db/postgres.ts";
 import { protectCounts } from "./measurements.ts";
+import { DISCOVERY_WORLD_IDS } from "./types.ts";
 import type {
   DailyMetric,
   DiscoverySnapshot,
   DiscoveryStore,
+  DiscoveryWorld,
   Lease,
   Observation,
   StoredRepository,
@@ -15,6 +17,14 @@ const DAY = 86_400_000;
 const RETAIN_DAYS = 90;
 const RETAIN_RUNS = 30;
 const LOCK = "discovery:sync";
+// An explicit revocation blocks the stable identity across every world. Legacy
+// observations without visibility only block the world that owns the old row.
+const BLOCKED_REPOSITORIES = `SELECT id FROM discovery_repositories
+  WHERE observation->>'isPublic' = 'false'
+     OR (world_id = $1 AND (
+       observation->>'isPublic' IS DISTINCT FROM 'true'
+       OR observation->'license' = 'null'::jsonb
+     ))`;
 
 export class DiscoveryLeaseLostError extends Error {
   constructor() {
@@ -79,12 +89,14 @@ function merge(previous: StoredRepository | undefined, observed: Observation): S
     observed = {
       ...observed,
       isPublic: false,
+      identityVerified: false,
       disabled: true,
       owner: known?.owner ?? "unavailable",
       repo: known?.repo ?? "unavailable",
       description: known?.description ?? "",
       topics: [],
       tags: [],
+      license: null,
       language: null,
       stars: known?.stars ?? 0,
       forks: known?.forks ?? 0,
@@ -114,6 +126,12 @@ function merge(previous: StoredRepository | undefined, observed: Observation): S
   };
 }
 
+function canReplaceRevocation(previous: StoredRepository | undefined, observed: Observation) {
+  return (
+    previous?.isPublic !== false || observed.isPublic !== true || observed.identityVerified === true
+  );
+}
+
 type State = {
   current_run_id: string | null;
   published_run_id: string | null;
@@ -136,27 +154,49 @@ function requireLease(state: State, lease: Lease, now: number) {
 // State transitions: idle -> running -> completed (publish), or running -> interrupted
 // (release/expiry). Acquire resumes interrupted work with a new fence. Every mutation
 // checks ownership while holding the same transaction lock; network work belongs outside.
-export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
-  const locked = <T>(work: (db: Database) => Promise<T>) => transaction(pool, LOCK, work);
+export function createPostgresDiscovery(
+  pool: Pool,
+  world: DiscoveryWorld = "games",
+): DiscoveryStore {
+  const worldId = DISCOVERY_WORLD_IDS[world];
+  const lock = world === "games" ? LOCK : `${LOCK}:${world}`;
+  const locked = <T>(work: (db: Database) => Promise<T>) => transaction(pool, lock, work);
   async function state(db: Database) {
-    const row = (await db.query<State>("SELECT * FROM discovery_sync_state WHERE id = 1")).rows[0];
+    const row = (
+      await db.query<State>("SELECT * FROM discovery_sync_state WHERE id = $1", [worldId])
+    ).rows[0];
     if (!row) throw new Error("Discovery schema is missing. Run db:migrate.");
     return row;
   }
   async function retain(db: Database, now: number) {
-    await db.query("DELETE FROM discovery_daily_metrics WHERE day < $1::date", [day(cutoff(now))]);
+    await db.query("DELETE FROM discovery_daily_metrics WHERE world_id = $1 AND day < $2::date", [
+      worldId,
+      day(cutoff(now)),
+    ]);
     await db.query(
-      `DELETE FROM discovery_runs WHERE status = 'completed'
-      AND id <> COALESCE((SELECT published_run_id FROM discovery_sync_state WHERE id = 1), '')
-      AND id NOT IN (SELECT id FROM discovery_runs WHERE status = 'completed'
-        ORDER BY completed_at DESC, id COLLATE "C" LIMIT $1)`,
-      [RETAIN_RUNS],
+      `DELETE FROM discovery_runs WHERE world_id = $1 AND status = 'completed'
+      AND id <> COALESCE((SELECT published_run_id FROM discovery_sync_state WHERE id = $1), '')
+      AND id NOT IN (SELECT id FROM discovery_runs WHERE world_id = $1 AND status = 'completed'
+        ORDER BY completed_at DESC, id COLLATE "C" LIMIT $2)`,
+      [worldId, RETAIN_RUNS],
     );
   }
   return {
     acquire: (now, leaseMs) =>
       locked(async (db) => {
         const until = leaseEnd(now, leaseMs);
+        const shared = (
+          await db.query<{ github_retry_at: number | null }>(
+            "SELECT github_retry_at FROM discovery_sync_state WHERE id = 1",
+          )
+        ).rows[0];
+        if (shared?.github_retry_at != null && shared.github_retry_at > now) return null;
+        if (world !== "games") {
+          await db.query(
+            "INSERT INTO discovery_sync_state (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            [worldId],
+          );
+        }
         const current = await state(db);
         if (
           (current.retry_at != null && current.retry_at > now) ||
@@ -165,21 +205,22 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           return null;
         const runId = current.current_run_id ?? randomUUID();
         await db.query(
-          `INSERT INTO discovery_runs (id,status,started_at,updated_at)
-        VALUES ($1,'running',$2,$2) ON CONFLICT (id) DO UPDATE SET status = 'running', updated_at = $2, error = NULL`,
-          [runId, now],
+          `INSERT INTO discovery_runs (id,status,started_at,updated_at,world_id)
+        VALUES ($1,'running',$2,$2,$3) ON CONFLICT (id) DO UPDATE SET status = 'running', updated_at = $2, error = NULL
+        WHERE discovery_runs.world_id = $3`,
+          [runId, now, worldId],
         );
         const run = (
           await db.query<{ checkpoint: unknown }>(
-            "SELECT checkpoint FROM discovery_runs WHERE id = $1",
-            [runId],
+            "SELECT checkpoint FROM discovery_runs WHERE id = $1 AND world_id = $2",
+            [runId, worldId],
           )
         ).rows[0]!;
         const next = (
           await db.query<{ fence: number }>(
             `UPDATE discovery_sync_state SET
-        current_run_id = $1, fence = fence + 1, lease_until = $2, retry_at = NULL WHERE id = 1 RETURNING fence`,
-            [runId, until],
+        current_run_id = $1, fence = fence + 1, lease_until = $2, retry_at = NULL WHERE id = $3 RETURNING fence`,
+            [runId, until, worldId],
           )
         ).rows[0]!;
         return { runId, token: String(next.fence), checkpoint: copy(run.checkpoint) };
@@ -195,20 +236,21 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           countsTime(observation);
           const old = (
             await db.query<{ observation: StoredRepository; first_seen_at: number }>(
-              "SELECT observation,first_seen_at FROM discovery_repositories WHERE id = $1",
-              [observation.id],
+              "SELECT observation,first_seen_at FROM discovery_repositories WHERE world_id = $1 AND id = $2",
+              [worldId, observation.id],
             )
           ).rows[0];
           const previous = old ? { ...old.observation, firstSeenAt: old.first_seen_at } : undefined;
+          if (!canReplaceRevocation(previous, observation)) continue;
           observation = protectCounts(previous, observation);
           const measuredAt = countsTime(observation);
           const next = merge(previous, observation);
           await db.query(
-            `INSERT INTO discovery_repositories (id,first_seen_at,observed_at,observation)
-          VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET
+            `INSERT INTO discovery_repositories (world_id,id,first_seen_at,observed_at,observation)
+          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (world_id,id) DO UPDATE SET
           observed_at = excluded.observed_at, observation = excluded.observation
           WHERE excluded.observed_at >= discovery_repositories.observed_at`,
-            [observation.id, next.firstSeenAt, next.observedAt, JSON.stringify(next)],
+            [worldId, observation.id, next.firstSeenAt, next.observedAt, JSON.stringify(next)],
           );
           if (
             observation.isPublic === true &&
@@ -218,11 +260,12 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
             measuredAt >= cutoff(now)
           ) {
             await db.query(
-              `INSERT INTO discovery_daily_metrics (repo_id,day,observed_at,stars,forks)
-            VALUES ($1,$2::date,$3,$4,$5) ON CONFLICT (repo_id,day) DO UPDATE SET
+              `INSERT INTO discovery_daily_metrics (world_id,repo_id,day,observed_at,stars,forks)
+            VALUES ($1,$2,$3::date,$4,$5,$6) ON CONFLICT (world_id,repo_id,day) DO UPDATE SET
             observed_at = excluded.observed_at, stars = excluded.stars, forks = excluded.forks
             WHERE excluded.observed_at >= discovery_daily_metrics.observed_at`,
               [
+                worldId,
                 observation.id,
                 day(observation.observedAt),
                 observation.observedAt,
@@ -238,8 +281,8 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           now,
         ]);
         await db.query(
-          "UPDATE discovery_sync_state SET lease_until = GREATEST(lease_until,$1) WHERE id = 1",
-          [until],
+          "UPDATE discovery_sync_state SET lease_until = GREATEST(lease_until,$1) WHERE id = $2",
+          [until, worldId],
         );
         await retain(db, now);
       }),
@@ -253,19 +296,23 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
           [lease.runId, error.slice(0, 2000), now],
         );
         await db.query(
-          "UPDATE discovery_sync_state SET lease_until = NULL, retry_at = $1 WHERE id = 1",
-          [retryAt ?? null],
+          "UPDATE discovery_sync_state SET lease_until = NULL, retry_at = $1 WHERE id = $2",
+          [retryAt ?? null, worldId],
         );
+        if (error === "GitHub rate limited" && retryAt != null) {
+          await db.query(
+            "UPDATE discovery_sync_state SET github_retry_at = GREATEST(github_retry_at,$1) WHERE id = 1",
+            [retryAt],
+          );
+        }
       }),
     publish: (lease, now, snapshot) =>
       locked(async (db) => {
         const current = await state(db);
         requireLease(current, lease, now);
-        const blocked = (
-          await db.query<{ id: string }>(
-            "SELECT id FROM discovery_repositories WHERE observation->>'isPublic' IS DISTINCT FROM 'true'",
-          )
-        ).rows.map((r) => r.id);
+        const blocked = (await db.query<{ id: string }>(BLOCKED_REPOSITORIES, [worldId])).rows.map(
+          (r) => r.id,
+        );
         await db.query(
           `UPDATE discovery_runs SET status = 'completed', snapshot = $2,
         completed_at = $3, updated_at = $3, error = NULL WHERE id = $1 AND status = 'running'`,
@@ -273,15 +320,16 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
         );
         await db.query(
           `UPDATE discovery_sync_state SET published_run_id = $1,
-        current_run_id = NULL, lease_until = NULL, retry_at = NULL WHERE id = 1`,
-          [lease.runId],
+        current_run_id = NULL, lease_until = NULL, retry_at = NULL WHERE id = $2`,
+          [lease.runId, worldId],
         );
         await retain(db, now);
       }),
     async repositories() {
       return (
         await pool.query<{ observation: StoredRepository; first_seen_at: number }>(
-          'SELECT observation,first_seen_at FROM discovery_repositories ORDER BY id COLLATE "C"',
+          'SELECT observation,first_seen_at FROM discovery_repositories WHERE world_id = $1 ORDER BY id COLLATE "C"',
+          [worldId],
         )
       ).rows.map((row) => ({ ...row.observation, firstSeenAt: row.first_seen_at }));
     },
@@ -290,18 +338,20 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
       return (
         await pool.query<DailyMetric>(
           `SELECT repo_id AS "repoId", observed_at AS "observedAt", stars,forks
-        FROM discovery_daily_metrics WHERE observed_at >= $1 ORDER BY observed_at,repo_id COLLATE "C"`,
-          [since],
+        FROM discovery_daily_metrics WHERE world_id = $1 AND observed_at >= $2 ORDER BY observed_at,repo_id COLLATE "C"`,
+          [worldId, since],
         )
       ).rows;
     },
     async snapshot() {
       const row = (
-        await pool.query<{ snapshot: DiscoverySnapshot; blocked_ids: string[] }>(`
-        SELECT r.snapshot, ARRAY(SELECT id FROM discovery_repositories
-          WHERE observation->>'isPublic' IS DISTINCT FROM 'true') AS blocked_ids
+        await pool.query<{ snapshot: DiscoverySnapshot; blocked_ids: string[] }>(
+          `
+        SELECT r.snapshot, ARRAY(${BLOCKED_REPOSITORIES}) AS blocked_ids
         FROM discovery_runs r JOIN discovery_sync_state s ON s.published_run_id = r.id
-        WHERE s.id = 1 AND r.status = 'completed'`)
+        WHERE s.id = $1 AND r.world_id = $1 AND r.status = 'completed'`,
+          [worldId],
+        )
       ).rows[0];
       return publicSnapshot(row?.snapshot ?? null, row?.blocked_ids);
     },
@@ -310,6 +360,10 @@ export function createPostgresDiscovery(pool: Pool): DiscoveryStore {
 
 export function createMemoryDiscovery(): DiscoveryStore {
   const repositories = new Map<string, StoredRepository>();
+  const blockedIds = () =>
+    [...repositories.values()]
+      .filter((repo) => repo.isPublic !== true || repo.license === null)
+      .map((repo) => repo.id);
   const metrics = new Map<string, DailyMetric>();
   const state: State = {
     current_run_id: null,
@@ -357,9 +411,11 @@ export function createMemoryDiscovery(): DiscoveryStore {
       for (let observation of observations) {
         timestamp(observation.observedAt);
         countsTime(observation);
-        observation = protectCounts(nextRepos.get(observation.id), observation);
+        const existing = nextRepos.get(observation.id);
+        if (!canReplaceRevocation(existing, observation)) continue;
+        observation = protectCounts(existing, observation);
         const measuredAt = countsTime(observation);
-        nextRepos.set(observation.id, merge(nextRepos.get(observation.id), observation));
+        nextRepos.set(observation.id, merge(existing, observation));
         if (
           observation.isPublic !== true ||
           observation.countsMeasured !== true ||
@@ -395,10 +451,7 @@ export function createMemoryDiscovery(): DiscoveryStore {
     },
     async publish(lease, now, snapshot) {
       requireLease(state, lease, now);
-      const saved = publicSnapshot(
-        snapshot,
-        [...repositories.values()].filter((r) => r.isPublic !== true).map((r) => r.id),
-      );
+      const saved = publicSnapshot(snapshot, blockedIds());
       runs.get(lease.runId)!.snapshot = saved;
       runs.get(lease.runId)!.completedAt = now;
       state.published_run_id = lease.runId;
@@ -425,7 +478,7 @@ export function createMemoryDiscovery(): DiscoveryStore {
     async snapshot() {
       return publicSnapshot(
         state.published_run_id ? (runs.get(state.published_run_id)?.snapshot ?? null) : null,
-        [...repositories.values()].filter((r) => r.isPublic !== true).map((r) => r.id),
+        blockedIds(),
       );
     },
   };

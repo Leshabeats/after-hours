@@ -10,6 +10,7 @@ function raw(id: number) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     owner: { login: "fixture" },
     name: `engine-${id}`,
     description: "Game engine",

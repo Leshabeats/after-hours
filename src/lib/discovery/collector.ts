@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { readOssLicense } from "./license.ts";
 import { protectCounts, retainCounts } from "./measurements.ts";
+import {
+  discoveryIssueSchema,
+  ISSUE_BATCH_SIZE,
+  ISSUES_PER_PROJECT,
+  issueIndexQuery,
+  issueRepositorySchema,
+  parseIssueIndex,
+} from "./issues.ts";
 import {
   buildSnapshot,
   selectPublicationCandidates,
@@ -10,9 +19,16 @@ import {
   eligible,
   FORK_EXCEPTIONS,
 } from "./ranking.ts";
-import type { DiscoveryStore, Observation, StoredRepository } from "./types.ts";
+import {
+  ISSUE_MAX_AGE_MS,
+  WORLD_TAGS,
+  type DiscoveryStore,
+  type DiscoveryWorld,
+  type Observation,
+  type StoredRepository,
+} from "./types.ts";
 
-const TOPICS = [
+const GAME_TOPICS = [
   "game-engine",
   "game-development",
   "game-assets",
@@ -27,7 +43,7 @@ const TOPICS = [
 const LEASE_MS = 120_000;
 const MAX_CANDIDATES = 300;
 // Reserve equal space for each topic and each created/pushed query window.
-const MAX_QUERY_CANDIDATES = MAX_CANDIDATES / (TOPICS.length * 2);
+const MAX_QUERY_CANDIDATES = MAX_CANDIDATES / (GAME_TOPICS.length * 2);
 const MAX_ENRICH = 40;
 const MAX_REFRESH = 180;
 const MAX_EXCLUDED_RETRIES = 18;
@@ -58,9 +74,15 @@ const repoSchema = z.object({
   disabled: z.boolean().default(false),
   mirror_url: z.string().nullable().optional(),
   size: z.number().nonnegative().optional(),
+  license: z.unknown().optional(),
 });
 
-export function parseRepository(raw: unknown, now: number, source: string): Observation | null {
+export function parseRepository(
+  raw: unknown,
+  now: number,
+  source: string,
+  world: DiscoveryWorld = "games",
+): Observation | null {
   const parsed = repoSchema.safeParse(raw);
   if (!parsed.success) return null;
   const r = parsed.data;
@@ -94,7 +116,8 @@ export function parseRepository(raw: unknown, now: number, source: string): Obse
     fork: r.fork,
     mirror: Boolean(r.mirror_url),
     disabled: r.disabled || r.size === 0,
-    tags: classifyRepository(identity),
+    tags: classifyRepository(identity, world),
+    license: readOssLicense(r.license),
     source,
     releaseAt: null,
     mergedPrs: null,
@@ -116,9 +139,13 @@ const taskSchema = z.discriminatedUnion("kind", [
     preserveCounts: z.boolean().optional(),
   }),
   z.object({ kind: z.literal("activity"), id: z.string().regex(/^\d+$/) }),
+  z.object({
+    kind: z.literal("issues"),
+    repositories: z.array(issueRepositorySchema).min(1).max(ISSUE_BATCH_SIZE),
+  }),
 ]);
 const checkpointSchema = z.object({
-  version: z.literal(7),
+  version: z.literal(8),
   scanId: z.string().uuid(),
   startedAt: z.number(),
   index: z.number().int().nonnegative(),
@@ -127,6 +154,16 @@ const checkpointSchema = z.object({
   ids: z.array(z.string()).max(MAX_CANDIDATES),
   identityIds: z.array(z.string().regex(/^\d+$/)).max(1500),
   admissions: z.record(z.string(), z.number().int().min(0).max(MAX_QUERY_CANDIDATES)),
+  issues: z
+    .record(
+      z.string(),
+      z.object({
+        scope: z.string(),
+        checkedAt: z.number().int().nonnegative(),
+        issues: z.array(discoveryIssueSchema).max(ISSUES_PER_PROJECT),
+      }),
+    )
+    .default({}),
 });
 type Checkpoint = z.infer<typeof checkpointSchema>;
 
@@ -139,14 +176,24 @@ class Pause extends Error {
 }
 class Budget extends Error {}
 class RepositoryUnavailable extends Error {}
+type GitHubUsage = {
+  requests: number;
+  rateLimit?: { limit: number; remaining: number; resetAt: number };
+};
 export type CollectorResult = {
   status: "published" | "paused" | "partial" | "busy";
   requests: number;
   searchRequests: number;
+  elapsedMs: number;
+  githubUsage: Record<"core" | "search" | "graphql", GitHubUsage>;
   cards?: number;
+  generatedAt?: number;
+  retryAt?: number;
 };
 export type CollectorOptions = {
   store: DiscoveryStore;
+  world?: DiscoveryWorld;
+  collectIssues?: boolean;
   token?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -156,9 +203,14 @@ export type CollectorOptions = {
   maxDurationMs?: number;
 };
 
-function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
+function initialCheckpoint(
+  repos: StoredRepository[],
+  now: number,
+  world: DiscoveryWorld,
+): Checkpoint {
   const date = new Date(now - 30 * DAY).toISOString().slice(0, 10);
-  const tasks: Checkpoint["tasks"] = TOPICS.flatMap((topic) => [
+  const topics = world === "games" ? GAME_TOPICS : WORLD_TAGS[world].flatMap((tag) => tag.topics);
+  const tasks: Checkpoint["tasks"] = topics.flatMap((topic) => [
     {
       kind: "search" as const,
       q: `topic:${topic} created:>=${date} fork:false archived:false is:public`,
@@ -196,12 +248,14 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
   tasks.push(
     ...refresh.map((r) => ({ kind: "repo" as const, id: r.id, owner: r.owner, repo: r.repo })),
   );
-  for (const full of FORK_EXCEPTIONS) {
-    const [owner, repo] = full.split("/");
-    tasks.push({ kind: "repo", owner, repo });
+  if (world === "games") {
+    for (const full of FORK_EXCEPTIONS) {
+      const [owner, repo] = full.split("/");
+      tasks.push({ kind: "repo", owner, repo });
+    }
   }
   return {
-    version: 7,
+    version: 8,
     scanId: randomUUID(),
     startedAt: now,
     index: 0,
@@ -209,6 +263,7 @@ function initialCheckpoint(repos: StoredRepository[], now: number): Checkpoint {
     tasks,
     ids: [],
     admissions: {},
+    issues: {},
     identityIds: [],
   };
 }
@@ -227,7 +282,7 @@ function unavailable(repo: StoredRepository, now: number): Observation {
 }
 
 export async function collectDiscovery(options: CollectorOptions): Promise<CollectorResult> {
-  const { store } = options;
+  const { store, world = "games" } = options;
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -237,24 +292,41 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
   const maxRequests = Math.min(options.maxRequests ?? 500, 500);
   const maxSearch = Math.min(options.maxSearchRequests ?? 40, 40);
   let requests = 0,
-    searchRequests = 0,
     nextRequestAt = started,
     nextSearchAt = started;
+  const githubUsage: CollectorResult["githubUsage"] = {
+    core: { requests: 0 },
+    search: { requests: 0 },
+    graphql: { requests: 0 },
+  };
+  const result = (status: CollectorResult["status"]): CollectorResult => ({
+    status,
+    requests,
+    searchRequests: githubUsage.search.requests,
+    elapsedMs: Math.max(0, now() - started),
+    githubUsage,
+  });
   const lease = await store.acquire(started, LEASE_MS);
-  if (!lease) return { status: "busy", requests, searchRequests };
+  if (!lease) return result("busy");
 
-  async function request(path: string, search = false, redirects = 0): Promise<unknown | null> {
+  async function request(
+    path: string,
+    search = false,
+    redirects = 0,
+    query?: { query: string },
+  ): Promise<unknown | null> {
     const wait = Math.max(nextRequestAt, search ? nextSearchAt : 0) - now();
     if (
       requests >= maxRequests ||
-      (search && searchRequests >= maxSearch) ||
+      (search && githubUsage.search.requests >= maxSearch) ||
       now() + Math.max(wait, 0) >= deadline
     )
       throw new Budget();
     if (wait > 0) await sleep(wait);
     const at = now();
+    const usage = githubUsage[query ? "graphql" : search ? "search" : "core"];
+    usage.requests++;
     requests++;
-    if (search) searchRequests++;
     nextRequestAt = at + 500;
     if (search) nextSearchAt = at + 3100;
     const headers: Record<string, string> = {
@@ -263,15 +335,27 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       "X-GitHub-Api-Version": "2022-11-28",
     };
     if (options.token) headers.Authorization = `Bearer ${options.token}`;
+    if (query) headers["Content-Type"] = "application/json";
     let response: Response;
     try {
       response = await fetchImpl(`https://api.github.com${path}`, {
         headers,
         redirect: "manual",
         signal: AbortSignal.timeout(Math.max(1, Math.min(12_000, deadline - at))),
+        ...(query ? { method: "POST", body: JSON.stringify(query) } : {}),
       });
     } catch {
       throw new Pause("GitHub network unavailable", now() + 60_000);
+    }
+    const quotaHeaders = ["limit", "remaining", "reset"].map((key) =>
+      response.headers.get(`x-ratelimit-${key}`),
+    );
+    if (quotaHeaders.every((value) => value !== null && /^\d+$/.test(value))) {
+      const [limit, remaining, resetSeconds] = quotaHeaders.map(Number);
+      const resetAt = resetSeconds * 1000;
+      if ([limit, remaining, resetAt].every(Number.isSafeInteger) && remaining <= limit) {
+        usage.rateLimit = { limit, remaining, resetAt };
+      }
     }
     if ([301, 302, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
@@ -280,6 +364,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         /^\/(?:repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|repositories\/\d+)(?:\/(?:releases\/latest|pulls))?$/;
       if (
         search ||
+        query ||
         redirects >= 3 ||
         !target ||
         target.origin !== "https://api.github.com" ||
@@ -320,11 +405,24 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         `GitHub HTTP ${response.status}`,
         now() + (response.status >= 500 ? 60_000 : 15 * 60_000),
       );
+    let payload: unknown;
     try {
-      return await response.json();
+      payload = await response.json();
     } catch {
       throw new Pause("Invalid GitHub response", now() + 60_000);
     }
+    if (query) {
+      const errors = z
+        .object({
+          errors: z.array(z.object({ type: z.string().optional() })).optional(),
+        })
+        .safeParse(payload).data?.errors;
+      if (errors?.some(({ type }) => type === "RATE_LIMITED")) {
+        const reset = Number(response.headers.get("x-ratelimit-reset") ?? 0) * 1000;
+        throw new Pause("GitHub rate limited", Math.max(now() + 60_000, reset || 0));
+      }
+    }
+    return payload;
   }
 
   try {
@@ -333,12 +431,12 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       lease.checkpoint === null ||
       (typeof lease.checkpoint === "object" &&
         "version" in lease.checkpoint &&
-        [1, 2, 3, 4, 5, 6].includes(Number(lease.checkpoint.version)))
-        ? initialCheckpoint(existing, started)
+        [1, 2, 3, 4, 5, 6, 7].includes(Number(lease.checkpoint.version)))
+        ? initialCheckpoint(existing, started, world)
         : checkpointSchema.parse(lease.checkpoint);
     if (cp.index > cp.tasks.length) throw new Error("Invalid discovery checkpoint");
     // A multi-day interrupted scan restarts its date windows; prior writes remain idempotent.
-    if (now() - cp.startedAt > 2 * DAY) cp = initialCheckpoint(existing, now());
+    if (now() - cp.startedAt > 2 * DAY) cp = initialCheckpoint(existing, now(), world);
     await store.save(lease, now(), LEASE_MS, [], cp);
     let repos = new Map(existing.map((repo) => [repo.id, repo]));
     while (true) {
@@ -368,7 +466,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                 if (old) observations.push(unavailable(old, now()));
                 continue;
               }
-              const repo = parseRepository(item, now(), task.q);
+              const repo = parseRepository(item, now(), task.q, world);
               if (!repo) continue;
               repo.countsSource = "search";
               repo.countsScanId = cp.scanId;
@@ -409,11 +507,12 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               ? old
                 ? unavailable(old, now())
                 : null
-              : parseRepository(raw, now(), "refresh");
+              : parseRepository(raw, now(), "refresh", world);
             if (confirmedPublic && !repo) throw new Error("Invalid GitHub repository metadata");
             if (repo && id && repo.id !== id)
               throw new Error("GitHub repository identity mismatch");
             if (repo?.isPublic === true) {
+              repo.identityVerified = Boolean(id);
               repo.countsSource = id ? "repository" : "search";
               repo.countsScanId = cp.scanId;
             }
@@ -432,6 +531,18 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
               repo = retainCounts(repo, old);
             }
             if (repo) observations.push(repo);
+          } else if (task.kind === "issues") {
+            const payload = await request("/graphql", false, 0, issueIndexQuery(task.repositories));
+            const checkedAt = now();
+            for (const entry of parseIssueIndex(payload, task.repositories, checkedAt)) {
+              if (entry.issues === null) {
+                const previous = repos.get(entry.id);
+                if (previous) observations.push(unavailable(previous, checkedAt));
+                delete cp.issues[entry.id];
+              } else {
+                cp.issues[entry.id] = { scope: entry.scope, checkedAt, issues: entry.issues };
+              }
+            }
           } else {
             const repo = repos.get(task.id);
             if (repo && eligible(repo)) {
@@ -485,11 +596,17 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
                 mergedPrs,
                 activityCheckedAt: now(),
                 countsMeasured: false,
+                identityVerified: false,
               });
             }
           }
         } catch (error) {
-          if (!(error instanceof RepositoryUnavailable) || task.kind === "search") throw error;
+          if (
+            !(error instanceof RepositoryUnavailable) ||
+            task.kind === "search" ||
+            task.kind === "issues"
+          )
+            throw error;
           const previous =
             task.kind === "activity"
               ? repos.get(task.id)
@@ -560,7 +677,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       if (cp.phase === "activity") {
         // Validate only the bounded publication candidates, including fresh rows outside
         // the rotating refresh budget. Cached slugs must never decide repository identity.
-        const candidates = selectPublicationCandidates(current, metrics, now());
+        const candidates = selectPublicationCandidates(current, metrics, now(), world);
         cp = {
           ...cp,
           phase: "identity",
@@ -578,7 +695,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       }
       const verified = new Set(cp.identityIds);
       const evaluatedAt = now();
-      const desired = selectPublicationCandidates(current, metrics, evaluatedAt);
+      const desired = selectPublicationCandidates(current, metrics, evaluatedAt, world);
       const desiredIds = new Set(desired.map((card) => card.id));
       const unverified = desired.filter(
         (card) => !verified.has(card.id) || evaluatedAt - card.observedAt > 2 * DAY,
@@ -604,7 +721,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         await store.save(lease, now(), LEASE_MS, [], cp);
         continue;
       }
-      const snapshot = buildSnapshot(current, metrics, evaluatedAt);
+      const snapshot = buildSnapshot(current, metrics, evaluatedAt, world);
       const urls = new Set(snapshot.cards.map((card) => card.url.toLowerCase()));
       if (urls.size !== snapshot.cards.length) {
         // Conflicting upstream metadata must be retried, never settled by score or slug dedupe.
@@ -623,8 +740,44 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         await store.save(lease, now(), LEASE_MS, [], cp);
         throw new Pause("Conflicting GitHub repository identities", now() + 60_000);
       }
+      if (options.collectIssues) {
+        const scope = (card: { owner: string; repo: string }) =>
+          `${card.owner}/${card.repo}`.toLowerCase();
+        // Replacement winners and renamed repositories get their own issue checks.
+        cp.issues = Object.fromEntries(
+          Object.entries(cp.issues).filter(([id]) => desiredIds.has(id)),
+        );
+        const pending = snapshot.cards.filter((card) => {
+          const checked = cp.issues[card.id];
+          return (
+            !checked ||
+            checked.scope !== scope(card) ||
+            evaluatedAt - checked.checkedAt >= ISSUE_MAX_AGE_MS
+          );
+        });
+        if (pending.length) {
+          const tasks: Checkpoint["tasks"] = [];
+          for (let offset = 0; offset < pending.length; offset += ISSUE_BATCH_SIZE) {
+            tasks.push({
+              kind: "issues",
+              repositories: pending
+                .slice(offset, offset + ISSUE_BATCH_SIZE)
+                .map(({ id, owner, repo }) => ({ id, owner, repo })),
+            });
+          }
+          cp = { ...cp, index: 0, tasks };
+          await store.save(lease, now(), LEASE_MS, [], cp);
+          continue;
+        }
+        for (const card of snapshot.cards) card.issues = cp.issues[card.id].issues;
+        snapshot.issuesIndexed = true;
+      }
       await store.publish(lease, now(), snapshot);
-      return { status: "published", requests, searchRequests, cards: snapshot.cards.length };
+      return {
+        ...result("published"),
+        cards: snapshot.cards.length,
+        generatedAt: snapshot.generatedAt,
+      };
     }
   } catch (error) {
     const paused = error instanceof Pause;
@@ -637,6 +790,9 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
           : "Discovery scan failed";
     await store.release(lease, now(), reason, paused ? error.retryAt : undefined);
     if (!(error instanceof Budget) && !paused) throw new Error(reason, { cause: error });
-    return { status: paused ? "paused" : "partial", requests, searchRequests };
+    return {
+      ...result(paused ? "paused" : "partial"),
+      ...(paused ? { retryAt: error.retryAt } : {}),
+    };
   }
 }

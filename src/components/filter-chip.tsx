@@ -15,7 +15,7 @@ export function FilterChip({
   return (
     <Comp
       className={cn(
-        "inline-flex h-11 shrink-0 items-center rounded-full px-4 text-xs tracking-wide transition-colors duration-150",
+        "inline-flex h-11 shrink-0 items-center rounded-full px-4 text-xs tracking-wide transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         active ? "bg-paper text-bg" : "text-muted shadow-border hover:text-fg",
         className,
       )}

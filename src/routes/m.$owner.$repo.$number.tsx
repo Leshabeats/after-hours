@@ -4,7 +4,7 @@ import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getMission } from "@/lib/api";
-import { defaultAgentPrompt } from "@/lib/agent-prompt";
+import { defaultAgentPrompt, mcpResearchPrompt } from "@/lib/agent-prompt";
 import { briefPrompt } from "@/lib/brief-prompt";
 import { repoIssuesLink } from "@/lib/repo-issues";
 import { KIND_META, relativeTime } from "@/lib/kinds";
@@ -78,7 +78,7 @@ function MissionPage() {
       </div>
 
       <p className="mt-6 font-mono text-xs uppercase tracking-caps text-accent">{meta.track}</p>
-      <p className="mt-3 font-mono text-xs text-muted">
+      <p className="mt-3 font-mono text-xs wrap-anywhere text-muted">
         {mission.owner}/{mission.repo}{" "}
         <span className="text-faint">
           {mission.isPr ? "PR" : "#"}
@@ -91,7 +91,7 @@ function MissionPage() {
           <span className="text-faint"> · {mission.comments} комм.</span>
         ) : null}
       </p>
-      <h1 className="mt-3 max-w-3xl font-display text-4xl italic leading-tight sm:text-5xl">
+      <h1 className="mt-3 max-w-3xl text-2xl font-medium leading-tight wrap-anywhere sm:text-4xl">
         {mission.title}
       </h1>
       <p className="mt-4 max-w-xl text-sm text-muted">{meta.duty}</p>
@@ -103,19 +103,21 @@ function MissionPage() {
         ))}
       </div>
 
-      <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        <Button asChild size="lg">
-          <Link to="/connect" search={{ mission: mission.id }}>
-            Исследовать своим агентом
-          </Link>
-        </Button>
+      <p className="mt-8 text-sm text-muted">
+        Твой агент исследует задачу. Опубликованный отчёт появится на этой странице.
+      </p>
+      <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         <Button
           type="button"
-          variant="ghost"
           size="lg"
-          onClick={() => copyPrompt(defaultAgentPrompt(mission), "Протокол агента скопирован")}
+          onClick={() => copyPrompt(mcpResearchPrompt(mission.id), "Задание скопировано")}
         >
-          Протокол агента
+          Скопировать задание
+        </Button>
+        <Button asChild variant="ghost" size="lg">
+          <Link to="/connect" search={{ mission: mission.id }}>
+            Настроить MCP
+          </Link>
         </Button>
         <Button asChild variant="ghost" size="lg">
           <a href={mission.url} target="_blank" rel="noreferrer">
@@ -156,14 +158,22 @@ function MissionPage() {
           Скопируй задание для своего агента: суть, шаги и риски. Для сохранения публичного отчёта
           подключи After Hours через MCP.
         </p>
-        <Button
-          className="mt-6"
-          variant="paper"
-          size="lg"
-          onClick={() => void copyPrompt(briefPrompt(mission), "Задание скопировано")}
-        >
-          Скопировать разбор
-        </Button>
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          <Button
+            variant="paper"
+            size="lg"
+            onClick={() => void copyPrompt(briefPrompt(mission), "Задание скопировано")}
+          >
+            Скопировать разбор
+          </Button>
+          <Button
+            variant="ghost"
+            size="lg"
+            onClick={() => copyPrompt(defaultAgentPrompt(mission), "Протокол агента скопирован")}
+          >
+            Протокол агента
+          </Button>
+        </div>
       </section>
     </NightShell>
   );

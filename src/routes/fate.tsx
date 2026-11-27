@@ -1,178 +1,109 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
+import { CatalogFilters } from "@/components/catalog-filters";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
-import { CatalogFilters } from "@/components/catalog-filters";
-import { DiscoveryDetails, DiscoveryStatus } from "@/components/project-card";
-import { fateProjects } from "@/lib/discovery/presentation";
-import type { DiscoveryCard } from "@/lib/discovery/types";
-import { getProjects } from "@/lib/api";
+import { getFateMissions } from "@/lib/api";
 import { getCategory, parseCatalogSearch, parseCategoryId } from "@/lib/catalog";
-import type { ProjectCard } from "@/lib/github-live";
+import { excerptOf } from "@/lib/kinds";
+import type { PublicMission } from "@/lib/mcp/missions";
 
 export const Route = createFileRoute("/fate")({
   validateSearch: parseCatalogSearch,
-  loaderDeps: ({ search }) => ({ cat: search.cat, lang: search.lang }),
+  loaderDeps: ({ search }) => search,
   loader: ({ deps }) =>
-    getProjects({
+    getFateMissions({
       data: {
-        category: deps.cat,
+        category: parseCategoryId(deps.cat),
         language: deps.lang,
+        tag: deps.tag,
+        view: deps.view,
       },
     }),
   pendingComponent: function FatePending() {
     return (
       <NightShell>
-        <p className="font-mono text-xs uppercase tracking-caps text-muted">Загрузка эфира</p>
+        <p className="font-mono text-xs uppercase tracking-caps text-muted">
+          Проверяем открытые задачи
+        </p>
       </NightShell>
     );
   },
   component: FatePage,
 });
 
-type FateProject = ProjectCard | DiscoveryCard;
-
-function pick(projects: FateProject[], avoid?: string) {
-  const pool = avoid
-    ? projects.filter((project) => `${project.owner}/${project.repo}` !== avoid)
-    : projects;
-  const list = pool.length ? pool : projects;
-  return list[Math.floor(Math.random() * list.length)];
-}
-
 function FatePage() {
-  const shelf = Route.useLoaderData();
+  const { issues, start, unavailable } = Route.useLoaderData();
   const search = Route.useSearch();
-  const projects = useMemo(() => fateProjects(shelf, search), [shelf, search]);
   const cat = parseCategoryId(search.cat);
-  const lang = search.lang;
   const category = getCategory(cat);
-  const [spinning, setSpinning] = useState(true);
-  const [project, setProject] = useState<FateProject | null>(null);
-  const reduced = usePrefersReducedMotion();
-
-  const strip = useMemo(() => {
-    if (projects.length === 0) return [];
-    const times = Math.max(8, Math.ceil(24 / projects.length));
-    return Array.from({ length: times }, () => projects).flat();
-  }, [projects]);
-
-  useEffect(() => {
-    setProject(null);
-    if (projects.length === 0) {
-      setSpinning(false);
-      return;
-    }
-    if (reduced) {
-      setProject(pick(projects));
-      setSpinning(false);
-      return;
-    }
-    setSpinning(true);
-    const chosen = pick(projects);
-    const id = window.setTimeout(() => {
-      setProject(chosen);
-      setSpinning(false);
-    }, 2200);
-    return () => window.clearTimeout(id);
-  }, [projects, reduced]);
-
-  function reroll() {
-    const next = pick(projects, project ? `${project.owner}/${project.repo}` : undefined);
-    if (reduced) {
-      setProject(next);
-      return;
-    }
-    setSpinning(true);
-    window.setTimeout(() => {
-      setProject(next);
-      setSpinning(false);
-    }, 1800);
-  }
 
   return (
     <NightShell>
       <p className="font-mono text-xs uppercase tracking-caps text-accent">Как повезёт</p>
       <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">Ночь решает</h1>
       <p className="mt-4 max-w-lg text-sm leading-relaxed text-muted">
-        Один проект
-        {lang ? ` экосистемы ${lang}` : ` направления ${category.label}`}. Ишью уже внутри.
+        Открытая задача для исследования · {category.label}
+        {search.lang ? ` · ${search.lang}` : ""}
       </p>
-
-      <CatalogFilters to="/fate" cat={cat} lang={lang} tag={search.tag} view={search.view} />
-      {cat === "games" ? (
-        <>
-          <DiscoveryStatus discovery={shelf.discovery} />
-          <p className="mt-2 text-xs leading-relaxed text-faint">
-            Область и тип находки фильтруют ежедневную подборку. Проекты с полки и экосистема языка
-            тоже участвуют в выборе.
-          </p>
-        </>
-      ) : null}
-
-      {projects.length === 0 ? (
-        <p className="mt-10 text-sm text-muted">В этой полосе ночь пустая.</p>
+      <CatalogFilters to="/fate" cat={cat} lang={search.lang} tag={search.tag} view={search.view} />
+      {issues.length ? (
+        <FateChoice
+          key={issues.map((issue) => issue.missionId).join("|")}
+          issues={issues}
+          start={start}
+        />
       ) : (
-        <div className="relative mt-10 overflow-hidden rounded-xl bg-surface shadow-border">
-          {spinning ? (
-            <div className="relative h-72 overflow-hidden">
-              <ul className="spin-strip py-8">
-                {strip.map((item, i) => (
-                  <li
-                    key={`${"id" in item ? `github:${item.id}` : `${item.owner}/${item.repo}`}-${i}`}
-                    className="px-6 py-3 font-display text-2xl italic text-fg/80 sm:text-3xl"
-                  >
-                    {item.repo}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : project ? (
-            <div className="stagger-in flex gap-5 border-l-2 border-accent px-6 py-10 sm:px-10">
-              <img
-                src={project.logoUrl}
-                alt=""
-                width={64}
-                height={64}
-                className="size-16 shrink-0 rounded-lg bg-bg object-cover"
-              />
-              <div>
-                <p className="font-mono text-xs text-muted">{project.owner}</p>
-                <h2 className="mt-2 font-display text-4xl italic leading-none">{project.repo}</h2>
-                <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
-                  {project.description}
-                </p>
-                {"firstSeenAt" in project ? <DiscoveryDetails project={project} /> : null}
-                <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                  <Button asChild size="lg">
-                    <Link
-                      to="/r/$owner/$repo"
-                      params={{ owner: project.owner, repo: project.repo }}
-                    >
-                      Открыть ишью
-                    </Link>
-                  </Button>
-                  <Button type="button" variant="ghost" size="lg" onClick={reroll}>
-                    Ещё раз
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : null}
+        <div className="mt-8 space-y-4">
+          <p role="status" className="text-sm text-muted">
+            {unavailable
+              ? "GitHub сейчас недоступен. В каталоге сохранена последняя подборка."
+              : "Для этих фильтров пока нет подходящих открытых задач."}
+          </p>
+          <Button asChild variant="ghost">
+            <Link to="/list" search={search}>
+              Перейти в каталог
+            </Link>
+          </Button>
         </div>
       )}
     </NightShell>
   );
 }
 
-function usePrefersReducedMotion() {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(mq.matches);
-    const onChange = () => setReduced(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
+function FateChoice({ issues, start }: { issues: PublicMission[]; start: number }) {
+  const [selected, setSelected] = useState(start);
+  const issue = issues[selected];
+
+  function reroll() {
+    const offset = 1 + Math.floor(Math.random() * (issues.length - 1));
+    setSelected((current) => (current + offset) % issues.length);
+  }
+
+  return (
+    <section
+      className="stagger-in mt-8 min-w-0 rounded-xl border-l-2 border-accent bg-surface p-5 wrap-anywhere shadow-border sm:p-8"
+    >
+      <p className="font-mono text-xs text-muted">
+        {issue.owner}/{issue.repo} · #{issue.number}
+      </p>
+      <h2 className="mt-2 text-xl font-medium leading-snug sm:text-2xl">{issue.title}</h2>
+      <p className="mt-3 text-sm leading-relaxed text-muted">{excerptOf(issue.body)}</p>
+      <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+        <Button asChild size="lg">
+          <Link
+            to="/m/$owner/$repo/$number"
+            params={{ owner: issue.owner, repo: issue.repo, number: String(issue.number) }}
+          >
+            Открыть задачу
+          </Link>
+        </Button>
+        {issues.length > 1 ? (
+          <Button type="button" variant="ghost" size="lg" onClick={reroll}>
+            Ещё раз
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  );
 }

@@ -12,6 +12,7 @@ function raw(patch: Record<string, unknown> = {}) {
   return {
     id: 1,
     private: false,
+    license: { spdx_id: "MIT" },
     visibility: "public",
     owner: { login: "public-owner" },
     name: "public-engine",

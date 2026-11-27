@@ -10,6 +10,7 @@ function raw(id: number) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     visibility: "public",
     owner: { login: "fixture" },
     name: `engine-${id}`,
@@ -37,7 +38,7 @@ async function publication(store: DiscoveryStore) {
     releaseAt: NOW - 4 * DAY,
   });
   const checkpoints = {
-    version: 7,
+    version: 8,
     scanId: "11111111-1111-4111-8111-111111111111",
     startedAt: NOW,
     index: 0,

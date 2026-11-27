@@ -1,51 +1,67 @@
-import type { CatalogSearch } from "../catalog.ts";
-import type { ProjectCard, ProjectShelf } from "../github-live.ts";
-import type { DiscoveryCard, DiscoveryLoad } from "./types.ts";
+import { parseCategoryId, type CatalogSearch } from "../catalog.ts";
+import {
+  ISSUE_MAX_AGE_MS,
+  isDiscoveryWorld,
+  type DiscoveryCard,
+  type DiscoveryLoad,
+} from "./types.ts";
+
+type DiscoveryFilters = Omit<CatalogSearch, "lang" | "tag"> & { lang?: string; tag?: string };
 
 export const DISCOVERY_BADGES = {
   new: "Недавно создан",
   discovered: "Недавно найден",
+  active: "Активен",
   growing: "Растёт",
 } as const;
 
 export function filterDiscovery(
   cards: DiscoveryCard[] | null | undefined,
-  search: CatalogSearch,
+  search: DiscoveryFilters,
 ): DiscoveryCard[] {
-  if (search.cat !== "games") return [];
+  const world = parseCategoryId(search.cat);
+  if (!isDiscoveryWorld(world)) return [];
   return (cards ?? []).filter(
     (card) =>
       card.isPublic === true &&
+      (card.world ?? "games") === world &&
       (!search.lang || card.language?.toLowerCase() === search.lang.toLowerCase()) &&
-      (!search.tag || card.tags.includes(search.tag)) &&
+      (!search.tag || card.tags.some((tag) => tag === search.tag)) &&
       (!search.view || search.view === "all" || card.badges.includes(search.view)),
   );
 }
 
-export function fateProjects(
-  shelf: ProjectShelf,
-  search: CatalogSearch,
-): (ProjectCard | DiscoveryCard)[] {
-  const ids = new Set<string>();
-  const discovery = filterDiscovery(shelf.discovery?.cards, search).filter((card) => {
-    if (ids.has(card.id)) return false;
-    ids.add(card.id);
-    return true;
-  });
-  // Curated shelves lack stable IDs. Suppress their URL duplicates without merging
-  // distinct discovery identities, even if an older snapshot retained a reused slug.
-  const slugs = new Set(discovery.map((card) => `${card.owner}/${card.repo}`.toLowerCase()));
-  const curated = [...shelf.ecosystem, ...shelf.direction, ...shelf.libraries].filter((project) => {
-    const slug = `${project.owner}/${project.repo}`.toLowerCase();
-    if (slugs.has(slug)) return false;
-    slugs.add(slug);
-    return true;
-  });
-  return [...discovery, ...curated];
+export function recentDiscoveryIssues(card: DiscoveryCard, now: number) {
+  if (card.isPublic !== true) return [];
+  return (card.issues ?? []).filter(
+    (issue) => issue.checkedAt <= now && now - issue.checkedAt < ISSUE_MAX_AGE_MS,
+  );
+}
+
+export function indexedIssues(cards: DiscoveryCard[], search: DiscoveryFilters, now: number) {
+  return filterDiscovery(cards, search)
+    .flatMap((card) =>
+      recentDiscoveryIssues(card, now).map((issue, index) => ({
+        ...issue,
+        rank: index,
+        owner: card.owner,
+        repo: card.repo,
+        repoId: card.id,
+      })),
+    )
+    .sort((a, b) => a.rank - b.rank);
 }
 
 export function discoveryDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString("ru-RU", { timeZone: "UTC" });
+}
+
+function discoveryTimestamp(timestamp: number): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(timestamp);
 }
 
 export function discoveryFreshness(discovery: DiscoveryLoad | undefined): string {
@@ -53,7 +69,7 @@ export function discoveryFreshness(discovery: DiscoveryLoad | undefined): string
     return "Ежедневная подборка сейчас недоступна. Ниже — проекты с полки.";
   if (discovery.updatedAt === null)
     return "Первая ежедневная подборка ещё не опубликована. Ниже — проекты с полки.";
-  return `Данные на ${discoveryDate(discovery.updatedAt)} (UTC). ${discovery.stale ? "Обновление задерживается; показана последняя подборка." : "Последняя завершённая подборка."}`;
+  return `Данные на ${discoveryTimestamp(discovery.updatedAt)} (UTC). ${discovery.stale ? "Обновление задерживается. Показана последняя подборка." : "Последняя опубликованная подборка."}`;
 }
 
 export function growthLabel(growth: DiscoveryCard["growth"]): string | null {

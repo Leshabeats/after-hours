@@ -15,6 +15,7 @@ function raw(id: number, stars: number) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     visibility: "public",
     owner: { login: "fixture" },
     name: `engine-${id}`,
@@ -135,7 +136,7 @@ async function priorProvisional(store: DiscoveryStore, source: "search" | undefi
   assert.ok(lease);
   const old = { ...measured(ID, SEARCH_AT, 50, randomUUID()), countsSource: source };
   const checkpoint = {
-    version: 7,
+    version: 8,
     scanId: lease.runId,
     startedAt: RESUME_AT,
     index: 0,

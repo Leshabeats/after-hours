@@ -3,13 +3,7 @@ import { KIND_META, relativeTime, type Mission } from "@/lib/kinds";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-export function MissionCard({
-  mission,
-  className,
-}: {
-  mission: Mission;
-  className?: string;
-}) {
+export function MissionCard({ mission, className }: { mission: Mission; className?: string }) {
   const meta = KIND_META[mission.kind];
 
   return (
@@ -21,14 +15,12 @@ export function MissionCard({
         number: String(mission.number),
       }}
       className={cn(
-        "group block rounded-lg bg-surface p-4 shadow-border transition-[box-shadow,transform] duration-150 ease-out hover:shadow-border-hover active:scale-[0.99]",
+        "group block min-w-0 rounded-lg bg-surface p-4 wrap-anywhere shadow-border transition-[box-shadow,transform] duration-150 ease-out hover:shadow-border-hover active:scale-[0.99]",
         className,
       )}
     >
       <div className="flex items-center justify-between gap-3">
-        <p className="font-mono text-xs uppercase tracking-caps text-accent">
-          {meta.track}
-        </p>
+        <p className="font-mono text-xs uppercase tracking-caps text-accent">{meta.track}</p>
         <span className="font-mono text-xs tabular-nums text-faint">
           {relativeTime(mission.updatedAt)}
         </span>
@@ -40,17 +32,13 @@ export function MissionCard({
           {mission.isPr ? "PR" : "#"}
           {mission.number}
         </span>
-        {mission.language ? (
-          <span className="text-faint"> · {mission.language}</span>
-        ) : null}
+        {mission.language ? <span className="text-faint"> · {mission.language}</span> : null}
       </p>
-      <h3 className="mt-2 font-display text-xl leading-snug text-fg group-hover:text-paper">
+      <h3 className="mt-2 text-lg font-medium leading-snug text-fg group-hover:text-paper">
         {mission.title}
       </h3>
       {mission.excerpt ? (
-        <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-muted">
-          {mission.excerpt}
-        </p>
+        <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-muted">{mission.excerpt}</p>
       ) : null}
       <div className="mt-4 flex flex-wrap gap-1.5">
         <Badge>{meta.label}</Badge>

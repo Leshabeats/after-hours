@@ -1,4 +1,9 @@
-# GameDev discovery
+# Catalog discovery
+
+The same bounded collector serves GameDev, Web, Linux, AI and Data. Each world
+owns its checkpoint, measurements and published PostgreSQL snapshot. Start the
+pilot with GameDev and Web. Linux, AI and Data use explicit topic aliases from
+`src/lib/discovery/types.ts`. Stars remains the curated popularity view.
 
 `cat=games` keeps existing links, with the GameDev label and tags for engines,
 tools, assets, emulation, Linux gaming, SteamOS/Deck, and Proton. Topic/description
@@ -12,6 +17,10 @@ Private/unknown refreshes revoke eligibility without copying the response metada
 or adding metrics. Both stores filter publication and reads; a known revocation
 also hides a prior completed card while the next run is incomplete. Legacy unmarked
 records/cards stay hidden until public metadata is fetched again.
+An explicit revocation hides the stable ID across worlds. Only a fresh stable-ID
+metadata response can restore it in the world that observed the revocation.
+The repository's GitHub license must match the collector's accepted SPDX IDs for
+new publication. A missing or unrecognized license is excluded.
 
 The daily feed is separate from the curated shelf and language libraries. No
 minimum star count is applied to discovery. `createdAt` is GitHub's creation time;
@@ -26,13 +35,13 @@ release or human merged PR from a bounded sample. No weekly history is fabricate
 on bootstrap. Stars and activity can still be manipulated; this is a discovery
 heuristic, not a trust certification. PR counts are a sample, not repository totals.
 
-The collector queries ten topics for recently created and recently pushed
-repositories, at most two pages per query. Overlapping 30-day windows handle late
+The collector queries up to ten topics per world for recently created and recently
+pushed repositories, at most two pages per query. Overlapping 30-day windows handle late
 indexing; incomplete API responses retain the checkpoint and prior publication.
-Search results are capped and are not exhaustive GitHub indexing. Each of the
-20 topic/window queries reserves 15 new IDs (300 total); overlapping or already
+Search results are capped and are not exhaustive GitHub indexing. Each topic/window
+query reserves 15 new IDs (300 total per world); overlapping or already
 stored IDs consume no additional admission slots. These counters persist across
-retries. Legacy version-1/2/3/4/5/6 checkpoints restart with the current admission and identity policy,
+retries. Legacy version 1–7 checkpoints restart with the current admission and identity policy,
 retaining stored observations and the last published snapshot. Search can update
 already stored IDs within its existing page/request bounds. Up to 180 existing
 repositories are additionally refreshed per scan. Eligible rows whose measurement
@@ -52,12 +61,13 @@ be identified from repository metadata alone.
 
 Per invocation: at most 500 HTTP requests, 40 search requests, 8 minutes; search
 requests are paced at least 3.1 seconds apart and all calls at least 0.5 seconds.
-GitHub rate limits and Retry-After take precedence. Transient failures persist a
+GitHub rate limits and Retry-After take precedence. Quota pauses are shared
+across worlds. Transient failures persist a world-specific
 retry time rather than sleeping through runner limits. Each successful task saves
 its cursor and observations atomically, renewing a fenced lease. Expired writers
 cannot save or publish. Run retries resume; scans interrupted for over 48 hours
 restart their query windows. Partial scans never replace the last complete JSON
-snapshot. A completed snapshot contains at most 100 cards: reserve the top 14
+snapshot. A completed snapshot contains at most 100 cards. Reserve an equal share
 per populated tag, sharing slots for multi-tag repositories, then fill spare slots
 by global relevance. Identity is deduplicated only by GitHub ID. Identity refresh
 starts with the fresh ranked set. An old eligible record can be added only as a
@@ -79,7 +89,7 @@ manufacture samples. The rotating stable-ID metadata queue samples new counts. E
 remeasure, including after a pause. Multi-tag fallbacks share slots,
 and fresh tag coverage is preserved within the same 100-candidate limit.
 
-The version-7 checkpoint records successful public metadata validations obtained
+The version-8 checkpoint records successful public metadata validations obtained
 through stable-ID requests. Search and slug-only responses never grant these
 identity receipts, including for a later replacement winner. If a later search or
 slug response overwrites metadata, any earlier identity receipt is invalidated.
@@ -104,29 +114,65 @@ array, an in-memory store and mock HTTP responses. It never opens a database or
 requests GitHub. Without arguments, the command performs a read-only GitHub scan
 into memory. Network requests do not execute repository code or download assets.
 
-Tests use mock responses and the existing isolated local PostgreSQL 17 test helper.
-They never load `.env.local` or use working database URLs. Migration 002 is additive;
-001 remains byte-for-byte unchanged. HTTP requests never execute migration DDL.
+Use `npm run catalog:sync -- --world web --fixture path/to/repos.json` for a
+Web dry run. The default world is `games`.
 
-## Activation (not performed by this PR)
+Tests use mock responses and isolated local PostgreSQL. They never load
+`.env.local` or use working database URLs. Migration 006 gives existing discovery
+rows to GameDev and preserves its published pointer and daily history. HTTP requests
+never execute migration DDL.
 
-1. Review and merge the stacked release dependency and this PR; production rollout
-   remains an explicit decision. Scheduled Actions require the workflow on main.
-2. Apply 002 through the versioned migrator to the approved database, after testing
-   the upgrade in a separate development branch.
+The CLI run summary reports elapsed time and request counts by GitHub rate-limit
+bucket. When GitHub supplies quota headers, each bucket includes the last observed
+limit, remaining quota and reset time. GraphQL remaining quota is in points.
+Use the Actions summaries from the pilot to calibrate cadence for the runner's
+token. All timestamps use Unix milliseconds.
+
+## Activation
+
+1. Review the catalog changes and verify hosted CI. Scheduled Actions require the
+   workflow on `main`. Confirm the production rollout before merging changes
+   that trigger Vercel's production deployment.
+2. Apply pending migrations through the versioned migrator to the approved database,
+   including 006 after testing the upgrade in a separate development branch.
 3. Create a dedicated database login restricted to SELECT/INSERT/UPDATE/DELETE on
    the four discovery tables. It must have no application-user/journal access,
    DDL rights or migration-owner privileges. Approve credential creation/transfer
-   separately, then store its pooled URL as Actions secret CATALOG_DATABASE_URL.
+   separately, then store its pooled URL as the `CATALOG_DATABASE_URL` secret
+   in the Actions `catalog-production` environment restricted to `main`.
    Do not reuse the application owner connection string.
-4. Copy `docs/examples/catalog-discovery.yml` to `.github/workflows/` and run once
-   manually after approval; verify run/snapshot counts and UI. Only then uncomment
-   the daily schedule. Do not use pull_request_target or expose secrets to PR jobs.
+4. Dispatch `.github/workflows/catalog-discovery.yml` on `main` with `world=pilot`
+   and verify the GameDev and Web snapshots and UI. Enable the daily schedule
+   after the manual run. Measure quota and snapshot age before increasing cadence.
+   Keep production credentials scoped to the scheduled/manual job.
 5. Monitor the last successful snapshot age and GitHub run summaries. Public repo
    standard runners are free under current GitHub terms; no paid runner, API,
    artifact upload or plan upgrade is configured. If the repo becomes private,
    reassess included quotas before activation. Scheduled jobs may be delayed or
    disabled after 60 days of repository inactivity; manual dispatch remains available.
 
-This is application ingestion, not a chat notification or digest automation.
-The workflow template is deliberately outside the active workflow directory.
+The workflow in `docs/examples/` is an inactive reference.
+
+## Research candidates
+
+A write run indexes open issues for the verified publication winners through
+batched GitHub GraphQL read queries, within the same request budget. An issue
+needs a focused description with reproduction steps, a concrete file, or both
+expected and observed behavior. The scope check allows at most 4,000 characters
+of prose and five checklist items, excluding fenced code and log blocks.
+Assigned issues and issues with a detected open
+or merged closing PR are excluded. PR checks are bounded and incomplete PR
+connections do not nominate a task. Each world publishes at most two suggestions
+per project. A failed issue batch preserves the previous snapshot.
+
+The catalog links to the last checked issues for up to 48 hours. «Как повезёт»
+and MCP pick from the same references and also check on GitHub that a recommended
+issue is still open and the source remains public and licensed. Repo history and
+issue snapshots remain separate from direct mission or report viewing.
+
+## Rollback
+
+If the rollout must be rolled back after 006, stop the new collector before
+restoring earlier application code. The previous frontend can still read the
+GameDev snapshot at state row 1. The previous collector's conflict keys predate
+the migration, so leave its schedule disabled while 006 is applied.

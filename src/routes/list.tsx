@@ -6,7 +6,7 @@ import { UrlIntake } from "@/components/url-intake";
 import { CatalogFilters } from "@/components/catalog-filters";
 import { filterDiscovery } from "@/lib/discovery/presentation";
 import type { ProjectCard as Project } from "@/lib/github-live";
-import type { DiscoveryCard } from "@/lib/discovery/types";
+import { isDiscoveryWorld, type DiscoveryCard } from "@/lib/discovery/types";
 import { getProjects } from "@/lib/api";
 import { LANGUAGES, getCategory, parseCatalogSearch, parseCategoryId } from "@/lib/catalog";
 
@@ -71,71 +71,62 @@ function ListPage() {
         <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">
           {language ? language.label : category.label}
         </h1>
-        <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
-          {language
-            ? `${category.label} и ${language.label} вместе: сверху экосистема языка, ниже проекты этого направления на нём и библиотеки.`
-            : `Проекты направления ${category.label}. Язык добавит его экосистему и библиотеки. Ишью открываются внутри.`}
-        </p>
-        <p className="mt-2 font-mono text-xs text-faint">
-          {cat === "games"
-            ? shelf.live
-              ? "Проекты с полки: данные загружены с GitHub."
-              : "Проекты с полки: сохранённые описания."
-            : shelf.live
-              ? "Эфир GitHub открыт."
-              : "Описания с полки. Логотипы подтянутся, когда эфир ответит."}
-        </p>
-      </div>
-
-      <div className="mt-8 max-w-xl">
-        <UrlIntake />
+        {language ? (
+          <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted">
+            {category.label} и {language.label} вместе: экосистема языка, проекты направления и
+            библиотеки.
+          </p>
+        ) : null}
+        {isDiscoveryWorld(cat) ? (
+          <DiscoveryStatus discovery={shelf.discovery} />
+        ) : (
+          <p className="mt-2 text-xs text-faint">
+            {shelf.live
+              ? "Проекты направления с редакционной полки. Данные карточек обновляются из GitHub."
+              : "Показаны сохранённые описания проектов."}
+          </p>
+        )}
       </div>
 
       <CatalogFilters to="/list" cat={cat} lang={lang} tag={search.tag} view={search.view} />
 
       <label className="sr-only" htmlFor="project-search">
-        Поиск
+        Найти проект в каталоге
       </label>
       <input
         id="project-search"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="Проект"
+        placeholder="Найти проект в каталоге"
         suppressHydrationWarning
         className="mt-4 h-12 w-full max-w-md rounded-md bg-surface px-4 text-sm text-fg placeholder:text-faint shadow-border focus:outline-none focus:ring-2 focus:ring-accent/70"
       />
 
-      {cat === "games" ? (
-        <section className="mt-10" aria-label="Ежедневные находки GameDev">
+      {shelf.discovery?.updatedAt != null ? (
+        <section className="mt-6" aria-label={`Ежедневные находки ${category.label}`}>
           <h2 className="font-mono text-xs uppercase tracking-caps text-muted">
-            Ежедневные находки GameDev
+            Ежедневные находки {category.label}
           </h2>
-          <DiscoveryStatus discovery={shelf.discovery} />
-          <p className="mt-2 text-xs leading-relaxed text-faint">
-            «Создан» — возраст репозитория. «Найден» — первое обнаружение каталогом. Область и тип
-            находки фильтруют эту секцию.
-          </p>
           {filtered.discovery.length ? (
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               {filtered.discovery.map((project) => (
                 <ProjectCard key={`github:${project.id}`} project={project} />
               ))}
             </div>
-          ) : shelf.discovery?.status !== "unavailable" && shelf.discovery?.updatedAt != null ? (
+          ) : (
             <p className="mt-4 text-sm text-muted">
               {shelf.discovery.cards.length
                 ? "По выбранным фильтрам находок пока нет."
                 : "В опубликованной подборке пока нет находок."}
             </p>
-          ) : null}
+          )}
         </section>
       ) : null}
-
       <ProjectSection title="Экосистема" projects={filtered.ecosystem} />
       <ProjectSection
         title={
-          cat === "games"
-            ? "GameDev · с полки"
+          isDiscoveryWorld(cat)
+            ? `${category.label} · с полки`
             : language
               ? `В направлении ${category.label}`
               : category.label
@@ -150,6 +141,14 @@ function ListPage() {
       0 ? (
         <p className="mt-12 text-sm text-muted">В этой полосе ночь пустая.</p>
       ) : null}
+      <details className="mt-8 max-w-xl">
+        <summary className="w-fit cursor-pointer rounded-sm py-2 text-sm text-fg">
+          Открыть задачу по ссылке
+        </summary>
+        <div className="mt-3">
+          <UrlIntake />
+        </div>
+      </details>
     </NightShell>
   );
 }
@@ -163,9 +162,9 @@ function ProjectSection({
 }) {
   if (projects.length === 0) return null;
   return (
-    <section className="mt-10">
+    <section className="mt-6">
       <h2 className="font-mono text-xs uppercase tracking-caps text-muted">{title}</h2>
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         {projects.map((project) => (
           <ProjectCard
             key={"id" in project ? `github:${project.id}` : `${project.owner}/${project.repo}`}

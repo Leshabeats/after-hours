@@ -7,11 +7,15 @@ export type AgentPromptMission = {
   isPr: boolean;
 };
 
+export function mcpResearchPrompt(mission?: string): string {
+  return mission
+    ? `Получи задачу ${mission} через After Hours MCP, создай исследование и изучи её. Сохрани выводы, ссылки на доказательства и открытые вопросы. Опубликуй отчёт в After Hours и пришли ссылку. Используй GitHub только для чтения.`
+    : "Подбери небольшую открытую OSS-задачу через After Hours MCP. Исследуй её и опубликуй в After Hours отчёт с выводами, ссылками на доказательства и открытыми вопросами. Пришли ссылку на отчёт. Используй GitHub только для чтения.";
+}
+
 export function defaultAgentPrompt(mission: AgentPromptMission) {
   const kind = mission.isPr ? "pull request" : "issue";
-  const task = mission.isPr
-    ? "Study this pull request."
-    : "Study this issue.";
+  const task = mission.isPr ? "Study this pull request." : "Study this issue.";
   return `You are researching a public open-source ${kind}. ${task}
 Do not implement a fix, open a pull request, post a comment, merge, or submit a review.
 

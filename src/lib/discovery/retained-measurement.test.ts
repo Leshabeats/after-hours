@@ -14,6 +14,7 @@ function raw(id: number, stars = MATURE.has(String(id)) ? 160 : 5) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     visibility: "public",
     owner: { login: "fixture" },
     name: `engine-${id}`,

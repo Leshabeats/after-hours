@@ -1,20 +1,31 @@
 # TEMPLATE ONLY: outside .github/workflows; this file does not activate automation.
-# Enabling requires approved migration002, restricted DB role/secret, and main merge.
-name: GameDev catalog discovery
+# Enabling requires approved migrations, restricted DB access, and main merge.
+name: Catalog discovery
 on:
   workflow_dispatch:
+    inputs:
+      world:
+        description: Run both pilot worlds or a single world
+        type: choice
+        options:
+          - pilot
+          - games
+          - web
+        default: pilot
   # Enable only after an explicit activation decision:
   # schedule:
   #   - cron: '17 7 * * *'
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 concurrency:
   group: catalog-discovery-production
   cancel-in-progress: false
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,7 +33,16 @@ jobs:
           node-version: "22"
       - run: npm install -g npm@11
       - run: npm ci --ignore-scripts
-      - run: npm run catalog:sync -- --write
+      - run: |
+          if [ "$CATALOG_WORLD" = pilot ]; then
+            result=0
+            npm run catalog:sync -- --world games --write || result=$?
+            npm run catalog:sync -- --world web --write || result=$?
+            exit "$result"
+          else
+            npm run catalog:sync -- --world "$CATALOG_WORLD" --write
+          fi
         env:
+          CATALOG_WORLD: ${{ inputs.world || 'pilot' }}
           GITHUB_TOKEN: ${{ github.token }}
           CATALOG_DATABASE_URL: ${{ secrets.CATALOG_DATABASE_URL }}
