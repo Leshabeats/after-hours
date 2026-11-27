@@ -142,8 +142,8 @@ token. All timestamps use Unix milliseconds.
    in the Actions `catalog-production` environment restricted to `main`.
    Do not reuse the application owner connection string.
 4. Dispatch `.github/workflows/catalog-discovery.yml` on `main` with `world=pilot`
-   and verify the GameDev and Web snapshots and UI. Enable the daily schedule
-   after the manual run. Measure quota and snapshot age before increasing cadence.
+   and verify the GameDev and Web snapshots and UI. The pilot schedule runs daily
+   at 07:17 UTC. Measure quota and snapshot age before increasing cadence.
    Keep production credentials scoped to the scheduled/manual job.
 5. Monitor the last successful snapshot age and GitHub run summaries. Public repo
    standard runners are free under current GitHub terms; no paid runner, API,

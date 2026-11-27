@@ -1,6 +1,8 @@
 name: Catalog discovery
 
 on:
+  schedule:
+    - cron: '17 7 * * *'
   workflow_dispatch:
     inputs:
       world:
