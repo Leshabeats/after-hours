@@ -125,6 +125,9 @@ never execute migration DDL.
 The CLI run summary reports elapsed time and request counts by GitHub rate-limit
 bucket. When GitHub supplies quota headers, each bucket includes the last observed
 limit, remaining quota and reset time. GraphQL remaining quota is in points.
+The workflow resumes a budget-limited pass (exit code 3) up to twice per world
+using the persisted checkpoint. A GitHub pause (exit code 2) allows the retry
+window to elapse before a later invocation.
 Use the Actions summaries from the pilot to calibrate cadence for the runner's
 token. All timestamps use Unix milliseconds.
 
