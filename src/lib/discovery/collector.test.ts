@@ -173,6 +173,24 @@ test("budget checkpoint resumes without duplicate repos/metrics and publishes on
   assert.deepEqual(snapshot?.cards[0].badges, ["discovered", "active"]);
 });
 
+test("a GitHub request aborted at the pass deadline can resume without a rate pause", async () => {
+  const store = createMemoryDiscovery();
+  const h = harness();
+  const result = await collectDiscovery({
+    store,
+    ...h,
+    maxDurationMs: 500,
+    fetchImpl: async () => {
+      h.advance(500);
+      throw new DOMException("Timed out", "TimeoutError");
+    },
+  });
+  assert.equal(result.status, "partial");
+  assert.equal(result.retryAt, undefined);
+  assert.equal(await store.snapshot(), null);
+  assert.equal((await collectDiscovery({ store, ...h })).status, "published");
+});
+
 test("rate limit persists pause and leaves prior snapshot intact", async () => {
   const store = createMemoryDiscovery();
   const h = harness();

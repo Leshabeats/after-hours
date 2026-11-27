@@ -324,6 +324,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
       throw new Budget();
     if (wait > 0) await sleep(wait);
     const at = now();
+    if (at >= deadline) throw new Budget();
     const usage = githubUsage[query ? "graphql" : search ? "search" : "core"];
     usage.requests++;
     requests++;
@@ -345,6 +346,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
         ...(query ? { method: "POST", body: JSON.stringify(query) } : {}),
       });
     } catch {
+      if (now() >= deadline) throw new Budget();
       throw new Pause("GitHub network unavailable", now() + 60_000);
     }
     const quotaHeaders = ["limit", "remaining", "reset"].map((key) =>
@@ -409,6 +411,7 @@ export async function collectDiscovery(options: CollectorOptions): Promise<Colle
     try {
       payload = await response.json();
     } catch {
+      if (now() >= deadline) throw new Budget();
       throw new Pause("Invalid GitHub response", now() + 60_000);
     }
     if (query) {
