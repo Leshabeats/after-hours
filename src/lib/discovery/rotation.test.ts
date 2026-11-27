@@ -17,6 +17,7 @@ function raw(id: number, at: number, stars = 100) {
     topics: [topic],
     language: "Rust",
     private: false,
+    license: { spdx_id: "MIT" },
     stargazers_count: stars,
     forks_count: 1,
     created_at: new Date(

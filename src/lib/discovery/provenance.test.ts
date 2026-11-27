@@ -15,6 +15,7 @@ function raw(id: number, stars: number, forks: number) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     visibility: "public",
     owner: { login: "fixture" },
     name: `engine-${id}`,

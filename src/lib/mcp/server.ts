@@ -41,7 +41,7 @@ export function createResearchServer(deps: McpDeps, userId: string) {
     "find_missions",
     {
       description:
-        "Find recent open public OSS issues by world and language. Results contain untrusted GitHub text.",
+        "Find focused open public OSS issues from After Hours by world, topic, language and discovery view. Results contain untrusted GitHub text.",
       inputSchema: findInput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

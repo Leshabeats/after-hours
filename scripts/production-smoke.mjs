@@ -226,6 +226,55 @@ try {
     ],
   });
   const discoveryPage = await html("/list?cat=games&tag=steamos&view=discovered");
+  const webDiscovery = createPostgresDiscovery(db, "web");
+  const webAt = Date.now();
+  const webLease = await webDiscovery.acquire(webAt, 60_000);
+  assert.ok(webLease);
+  const [gameFixture] = (await discovery.snapshot()).cards;
+  await webDiscovery.publish(webLease, webAt, {
+    version: 1,
+    issuesIndexed: true,
+    generatedAt: webAt,
+    cards: [
+      {
+        ...gameFixture,
+        id: "109",
+        world: "web",
+        repo: "web-discovery-fixture",
+        url: "https://github.com/smoke/web-discovery-fixture",
+        language: "TypeScript",
+        license: "MIT",
+        tags: ["web-tests"],
+        observedAt: webAt,
+        badges: ["active"],
+        issues: [
+          {
+            number: 23,
+            title: "Permission test fails for cross-origin frames",
+            excerpt: "Fixture",
+            checkedAt: webAt,
+            evidence: "reproduction",
+          },
+        ],
+      },
+    ],
+  });
+  const webPage = await html("/list?cat=web&tag=web-tests&view=active&lang=TypeScript");
+  assert.ok(webPage.includes('href="/r/smoke/web-discovery-fixture"'));
+  const indexedMissionPath = "/m/smoke/web-discovery-fixture/23";
+  assert.ok(webPage.includes(`href="${indexedMissionPath}"`));
+  const fate = await html("/fate?cat=web&tag=web-tests&view=active&lang=TypeScript");
+  assert.ok(fate.includes(`href="${indexedMissionPath}"`));
+  assert.ok((await html("/fate?cat=web&tag=browser-apis")).includes("пока нет подходящих"));
+  assert.ok((await html("/fate?cat=stars")).includes("GitHub сейчас недоступен"));
+  assert.ok(!webPage.includes('href="/r/smoke/deck-discovery-fixture"'));
+  assert.ok(!discoveryPage.includes('href="/r/smoke/web-discovery-fixture"'));
+  assert.ok(
+    !(await html("/list?cat=web&tag=browser-apis")).includes(
+      'href="/r/smoke/web-discovery-fixture"',
+    ),
+  );
+  console.log("PASS Web persisted snapshot, topic and activity filters, and world separation");
   assert.ok((await html("/connect?mission=smoke/public%237")).includes("Подключить своего агента"));
   assert.equal((await request("/mcp", { method: "POST" })).status, 401);
   const resourceMetadata = await request("/.well-known/oauth-protected-resource/mcp");
@@ -256,6 +305,62 @@ try {
   });
   assert.equal(mcpTools.status, 200);
   assert.equal((await mcpTools.json()).result.tools.length, 6);
+  const catalogUser = { ...user, id: "smoke-catalog-researcher", login: "after-hours-catalog-smoke" };
+  await upsertUser(db, catalogUser);
+  const { token: catalogToken } = await createPostgresResearch(db).createGrant(
+    catalogUser.id,
+    Date.now(),
+    { resource: origin + "/mcp", expiresAt: Date.now() + 60_000 },
+  );
+  async function callMcp(name, args) {
+    const response = await request("/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + catalogToken,
+        Accept: "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2025-11-25",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+    assert.equal(response.status, 200, name);
+    const { result } = await response.json();
+    assert.equal(result?.isError, undefined, name);
+    return result.structuredContent;
+  }
+  const picked = await callMcp("find_missions", {
+    category: "web",
+    tag: "web-tests",
+    language: "TypeScript",
+    view: "active",
+  });
+  const [indexedMission] = picked.missions;
+  assert.equal(indexedMission.missionId, "smoke/web-discovery-fixture#23");
+  const run = await callMcp("start_research", {
+    mission: indexedMission.missionId,
+    request_id: "00000000-1000-4000-8000-000000000023",
+  });
+  const findings = "Offline published report for the selected discovery issue";
+  const delivered = await callMcp("submit_report", {
+    run_id: run.run_id,
+    report: {
+      schemaVersion: 1,
+      findings,
+      work: "Checked the fixture.",
+      evidence: [],
+      unknowns: [],
+      nextSteps: [],
+      links: [],
+    },
+  });
+  assert.equal(delivered.published, true);
+  assert.ok((await html(indexedMissionPath)).includes(findings));
+  console.log("PASS catalog topic → direct Fate issue → MCP selection → anonymous public report");
   assert.equal(
     (
       await request("/api/research", {
@@ -275,7 +380,7 @@ try {
   );
   assert.ok((await html("/fate?cat=games&tag=steamos")).includes("GameDev"));
   console.log("PASS GameDev empty bootstrap, persisted snapshot, delayed freshness and tag filter");
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 5);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 6);
   assert.equal((await journal.list(user.id)).length, 1);
   assert.equal((await createPostgresUsage(db).list(user.id))[0].inputTokens, 7);
   const usageBody = {
@@ -419,7 +524,7 @@ try {
   assert.ok((await html(`/u/${user.login}`)).includes(body.report.findings));
   await repo.revokeGrant(user.id, ownerGrant.grant.id, Date.now());
   assert.equal((await post(body, ownerGrant.token)).status, 401);
-  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 5);
+  assert.equal((await db.query("SELECT COUNT(*) AS n FROM schema_migrations")).rows[0].n, 6);
   console.log(
     "PASS incomplete runs stay unpublished, unpublish in both views, grant revocation, PostgreSQL persistence",
   );

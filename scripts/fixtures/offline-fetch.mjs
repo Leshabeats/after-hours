@@ -2,6 +2,27 @@
 globalThis.fetch = async (input) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin === "https://api.github.com") {
+    if (url.pathname === "/repos/smoke/web-discovery-fixture")
+      return Response.json({
+        id: 109,
+        private: false,
+        visibility: "public",
+        archived: false,
+        license: { spdx_id: "MIT" },
+      });
+    if (url.pathname === "/repos/smoke/web-discovery-fixture/issues/23")
+      return Response.json({
+        number: 23,
+        title: "Permission test fails for cross-origin frames",
+        body: "Steps to reproduce: open fullscreen/tests/permissions.html and compare the expected and actual values.",
+        repository_url: "https://api.github.com/repos/smoke/web-discovery-fixture",
+        html_url: "https://github.com/smoke/web-discovery-fixture/issues/23",
+        state: "open",
+        comments: 0,
+        labels: [{ name: "good first issue" }],
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      });
     if (url.pathname === "/repos/smoke/claude")
       return Response.json({ private: false, visibility: "public" });
     if (url.pathname === "/repos/smoke/claude/issues/9")

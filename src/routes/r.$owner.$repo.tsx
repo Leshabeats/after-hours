@@ -13,9 +13,7 @@ export const Route = createFileRoute("/r/$owner/$repo")({
   pendingComponent: function RepoPending() {
     return (
       <NightShell>
-        <p className="font-mono text-xs uppercase tracking-caps text-muted">
-          Загрузка ишью
-        </p>
+        <p className="font-mono text-xs uppercase tracking-caps text-muted">Загрузка ишью</p>
       </NightShell>
     );
   },
@@ -27,14 +25,8 @@ function RepoPage() {
   const { issues, pullRequests, issueTotal, prTotal, filterSkipped, live, profile } =
     Route.useLoaderData();
   const [kind, setKind] = useState<Kind | "all">("all");
-  const shownIssues = useMemo(
-    () => filterKind(issues, kind),
-    [issues, kind],
-  );
-  const shownPrs = useMemo(
-    () => filterKind(pullRequests, kind),
-    [pullRequests, kind],
-  );
+  const shownIssues = useMemo(() => filterKind(issues, kind), [issues, kind]);
+  const shownPrs = useMemo(() => filterKind(pullRequests, kind), [pullRequests, kind]);
   const issueCaption = freshSliceCaption(issues.length, issueTotal);
   const prCaption = freshSliceCaption(pullRequests.length, prTotal);
   const why = profile.blurb && profile.blurb !== profile.description ? profile.blurb : "";
@@ -53,12 +45,8 @@ function RepoPage() {
           className="size-14 shrink-0 rounded-lg bg-bg object-cover"
         />
         <div>
-          <p className="font-mono text-xs uppercase tracking-caps text-accent">
-            {owner}
-          </p>
-          <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">
-            {repo}
-          </h1>
+          <p className="font-mono text-xs uppercase tracking-caps text-accent">{owner}</p>
+          <h1 className="mt-2 font-display text-5xl italic leading-none sm:text-6xl">{repo}</h1>
         </div>
       </div>
       <div className="mt-5 max-w-xl space-y-3 text-sm leading-relaxed">
@@ -92,9 +80,7 @@ function RepoPage() {
         </p>
         <p className="text-xs text-faint">
           {live ? "Эфир GitHub открыт." : "Эфир молчит."}
-          {filterSkipped
-            ? " Фильтр уже смёрженных фиксов пропущен: квота GitHub."
-            : ""}
+          {filterSkipped ? " Фильтр уже смёрженных фиксов пропущен: квота GitHub." : ""}
         </p>
       </div>
 
@@ -121,9 +107,7 @@ function RepoPage() {
                 <span className="block font-mono text-[10px] uppercase tracking-caps text-accent">
                   {meta.label}
                 </span>
-                <span className="mt-1 block text-xs leading-relaxed text-fg">
-                  {meta.duty}
-                </span>
+                <span className="mt-1 block text-xs leading-relaxed text-fg">{meta.duty}</span>
               </span>
             </span>
           );
@@ -178,7 +162,7 @@ function WorkSection({
       {missions.length === 0 ? (
         <p className="mt-4 text-sm text-muted">{empty}</p>
       ) : (
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {missions.map((mission) => (
             <MissionCard key={mission.id} mission={mission} />
           ))}

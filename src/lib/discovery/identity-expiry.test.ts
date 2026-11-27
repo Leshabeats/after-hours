@@ -11,6 +11,7 @@ function raw(id: number) {
   return {
     id,
     private: false,
+    license: { spdx_id: "MIT" },
     owner: { login: "fixture" },
     name: `engine-${id}`,
     description: "Game engine",
@@ -31,7 +32,7 @@ async function expiry(store: DiscoveryStore) {
   const lease = await store.acquire(NOW, DAY);
   assert.ok(lease);
   const checkpoint = {
-    version: 7,
+    version: 8,
     scanId: "11111111-1111-4111-8111-111111111111",
     startedAt: NOW,
     phase: "activity",

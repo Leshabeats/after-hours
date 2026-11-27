@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { postgresTest } from "../db/testing.ts";
 import { buildSnapshot, DAY } from "./ranking.ts";
-import { filterDiscovery, fateProjects } from "./presentation.ts";
+import { filterDiscovery } from "./presentation.ts";
 import { readDiscovery } from "./read.ts";
 import { createMemoryDiscovery, createPostgresDiscovery } from "./store.ts";
 import {
@@ -71,21 +71,16 @@ async function assertDiscoverable(snapshot: DiscoverySnapshot) {
   assert.equal(snapshot.cards.length, 100);
   assert.equal(new Set(snapshot.cards.map((card) => card.id)).size, 100);
   const discovery = await readDiscovery(async () => snapshot, NOW);
-  const shelf = { ecosystem: [], direction: [], libraries: [], live: false, discovery };
   for (const tag of ["steamos", "proton"] as const) {
     const search = { cat: "games", tag } as const;
     assert.deepEqual(
       filterDiscovery(discovery.cards, search).map((card) => card.repo),
       [tag],
     );
-    assert.deepEqual(
-      fateProjects(shelf, search).map((card) => card.repo),
-      [tag],
-    );
   }
 }
 
-it("100 new engines cannot hide eligible SteamOS and Proton projects from filters or fate", async () => {
+it("100 new engines cannot hide eligible SteamOS and Proton projects from filters", async () => {
   const snapshot = buildSnapshot(crowdedEngines(), [], NOW);
   await assertDiscoverable(snapshot);
   assert.deepEqual(

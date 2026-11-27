@@ -1,27 +1,27 @@
 import { readFile } from "node:fs/promises";
+import { parseArgs } from "node:util";
 import { collectDiscovery } from "../src/lib/discovery/collector.ts";
 import { createMemoryDiscovery, createPostgresDiscovery } from "../src/lib/discovery/store.ts";
 import { createPool } from "../src/lib/db/postgres.ts";
+import { isDiscoveryWorld } from "../src/lib/discovery/types.ts";
 
-const args = process.argv.slice(2);
-const write = args.includes("--write");
-const fixtureAt = args.indexOf("--fixture");
-const fixture = fixtureAt >= 0 ? args[fixtureAt + 1] : null;
-if (
-  args.some(
-    (arg, i) =>
-      arg !== "--write" && arg !== "--fixture" && !(fixtureAt >= 0 && i === fixtureAt + 1),
-  ) ||
-  (fixtureAt >= 0 && !fixture)
-)
-  throw new Error("Usage: catalog-sync.mjs [--write | --fixture file.json]");
+const {
+  values: { write, fixture, world },
+} = parseArgs({
+  options: {
+    write: { type: "boolean" },
+    fixture: { type: "string" },
+    world: { type: "string", default: "games" },
+  },
+});
+if (!isDiscoveryWorld(world)) throw new Error("Choose --world games, web, linux, ai, or data");
 if (write && fixture) throw new Error("Fixtures cannot write to a database");
 if (write && (!process.env.CATALOG_DATABASE_URL || !process.env.GITHUB_TOKEN))
   throw new Error("Explicit CATALOG_DATABASE_URL and GITHUB_TOKEN are required for --write");
 let pool;
 try {
   pool = write ? createPool(process.env.CATALOG_DATABASE_URL, 2) : undefined;
-  const store = pool ? createPostgresDiscovery(pool) : createMemoryDiscovery();
+  const store = pool ? createPostgresDiscovery(pool, world) : createMemoryDiscovery();
   let fetchImpl;
   if (fixture) {
     const rows = JSON.parse(await readFile(fixture, "utf8"));
@@ -46,11 +46,13 @@ try {
   }
   const result = await collectDiscovery({
     store,
+    world,
+    collectIssues: Boolean(write),
     token: fixture ? undefined : process.env.GITHUB_TOKEN,
     fetchImpl,
     ...(fixture ? { sleep: async () => {} } : {}),
   });
-  console.log(JSON.stringify({ mode: write ? "write" : "dry-run", ...result }));
+  console.log(JSON.stringify({ mode: write ? "write" : "dry-run", world, ...result }));
   if (!write) console.log(JSON.stringify(await store.snapshot()));
   if (result.status !== "published" && result.status !== "busy") process.exitCode = 2;
 } catch {

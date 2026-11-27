@@ -16,6 +16,7 @@ function raw(patch: Record<string, unknown> = {}) {
     language: "Rust",
     topics: ["game-engine"],
     private: false,
+    license: { spdx_id: "MIT" },
     stargazers_count: 100,
     forks_count: 3,
     created_at: new Date(NOW - 100 * DAY).toISOString(),
@@ -169,7 +170,7 @@ test("budget checkpoint resumes without duplicate repos/metrics and publishes on
   assert.equal(h.urls.filter((url) => url.includes("topic%3Agame-engine%20created")).length, 1);
   const snapshot = await store.snapshot();
   assert.equal(snapshot?.cards.length, 1);
-  assert.deepEqual(snapshot?.cards[0].badges, ["discovered"]);
+  assert.deepEqual(snapshot?.cards[0].badges, ["discovered", "active"]);
 });
 
 test("rate limit persists pause and leaves prior snapshot intact", async () => {

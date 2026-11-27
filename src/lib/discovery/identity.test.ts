@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { postgresTest } from "../db/testing.ts";
 import { collectDiscovery, parseRepository } from "./collector.ts";
 import { buildSnapshot, DAY } from "./ranking.ts";
-import { filterDiscovery, fateProjects } from "./presentation.ts";
+import { filterDiscovery } from "./presentation.ts";
 import { createMemoryDiscovery, createPostgresDiscovery } from "./store.ts";
 import type { DiscoveryStore } from "./types.ts";
 const NOW = Date.UTC(2026, 9, 24, 12);
@@ -16,6 +16,7 @@ function raw(id: number, owner = "games", name = "shared") {
     language: "Rust",
     topics: ["game-engine"],
     private: false,
+    license: { spdx_id: "MIT" },
     stargazers_count: id === 9000 ? 200 : 5,
     forks_count: 1,
     created_at: new Date(NOW - (id === 9000 ? 100 : 1) * DAY).toISOString(),
@@ -49,14 +50,6 @@ test("ranking and fate preserve different IDs even when cached slugs collide", (
     filterDiscovery(snapshot.cards, { cat: "games", tag: "steamos" }).map((r) => r.id),
     ["9001"],
   );
-  const shelf = {
-    live: false,
-    ecosystem: [],
-    direction: [],
-    libraries: [],
-    discovery: { status: "ready" as const, stale: false, updatedAt: NOW, cards: snapshot.cards },
-  };
-  assert.equal(fateProjects(shelf, { cat: "games" }).length, 2);
 });
 
 async function renameReuse(store: DiscoveryStore, conflict = false) {
@@ -133,24 +126,10 @@ async function renameReuse(store: DiscoveryStore, conflict = false) {
   assert.equal(replacement.url, "https://github.com/games/shared");
   assert.equal(replacement.growth, null);
   assert.equal(urls.filter((p) => p === "/repositories/9000").length, conflict ? 2 : 1);
-  const shelf = {
-    live: false,
-    ecosystem: [],
-    direction: [],
-    libraries: [],
-    discovery: {
-      status: "ready" as const,
-      stale: false,
-      updatedAt: snapshot.generatedAt,
-      cards: snapshot.cards,
-    },
-  };
   assert.deepEqual(
     filterDiscovery(snapshot.cards, { cat: "games", tag: "steamos" }).map((r) => r.id),
     ["9001"],
   );
-  assert.equal(fateProjects(shelf, { cat: "games" }).length, 2);
-  assert.equal(fateProjects(shelf, { cat: "games", tag: "steamos" })[0].url, replacement.url);
 }
 test("rename/reuse refreshes final card identities, checkpoints and filters", async () =>
   renameReuse(createMemoryDiscovery()));

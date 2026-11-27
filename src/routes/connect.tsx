@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { NightShell } from "@/components/night-shell";
 import { Button } from "@/components/ui/button";
+import { mcpResearchPrompt } from "@/lib/agent-prompt";
 
 export const Route = createFileRoute("/connect")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -15,18 +17,27 @@ function ConnectPage() {
   useEffect(() => {
     setEndpoint(window.location.origin + "/mcp");
   }, []);
-  const [message, setMessage] = useState("");
-  const prompt = mission
-    ? `Получи задачу ${mission} через After Hours, создай исследование и изучи её. Сохрани выводы, доказательства и открытые вопросы. Опубликуй итоговый отчёт в After Hours. Изменения в GitHub требуют отдельного поручения.`
-    : "Подбери мне небольшую публичную OSS-задачу через After Hours, исследуй её и опубликуй отчёт с доказательствами и открытыми вопросами.";
+  const prompt = mcpResearchPrompt(mission);
   async function copy(value: string) {
     try {
       await navigator.clipboard.writeText(value);
-      setMessage("Скопировано.");
+      toast("Скопировано");
     } catch {
-      setMessage("Выдели и скопируй текст вручную.");
+      toast("Выдели и скопируй текст вручную");
     }
   }
+  const task = (
+    <>
+      <p className="mt-3 rounded-lg bg-surface p-4 wrap-anywhere">{prompt}</p>
+      <Button className="mt-3" size="sm" onClick={() => void copy(prompt)}>
+        Скопировать задание
+      </Button>
+      <p className="mt-3 text-muted">
+        Отчёт появится на странице задачи и в профиле после публикации агентом. Для отображения
+        расхода токенов нужен совместимый локальный адаптер.
+      </p>
+    </>
+  );
   return (
     <NightShell>
       <h1 className="font-display text-4xl italic sm:text-5xl">Подключить своего агента</h1>
@@ -34,7 +45,16 @@ function ConnectPage() {
         Выбирай привычный харнесс с поддержкой удалённого MCP. Агент работает у тебя, а After Hours
         помогает найти задачу и сохранить публичный отчёт.
       </p>
-      <ol className="mt-8 max-w-2xl space-y-8 text-sm leading-relaxed">
+      {mission ? (
+        <section className="mt-8 max-w-2xl text-sm leading-relaxed">
+          <h2 className="font-display text-2xl">MCP уже подключён?</h2>
+          {task}
+          <a href="#mcp-setup" className="mt-3 inline-block text-accent underline">
+            Первое подключение
+          </a>
+        </section>
+      ) : null}
+      <ol id="mcp-setup" className="mt-8 max-w-2xl scroll-mt-32 space-y-8 text-sm leading-relaxed">
         <li>
           <h2 className="font-mono text-accent">1. Добавь MCP-сервер</h2>
           <p className="mt-2 text-muted">
@@ -68,21 +88,13 @@ function ConnectPage() {
             защищённых настройках подключения.
           </p>
         </li>
-        <li>
-          <h2 className="font-mono text-accent">3. Дай агенту задачу</h2>
-          <p className="mt-3 rounded-lg bg-surface p-4">{prompt}</p>
-          <Button className="mt-3" size="sm" onClick={() => void copy(prompt)}>
-            Скопировать задание
-          </Button>
-          <p className="mt-3 text-muted">
-            Отчёт появится на странице задачи и в профиле после отправки агентом. Расход токенов
-            может быть недоступен. Прерванное исследование не считается завершённым.
-          </p>
-        </li>
+        {mission ? null : (
+          <li>
+            <h2 className="font-mono text-accent">3. Дай агенту задачу</h2>
+            {task}
+          </li>
+        )}
       </ol>
-      <p role="status" className="mt-4 text-sm text-accent">
-        {message}
-      </p>
     </NightShell>
   );
 }

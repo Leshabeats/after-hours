@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   filterDiscovery,
-  fateProjects,
+  indexedIssues,
   growthLabel,
   discoveryFreshness,
 } from "./discovery/presentation.ts";
 import { readDiscovery } from "./discovery/read.ts";
 import type { DiscoveryCard, DiscoverySnapshot } from "./discovery/types.ts";
-import type { ProjectShelf } from "./github-live.ts";
 
 const day = 24 * 60 * 60 * 1000;
 const now = Date.UTC(2026, 9, 24);
@@ -55,22 +54,39 @@ describe("GameDev discovery presentation", () => {
     assert.deepEqual(filterDiscovery([unknown], { cat: "games", tag: "engines" }), []);
   });
 
-  it("deduplicates fate candidates by case-insensitive GitHub slug while preserving language shelves", () => {
-    const curated = { ...card, owner: "game", repo: "engine" };
-    const library = { ...card, owner: "lib", repo: "utility" };
-    const shelf: ProjectShelf = {
-      live: true,
-      ecosystem: [curated],
-      direction: [curated],
-      libraries: [library],
-      discovery: { cards: [card], status: "ready", stale: false, updatedAt: now },
+  it("offers one available issue per project before second choices and omits expired checks", () => {
+    const sample = {
+      number: 3,
+      title: "Fix the engine test",
+      excerpt: "",
+      evidence: "file" as const,
     };
-    assert.deepEqual(fateProjects(shelf, { cat: "games" }), [card, library]);
-    assert.deepEqual(fateProjects(shelf, { cat: "games", tag: "assets" }), [curated, library]);
-    assert.deepEqual(fateProjects({ ...shelf, discovery: undefined }, { cat: "games" }), [
-      curated,
-      library,
-    ]);
+    const first = {
+      ...card,
+      issues: [
+        { ...sample, checkedAt: now },
+        { ...sample, number: 8, checkedAt: now },
+      ],
+    };
+    const other = {
+      ...card,
+      id: "2",
+      repo: "Tools",
+      issues: [
+        { ...sample, number: 1, checkedAt: now - 2 * day },
+        { ...sample, number: 2, checkedAt: now },
+      ],
+    };
+    const candidates = indexedIssues([first, other], { cat: "games", tag: "tools" }, now);
+    assert.deepEqual(
+      candidates.map(({ repoId, number }) => [repoId, number]),
+      [
+        ["1", 3],
+        ["2", 2],
+        ["1", 8],
+      ],
+    );
+    assert.deepEqual(indexedIssues([first, other], { cat: "games", tag: "assets" }, now), []);
   });
 
   it("labels measured growth with the actual interval and leaves unmeasured growth absent", () => {

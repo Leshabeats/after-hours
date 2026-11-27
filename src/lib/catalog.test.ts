@@ -40,6 +40,12 @@ describe("parseCatalogSearch", () => {
     );
     assert.deepEqual(parseCatalogSearch({ cat: "web", tag: "tools", view: "growing" }), {
       cat: "web",
+      view: "growing",
+    });
+    assert.deepEqual(parseCatalogSearch({ cat: "web", tag: "web-tests", view: "active" }), {
+      cat: "web",
+      tag: "web-tests",
+      view: "active",
     });
   });
 
