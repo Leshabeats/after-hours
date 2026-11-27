@@ -47,6 +47,10 @@ it("uses exact world topics rather than description or model guesses", () => {
     topics: [],
   };
   assert.deepEqual(classifyRepository(fixture, "ai"), []);
+  assert.deepEqual(classifyRepository({ ...fixture, topics: ["specification"] }, "web"), []);
+  assert.deepEqual(classifyRepository({ ...fixture, topics: ["web-standards"] }, "web"), [
+    "web-standards",
+  ]);
   assert.deepEqual(classifyRepository({ ...fixture, topics: ["LLM-INFERENCE", "rag"] }, "ai"), [
     "inference",
     "rag",
@@ -131,6 +135,7 @@ it("publishes the scoped Web feed only after licensing and stable-ID rechecks", 
   assert.ok(
     searches.some((url) => url.searchParams.get("q")?.includes("topic:web-platform-tests")),
   );
+  assert.ok(searches.every((url) => !url.searchParams.get("q")?.includes("topic:specification")));
   assert.ok(searches.every((url) => !url.searchParams.get("q")?.includes("topic:game-engine")));
   assert.ok(requests.some((url) => url.pathname === "/repositories/3"));
   rateLimited = true;

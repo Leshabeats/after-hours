@@ -18,7 +18,7 @@ export function isDiscoveryWorld(value: unknown): value is DiscoveryWorld {
 export const WORLD_TAGS = {
   games: GAME_TAGS,
   web: [
-    { id: "web-standards", label: "Стандарты", topics: ["web-standards", "specification"] },
+    { id: "web-standards", label: "Стандарты", topics: ["web-standards"] },
     {
       id: "browser-apis",
       label: "Браузерные API",
